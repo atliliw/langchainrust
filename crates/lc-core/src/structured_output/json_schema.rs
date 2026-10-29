@@ -59,10 +59,7 @@ impl JsonSchemaOutput {
     ///
     /// # Errors
     /// Returns the `serde_json` error when `json` is not valid JSON.
-    pub fn from_json_str(
-        name: impl Into<String>,
-        json: &str,
-    ) -> Result<Self, serde_json::Error> {
+    pub fn from_json_str(name: impl Into<String>, json: &str) -> Result<Self, serde_json::Error> {
         Ok(Self::new(name, serde_json::from_str(json)?))
     }
 
@@ -111,7 +108,10 @@ mod tests {
     fn from_json_str_parses_a_raw_schema() {
         let output =
             JsonSchemaOutput::from_json_str("out", r#"{"type":"object","properties":{}}"#).unwrap();
-        assert_eq!(output.schema(), &json!({"type": "object", "properties": {}}));
+        assert_eq!(
+            output.schema(),
+            &json!({"type": "object", "properties": {}})
+        );
     }
 
     #[test]

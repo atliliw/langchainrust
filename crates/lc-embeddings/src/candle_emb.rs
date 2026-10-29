@@ -439,7 +439,9 @@ fn quantize_fp8(
 ) -> Result<HashMap<String, Tensor>, EmbeddingError> {
     let mut out = HashMap::with_capacity(tensors.len());
     for (name, t) in tensors {
-        let restored = t.to_dtype(DType::F8E4M3).and_then(|h| h.to_dtype(DType::F32));
+        let restored = t
+            .to_dtype(DType::F8E4M3)
+            .and_then(|h| h.to_dtype(DType::F32));
         let r = match restored {
             Ok(r) => r,
             Err(e) => {
@@ -946,7 +948,11 @@ mod tests {
     fn fp8_quantize_roundtrip_keeps_shape_and_values() {
         let device = Device::Cpu;
         let src = Tensor::randn(0f32, 1f32, (768usize, 384usize), &device).unwrap();
-        let dq = src.to_dtype(DType::F8E4M3).unwrap().to_dtype(DType::F32).unwrap();
+        let dq = src
+            .to_dtype(DType::F8E4M3)
+            .unwrap()
+            .to_dtype(DType::F32)
+            .unwrap();
         assert_eq!(dq.shape(), src.shape());
         let a = src.flatten_all().unwrap().to_vec1::<f32>().unwrap();
         let b = dq.flatten_all().unwrap().to_vec1::<f32>().unwrap();

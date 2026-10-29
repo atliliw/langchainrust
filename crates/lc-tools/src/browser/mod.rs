@@ -30,7 +30,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
@@ -236,9 +236,13 @@ impl CdpBrowser {
     /// `Fetch` CDP domain pauses every request before it leaves, and each
     /// `Fetch.requestPaused` is validated — private hops are failed, public ones
     /// continued — so a top-level check that passed cannot be followed later by
-    /// a redirect, DNS-rebound, or subresource request to an internal host. The
-    /// interception is disarmed as soon as the page loads (or on any failure) so
-    /// a post-load `Runtime.evaluate` is never stranded on an unanswered pause.
+    /// a redirect, DNS-rebound, or subresource request to an internal host.
+    ///
+    /// With `wait_ms`, interception stays armed through that settle window too
+    /// (R-7) and every hop fired inside it is validated, so a `setTimeout`-scheduled
+    /// navigation that lands post-load is still caught. It is disarmed once the
+    /// load *and* settle window are over (or on any failure) so a later
+    /// `Runtime.evaluate` is never stranded on an unanswered pause.
     async fn goto(&self, url: &str, wait_ms: Option<u64>) -> Result<(), ToolError> {
         self.command(
             "Fetch.enable",
@@ -274,42 +278,7 @@ impl CdpBrowser {
                     // out — validate its URL now and continue or fail it on the
                     // same connection.
                     if method == "Fetch.requestPaused" {
-                        let request_id = value
-                            .pointer("/params/requestId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
-                        let request_url = value
-                            .pointer("/params/request/url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default();
-                        let allow_private = self.allow_private_urls.load(Ordering::Relaxed);
-                        let block = block_request_hop(request_url, allow_private).await?;
-                        let (hop_method, hop_params) = if block {
-                            // Deny the request before any packet reaches the net.
-                            (
-                                "Fetch.failRequest",
-                                serde_json::json!({
-                                    "requestId": request_id,
-                                    "errorReason": "BlockedByClient",
-                                }),
-                            )
-                        } else {
-                            ("Fetch.continueRequest", serde_json::json!({ "requestId": request_id }))
-                        };
-                        let hop_id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
-                        ws.send(Message::Text(
-                            serde_json::json!({
-                                "id": hop_id,
-                                "method": hop_method,
-                                "params": hop_params,
-                            })
-                            .to_string()
-                            .into(),
-                        ))
-                        .await
-                        .map_err(|e| {
-                            ToolError::ExecutionFailed(format!("CDP send failed: {e}"))
-                        })?;
+                        self.resolve_hop(&mut *ws, &value).await?;
                         continue;
                     }
                     if method == "Page.loadEventFired" && got_response {
@@ -342,15 +311,96 @@ impl CdpBrowser {
                 Ok(())
             }
         };
+        // R-7: keep `Fetch` interception armed through the caller's settle window
+        // and actively validate every hop fired inside it (a `setTimeout`-scheduled
+        // navigation that lands post-load used to fall outside the SSRF net). We
+        // cannot leave interception on beyond `goto` — no reader would answer the
+        // pauses — so this closes the window the tool itself observes, then the
+        // disarm below restores the documented outer boundary.
+        if let Some(ms) = wait_ms {
+            let settle_ms = ms.min(MAX_WAIT_MS);
+            let _ = tokio::time::timeout(Duration::from_millis(settle_ms + 1_000), async {
+                let mut ws = self.ws.lock().await;
+                let deadline = Instant::now() + Duration::from_millis(settle_ms);
+                while Instant::now() < deadline {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let step = tokio::time::timeout(remaining, ws.next())
+                        .await
+                        // The settle window elapsed with no further traffic.
+                        .unwrap_or(None);
+                    let Some(Ok(msg)) = step else {
+                        // Stream ended / read error — traversal is over.
+                        break;
+                    };
+                    let Message::Text(text) = msg else { continue };
+                    let Ok(value) =
+                        serde_json::from_str::<serde_json::Value>(text.as_str())
+                    else {
+                        continue;
+                    };
+                    if value.get("method").and_then(|v| v.as_str())
+                        == Some("Fetch.requestPaused")
+                    {
+                        // Ignore a failed hop reply here: the only realistic failure is the
+                        // websocket send itself (i.e. the connection is already gone), and the
+                        // settle window is hard-bounded above regardless.
+                        let _ = self.resolve_hop(&mut *ws, &value).await;
+                    }
+                }
+            })
+            .await;
+        }
         // Disarm interception on every exit path — including timeout and error —
         // so a later `Runtime.evaluate` is not stalled on pending pauses.
         let _ = self
             .command("Fetch.disable", serde_json::json!({}))
             .await;
         result?;
-        if let Some(ms) = wait_ms {
-            tokio::time::sleep(Duration::from_millis(ms.min(MAX_WAIT_MS))).await;
-        }
+        Ok(())
+    }
+
+    /// Validate one `Fetch.requestPaused` hop against the SSRF policy and continue or fail it
+    /// in place (V0.27 #200). Shared by the top-level navigation loop and the post-load settle
+    /// drain (R-7) so both use the same decision rule.
+    async fn resolve_hop(
+        &self,
+        ws: &mut Ws,
+        value: &serde_json::Value,
+    ) -> Result<(), ToolError> {
+        let request_id = value
+            .pointer("/params/requestId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let request_url = value
+            .pointer("/params/request/url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let allow_private = self.allow_private_urls.load(Ordering::Relaxed);
+        let block = block_request_hop(request_url, allow_private).await?;
+        let (hop_method, hop_params) = if block {
+            // Deny the request before any packet reaches the net.
+            (
+                "Fetch.failRequest",
+                serde_json::json!({
+                    "requestId": request_id,
+                    "errorReason": "BlockedByClient",
+                }),
+            )
+        } else {
+            ("Fetch.continueRequest", serde_json::json!({ "requestId": request_id }))
+        };
+        let hop_id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        ws.send(Message::Text(
+            serde_json::json!({
+                "id": hop_id,
+                "method": hop_method,
+                "params": hop_params,
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("CDP send failed: {e}")))?;
         Ok(())
     }
 

@@ -220,10 +220,7 @@ impl BatchExporter {
 
     /// Events currently waiting in the in-memory batch.
     pub fn pending_len(&self) -> usize {
-        self.pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
+        self.pending.lock().unwrap_or_else(|p| p.into_inner()).len()
     }
 
     /// Batches currently parked on the on-disk edge buffer.
@@ -458,7 +455,10 @@ mod tests {
         }
 
         fn batches(&self) -> Vec<Vec<ExportEvent>> {
-            self.batches.lock().unwrap_or_else(|p| p.into_inner()).clone()
+            self.batches
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
         }
 
         fn attempts(&self) -> usize {
@@ -492,7 +492,11 @@ mod tests {
         }
     }
 
-    fn exporter(sink: Arc<RecordingSink>, dir: &std::path::Path, size: usize) -> Arc<BatchExporter> {
+    fn exporter(
+        sink: Arc<RecordingSink>,
+        dir: &std::path::Path,
+        size: usize,
+    ) -> Arc<BatchExporter> {
         let buffer = Arc::new(EdgeBuffer::open(dir, 16).unwrap());
         Arc::new(BatchExporter::new(
             sink,
@@ -599,7 +603,11 @@ mod tests {
             matches!(outcome, FlushOutcome::Buffered { events: 1, .. }),
             "got {outcome:?}"
         );
-        assert_eq!(exporter.buffer_len(), 1, "the batch landed on the disk queue");
+        assert_eq!(
+            exporter.buffer_len(),
+            1,
+            "the batch landed on the disk queue"
+        );
         assert!(sink.batches().is_empty());
     }
 

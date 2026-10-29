@@ -28,7 +28,11 @@
 
 use lc_core::observability::{AgentMetrics, MetricsSink, ObsError, ObsEvent, RunEvent};
 use opentelemetry::metrics::{Counter, Meter, MeterProvider};
-use opentelemetry::trace::{Span as _, Status, Tracer as _, TracerProvider as _};
+use opentelemetry::trace::{
+    Span as _, SpanContext, SpanId, Status, TraceContextExt, TraceFlags, TraceId, TraceState,
+    Tracer as _, TracerProvider as _,
+};
+use opentelemetry::Context;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{
     MetricExporter, Protocol, SpanExporter, WithExportConfig, WithHttpConfig,
@@ -39,6 +43,7 @@ use opentelemetry_sdk::runtime;
 use opentelemetry_sdk::trace::{Tracer, TracerProvider};
 use std::collections::HashMap;
 use std::env;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 
 const DEFAULT_ENDPOINT: &str = "http://localhost:4318";
@@ -128,14 +133,14 @@ impl Default for OtlpConfig {
 /// batch exporter); the config (endpoint/headers) is consumed at `install` and
 /// never stored, so [`Debug`] prints nothing sensitive.
 ///
-/// # Known limitation — cross-event trace lineage (reported §3.1/§3.2/§3.3)
+/// # Trace lineage (R-2/R-3)
 ///
-/// [`ObsEvent::AgentMetrics`], [`ObsEvent::Cost`], and [`ObsEvent::RunError`] all
-/// carry a run `trace_id`, so the cost and failure spans join the agent span into one
-/// OTel trace. [`ObsEvent::TokenUsage`] (the highest-frequency `llm` span) still has no
-/// trace linkage and no `model`, because it shares the workspace-wide
-/// `lc_core::language_models::TokenUsage` type that embeddings/rag also emit — extending
-/// it is a broad cross-crate API change deliberately deferred.
+/// Every event that carries a run `trace_id` — [`ObsEvent::TokenUsage`] (now
+/// included), [`ObsEvent::Cost`], [`ObsEvent::AgentMetrics`], and
+/// [`ObsEvent::RunError`] — starts its span under a parent context derived from
+/// that run id, so all of a run's events land in one OTel trace rather than each
+/// being an independent root. Token-usage spans also carry `provider`/`model`
+/// attribution ([`TokenUsageEvent`]) instead of a bare token count.
 #[derive(Clone)]
 pub struct OtlpSink {
     provider: TracerProvider,
@@ -249,7 +254,16 @@ fn build_meter(config: &OtlpConfig, resource: Resource) -> Result<SinkMeter, Obs
 #[async_trait::async_trait]
 impl MetricsSink for OtlpSink {
     async fn export(&self, event: &ObsEvent) -> Result<(), ObsError> {
-        let mut span = self.tracer().start(span_name_for(event));
+        // R-2: start the span under a parent context derived from the run's
+        // `trace_id` (when one is present) so every event of a run joins a single
+        // OTel trace, instead of each being an independent root that only shares a
+        // `langchainrust.trace_id` attribute.
+        let name = span_name_for(event);
+        let parent = parent_context_for(event);
+        let mut span = match &parent {
+            Some(cx) => self.tracer().start_with_context(name.clone(), cx),
+            None => self.tracer().start(name),
+        };
         for kv in span_attributes_for(event) {
             span.set_attribute(kv);
         }
@@ -274,14 +288,61 @@ impl MetricsSink for OtlpSink {
     }
 }
 
+/// Builds an OTel parent [`Context`] from an event's run `trace_id`, so
+/// same-run events land in one shared OTel trace (R-2).
+///
+/// The run id is a framework id (a UUID or a free-form label), not a real OTel
+/// span, so there is no genuine parent [`SpanId`] to link against. Instead we
+/// derive a deterministic 128-bit [`TraceId`] and a fixed synthetic 8-byte root
+/// [`SpanId`] from the run id and seed a remote span context with them; every
+/// event of the run starts as a child of that synthetic root and therefore
+/// shares one `trace_id` once shipped to the collector. A run with no trace id
+/// (an anonymous run, or [`AgentMetrics::default`] in tests) yields `None` and
+/// the span falls back to an independent root.
+fn parent_context_for(event: &ObsEvent) -> Option<Context> {
+    let run_id = match event {
+        ObsEvent::TokenUsage(usage) => usage.trace_id.as_deref()?,
+        ObsEvent::Cost(cost) => cost.trace_id.as_deref()?,
+        ObsEvent::AgentMetrics(metrics) => metrics.trace_id.as_deref()?,
+        ObsEvent::RunError(run) => run.trace_id.as_deref()?,
+    };
+    // Deterministic hashing (DefaultHasher is fixed-seed) keeps the derived OTel
+    // ids stable across the run's event exports and across process restarts, so
+    // the collector can group all of them. Call hash twice so the two 8-byte
+    // halves differ.
+    let mut hasher = DefaultHasher::new();
+    run_id.hash(&mut hasher);
+    let a = hasher.finish();
+    run_id.hash(&mut hasher);
+    let b = hasher.finish();
+    let mut trace_bytes = [0u8; 16];
+    trace_bytes[..8].copy_from_slice(&a.to_be_bytes());
+    trace_bytes[8..].copy_from_slice(&b.to_be_bytes());
+    let span_context = SpanContext::new(
+        TraceId::from_bytes(trace_bytes),
+        SpanId::from_bytes(a.to_be_bytes()),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    Some(Context::new().with_remote_span_context(span_context))
+}
+
 /// Yields the `(total_tokens, attributes)` recorded for a token-bearing event, or
 /// `None` for events that carry no token count (AgentMetrics / RunError).
 fn token_usage_record(event: &ObsEvent) -> Option<(u64, Vec<KeyValue>)> {
     match event {
         ObsEvent::TokenUsage(usage) => {
             let mut attrs = vec![KeyValue::new(GEN_AI_OPERATION_NAME, "chat")];
-            attrs.push(KeyValue::new(GEN_AI_PROVIDER_NAME, "unknown"));
-            Some((usage.total_tokens as u64, attrs))
+            if let Some(provider) = &usage.provider {
+                attrs.push(KeyValue::new(GEN_AI_PROVIDER_NAME, provider.clone()));
+            } else {
+                attrs.push(KeyValue::new(GEN_AI_PROVIDER_NAME, "unknown"));
+            }
+            if let Some(model) = &usage.model {
+                attrs.push(KeyValue::new(GEN_AI_REQUEST_MODEL, model.clone()));
+            }
+            Some((usage.usage.total_tokens as u64, attrs))
         }
         ObsEvent::Cost(cost) => {
             let mut attrs = vec![
@@ -306,7 +367,7 @@ fn token_usage_record(event: &ObsEvent) -> Option<(u64, Vec<KeyValue>)> {
 /// so events whose provider is unknown still produce a clean, stable name.
 pub fn span_name_for(event: &ObsEvent) -> String {
     let (op, provider) = match event {
-        ObsEvent::TokenUsage(_) => ("llm", None),
+        ObsEvent::TokenUsage(usage) => ("llm", usage.provider.as_deref()),
         ObsEvent::Cost(cost) => ("cost", cost.provider.as_deref()),
         ObsEvent::AgentMetrics(_) => ("agent", None),
         ObsEvent::RunError(run) => ("agent.error", run.provider.as_deref()),
@@ -327,7 +388,18 @@ pub fn template_span_name(op: &str, provider: Option<&str>) -> String {
 pub fn span_attributes_for(event: &ObsEvent) -> Vec<KeyValue> {
     match event {
         ObsEvent::TokenUsage(usage) => {
-            usage_attributes(usage.prompt_tokens, usage.completion_tokens)
+            let mut attrs =
+                usage_attributes(usage.usage.prompt_tokens, usage.usage.completion_tokens);
+            if let Some(provider) = &usage.provider {
+                attrs.push(KeyValue::new(GEN_AI_PROVIDER_NAME, provider.clone()));
+            }
+            if let Some(model) = &usage.model {
+                attrs.push(KeyValue::new(GEN_AI_REQUEST_MODEL, model.clone()));
+            }
+            if let Some(trace_id) = &usage.trace_id {
+                attrs.push(KeyValue::new(TRACE_ID_ATTR, trace_id.clone()));
+            }
+            attrs
         }
         ObsEvent::Cost(cost) => {
             let mut attrs = usage_attributes(cost.prompt_tokens, cost.completion_tokens)
@@ -439,15 +511,29 @@ fn percent_decode(input: &str) -> String {
 mod tests {
     use super::*;
     use lc_core::language_models::TokenUsage;
-    use lc_core::observability::CostEvent;
+    use lc_core::observability::{CostEvent, TokenUsageEvent};
     use opentelemetry::Value;
 
     fn token_event() -> ObsEvent {
-        ObsEvent::TokenUsage(TokenUsage {
-            prompt_tokens: 11,
-            completion_tokens: 3,
-            total_tokens: 14,
-        ..TokenUsage::default()})
+        ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 3,
+                total_tokens: 14,
+                ..TokenUsage::default()
+            },
+            trace_id: None,
+            provider: None,
+            model: None,
+        })
+    }
+
+    fn ctx_trace_id(cx: &Context) -> TraceId {
+        cx.span().span_context().trace_id()
+    }
+
+    fn ctx_parent_span_id(cx: &Context) -> SpanId {
+        cx.span().span_context().span_id()
     }
 
     fn attr<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a KeyValue> {
@@ -554,6 +640,97 @@ mod tests {
         // No provider / model on a bare token-usage event.
         assert!(attr(&attrs, GEN_AI_PROVIDER_NAME).is_none());
         assert!(attr(&attrs, GEN_AI_REQUEST_MODEL).is_none());
+    }
+
+    #[test]
+    fn token_usage_with_attribution_maps_provider_model_and_trace() {
+        let evt = ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage {
+                prompt_tokens: 11,
+                completion_tokens: 3,
+                total_tokens: 14,
+                ..TokenUsage::default()
+            },
+            trace_id: Some("run-7".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+        });
+        // Provider-carrying token events template into the span name.
+        assert_eq!(span_name_for(&evt), "llm openai");
+        let attrs = span_attributes_for(&evt);
+        assert_eq!(
+            attr(&attrs, GEN_AI_PROVIDER_NAME).unwrap().value,
+            Value::from("openai")
+        );
+        assert_eq!(
+            attr(&attrs, GEN_AI_REQUEST_MODEL).unwrap().value,
+            Value::from("gpt-4o-mini")
+        );
+        assert_eq!(
+            attr(&attrs, TRACE_ID_ATTR).unwrap().value,
+            Value::from("run-7")
+        );
+        // The meter record uses the real provider when one is present.
+        let (tokens, mattrs) = token_usage_record(&evt).unwrap();
+        assert_eq!(tokens, 14);
+        assert_eq!(
+            attr(&mattrs, GEN_AI_PROVIDER_NAME).unwrap().value,
+            Value::from("openai")
+        );
+        assert_eq!(
+            attr(&mattrs, GEN_AI_REQUEST_MODEL).unwrap().value,
+            Value::from("gpt-4o-mini")
+        );
+    }
+
+    #[test]
+    fn parent_context_for_joins_same_run_events_into_one_trace() {
+        let a = ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage::default(),
+            trace_id: Some("run-7".to_string()),
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+        });
+        let b = ObsEvent::Cost(CostEvent {
+            trace_id: Some("run-7".to_string()),
+            scope: None,
+            provider: Some("openai".to_string()),
+            model: "gpt-4o-mini".to_string(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            cost_usd: 0.0,
+        });
+        let c = ObsEvent::RunError(RunEvent {
+            trace_id: Some("run-7".to_string()),
+            provider: None,
+            model: None,
+            error: "x".to_string(),
+        });
+        let cx_a = parent_context_for(&a).expect("token event has a trace id");
+        let cx_b = parent_context_for(&b).expect("cost event has a trace id");
+        let cx_c = parent_context_for(&c).expect("run error has a trace id");
+        // All events of the same run derive the same OTel TraceId...
+        assert_eq!(ctx_trace_id(&cx_a), ctx_trace_id(&cx_b));
+        assert_eq!(ctx_trace_id(&cx_b), ctx_trace_id(&cx_c));
+        // ...and the same synthetic parent SpanId (each child gets a fresh id).
+        assert_eq!(ctx_parent_span_id(&cx_a), ctx_parent_span_id(&cx_b));
+        assert_eq!(ctx_parent_span_id(&cx_a), ctx_parent_span_id(&cx_c));
+        // A different run derives a different trace.
+        let other = parent_context_for(&ObsEvent::Cost(CostEvent {
+            trace_id: Some("run-2".to_string()),
+            scope: None,
+            provider: None,
+            model: "m".to_string(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_usd: 0.0,
+        }))
+        .expect("other run has a trace id");
+        assert_ne!(TraceId::from_bytes([0; 16]), ctx_trace_id(&cx_a));
+        assert_ne!(ctx_trace_id(&other), ctx_trace_id(&cx_a));
+        // An event carrying no trace id has no parent context.
+        assert!(parent_context_for(&ObsEvent::AgentMetrics(AgentMetrics::default())).is_none());
+        assert!(parent_context_for(&token_event()).is_none());
     }
 
     #[test]

@@ -264,6 +264,8 @@ mod tests {
         }
         // Inert without a budget or a limit.
         assert!(budget_token_gate(None, &metrics_with_tokens(101)).is_none());
-        assert!(budget_token_gate(Some(&BudgetConfig::default()), &metrics_with_tokens(101)).is_none());
+        assert!(
+            budget_token_gate(Some(&BudgetConfig::default()), &metrics_with_tokens(101)).is_none()
+        );
     }
 }

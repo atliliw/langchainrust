@@ -2,7 +2,7 @@
 //! Base callback handler trait
 
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -142,11 +142,80 @@ pub trait CallbackHandler: Send + Sync {
 pub struct CallbackManager {
     inner: Arc<CallbackManagerInner>,
     tracer: Option<Arc<Tracer>>,
-    active_trace_spans: Arc<Mutex<HashMap<String, SpanGuard>>>,
+    active_trace_spans: Arc<Mutex<ActiveSpans>>,
 }
 
 struct CallbackManagerInner {
     handlers: Vec<Arc<dyn CallbackHandler>>,
+}
+
+/// Bound on concurrently-active trace spans. The map exists to close a span at
+/// `dispatch_*_end`; a run that starts but whose paired end never dispatches
+/// (an early-returning path, a dropped future, a panic between start and end)
+/// would otherwise leak its [`SpanGuard`] here — and, because the guard pushed
+/// its id onto the tracer's span stack at start, pollute parentage for every
+/// later run. Cap-and-evict is the auto-close fallback (§3.1 / R-4): once the
+/// cap is reached, the oldest active span is force-closed (ending it and
+/// popping it off the stack) before a new one is inserted, so both the map and
+/// the span stack stay bounded no matter how many runs never end.
+const MAX_ACTIVE_TRACE_SPANS: usize = 4096;
+
+/// Run-id → active [`SpanGuard`], with FIFO insertion order so the oldest can
+/// be evicted under pressure.
+struct ActiveSpans {
+    /// Insertion order of keys currently in `map` (kept in sync on remove).
+    order: VecDeque<String>,
+    map: HashMap<String, SpanGuard>,
+}
+
+impl ActiveSpans {
+    fn new() -> Self {
+        Self {
+            order: VecDeque::with_capacity(MAX_ACTIVE_TRACE_SPANS.min(64)),
+            map: HashMap::with_capacity(16),
+        }
+    }
+
+    fn contains(&self, key: &str) -> bool {
+        self.map.contains_key(key)
+    }
+
+    /// Insert a new active guard. When at the cap, force-close the oldest span
+    /// (its `Drop` ends it and pops it off the tracer's span stack), keeping
+    /// both the map and the stack bounded.
+    fn insert(&mut self, key: String, guard: SpanGuard) {
+        while self.map.len() >= MAX_ACTIVE_TRACE_SPANS {
+            match self.order.pop_front() {
+                // Re-check: the front key may already have been ended (removed
+                // from the map); skip stale order entries.
+                Some(oldest) if self.map.contains_key(&oldest) => {
+                    if let Some(old) = self.map.remove(&oldest) {
+                        let id = old.id().to_string();
+                        // `end()` records the span and pops it off the tracer's
+                        // stack *when it is on top*. Under a pathological pile of
+                        // nested leaks the evicted span is buried, so end alone
+                        // would leave its id poisoning parentage — polypop it.
+                        old.end();
+                        crate::tracing::tracer::pop_span_id(&id);
+                    }
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        self.order.push_back(key.clone());
+        self.map.insert(key, guard);
+    }
+
+    /// Remove and return the guard for `key` (its paired `end` ran). Also
+    /// removes the key from the insertion order so eviction never targets an
+    /// already-ended span.
+    fn remove(&mut self, key: &str) -> Option<SpanGuard> {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.map.remove(key)
+    }
 }
 
 impl std::fmt::Debug for CallbackManager {
@@ -166,7 +235,7 @@ impl CallbackManager {
                 handlers: Vec::new(),
             }),
             tracer: None,
-            active_trace_spans: Arc::new(Mutex::new(HashMap::new())),
+            active_trace_spans: Arc::new(Mutex::new(ActiveSpans::new())),
         }
     }
 
@@ -218,7 +287,7 @@ impl CallbackManager {
         CallbackManager {
             inner: Arc::new(CallbackManagerInner { handlers }),
             tracer,
-            active_trace_spans: Arc::new(Mutex::new(HashMap::new())),
+            active_trace_spans: Arc::new(Mutex::new(ActiveSpans::new())),
         }
     }
 
@@ -235,14 +304,14 @@ impl CallbackManager {
             let key = run.id.to_string();
             // Check without holding the lock across span creation (start_child may do I/O
             // on the backend). Double-checked after creation to stay correct under a race.
-            if self.active_trace_spans.lock().await.contains_key(&key) {
+            if self.active_trace_spans.lock().await.contains(&key) {
                 return;
             }
             let kind = SpanKind::from(run.run_type);
             // start_child falls back to a root span when no span is active
             let guard = tracer.start_child(&run.name, kind);
             let mut spans = self.active_trace_spans.lock().await;
-            if spans.contains_key(&key) {
+            if spans.contains(&key) {
                 // A concurrent start won this round; drop this guard (closing its span)
                 // so it does not linger or pollute the stack.
                 return;
@@ -704,5 +773,82 @@ mod tests {
         let inner = spans.iter().find(|s| s.name == "inner_llm").unwrap();
         assert!(outer.parent_id.is_none());
         assert_eq!(inner.parent_id.as_deref(), Some(outer.id.as_str()));
+    }
+
+    // R-4: auto-close fallback for runs that start but never dispatch their
+    // paired end. The `active_trace_spans` table must stay bounded and the
+    // evicted (oldest) span must actually be ended so it pops off the tracer
+    // and records in the backend — not silently dropped.
+    #[test]
+    fn active_spans_evicts_oldest_unclosed_span_at_cap() {
+        use crate::tracing::tracer::clear_span_stack;
+        clear_span_stack();
+        let backend = Arc::new(InMemoryTracingBackend::new());
+        let tracer = Tracer::new(backend.clone());
+        let mut active = ActiveSpans::new();
+
+        // Insert far past the cap, never ending any guard — simulating runs
+        // whose `dispatch_*_end` never fires.
+        let total = MAX_ACTIVE_TRACE_SPANS + 20;
+        for i in 0..total {
+            let key = format!("run-{i}");
+            let guard = tracer.start_child(&key, SpanKind::Tool);
+            active.insert(key, guard);
+        }
+
+        // The table stays bounded at the cap, in both the map and the order.
+        assert_eq!(active.map.len(), MAX_ACTIVE_TRACE_SPANS);
+        assert_eq!(active.order.len(), MAX_ACTIVE_TRACE_SPANS);
+
+        // The 20 oldest spans were force-closed: ended, popped off the tracer's
+        // span stack, and recorded by the backend in FIFO order.
+        let spans = backend.spans();
+        assert_eq!(spans.len(), 20);
+        assert_eq!(spans[0].name, "run-0", "oldest span must be evicted first");
+        assert_eq!(spans[19].name, "run-19", "eviction is strictly FIFO");
+
+        // The 20 newest spans are still active and untouched.
+        assert!(active.contains(&format!("run-{}", total - 1)));
+        assert!(!active.contains("run-0"));
+
+        // The evicted spans were popped off the tracer's span stack too, so the
+        // current span is the newest (in the map), never a force-closed id.
+        assert_eq!(
+            tracer.current_span_id().as_deref(),
+            Some(format!("run-{}", total - 1).as_str())
+        );
+    }
+
+    #[test]
+    fn active_spans_remove_collapses_ended_key_from_eviction_order() {
+        use crate::tracing::tracer::clear_span_stack;
+        clear_span_stack();
+        let backend = Arc::new(InMemoryTracingBackend::new());
+        let tracer = Tracer::new(backend.clone());
+        let mut active = ActiveSpans::new();
+
+        for id in ["a", "b", "c", "d"] {
+            let guard = tracer.start_child(id, SpanKind::Tool);
+            active.insert(id.to_string(), guard);
+        }
+
+        // A paired end removes "b" from both the map and the FIFO order; a
+        // later eviction must never target an already-ended span.
+        assert!(active.remove("b").is_some());
+        assert_eq!(active.map.len(), 3);
+        assert_eq!(
+            active.order.len(),
+            3,
+            "ended key must leave the insertion order"
+        );
+        assert!(!active.contains("b"));
+        assert!(!active.order.iter().any(|k| k == "b"));
+
+        // Still correctly evicts the oldest surviving span.
+        active.insert("e".to_string(), tracer.start_child("e", SpanKind::Tool));
+        // "a" is now the oldest before "c", "d", "e" — capacity isn't hit so no
+        // eviction, but remove("b") must not have corrupted ordering.
+        assert!(active.contains("a"));
+        assert!(!active.contains("b"));
     }
 }

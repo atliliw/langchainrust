@@ -50,15 +50,21 @@ impl MetricsSink for JsonLinesSink {
 mod tests {
     use super::*;
     use lc_core::language_models::TokenUsage;
-    use lc_core::observability::AgentMetrics;
+    use lc_core::observability::{AgentMetrics, TokenUsageEvent};
     use std::time::Duration;
 
     fn token_event() -> ObsEvent {
-        ObsEvent::TokenUsage(TokenUsage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-        ..TokenUsage::default()})
+        ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+                ..TokenUsage::default()
+            },
+            trace_id: None,
+            provider: None,
+            model: None,
+        })
     }
 
     #[tokio::test]

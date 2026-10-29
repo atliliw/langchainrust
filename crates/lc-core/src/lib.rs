@@ -54,6 +54,7 @@ pub use output_parsers::{
     BaseOutputParser, CommaSeparatedListOutputParser, JsonOutputParser, OutputParserError,
     OutputParserResult, StrOutputParser, StructuredOutputParser, TypedOutputParser,
 };
+pub use prompt_cache::PromptCache;
 pub use runnables::{
     into_runnable_any, CancellationToken, LcelError, RetryConfig, RetryOn, Runnable, RunnableAny,
     RunnableAnyWrapper, RunnableAssign, RunnableBinding, RunnableBranch, RunnableConfig,
@@ -61,7 +62,6 @@ pub use runnables::{
     RunnableParallel, RunnablePassthrough, RunnablePick, RunnableRetry, RunnableSequence,
     RunnableWithFallbacks,
 };
-pub use prompt_cache::PromptCache;
 pub use sensitive::SensitiveString;
 pub use structured_output::{
     stream_structured_output, with_structured_output, JsonSchemaOutput, PartialJsonError,

@@ -5,7 +5,9 @@
 //! Works alongside `executor.rs` (struct + builder + invoke/stream entry points) and
 //! `plan.rs` (cached planning).
 
-use super::budget::{budget_cost_gate, budget_iteration_gate, budget_token_gate, budget_tool_gate};
+use super::budget::{
+    budget_cost_gate, budget_iteration_gate, budget_token_gate, budget_tool_gate, BudgetConfig,
+};
 use super::engine::{AgentExecutor, MaxIterationsPolicy};
 use super::tool_gate::{ResumeCtx, ToolGate, ToolOutcome};
 use super::tools::{denied_observation, is_non_execution_observation, tool_error_observation};
@@ -241,7 +243,15 @@ impl AgentExecutor {
                         return Err(err);
                     }
 
-                    let observations = self.execute_tools_parallel(&actions, root_run).await?;
+                    let observations = self
+                        .execute_tools_parallel(
+                            &actions,
+                            root_run,
+                            self.budget.as_ref(),
+                            loop_start,
+                            metrics.tool_calls,
+                        )
+                        .await?;
 
                     // stage-G G6 / H2: count only the batch members that actually executed;
                     // denied / not-found members never consume `max_tool_calls`.
@@ -300,9 +310,13 @@ impl AgentExecutor {
         &self,
         actions: &[AgentAction],
         root_run: &RunTree,
+        budget: Option<&BudgetConfig>,
+        loop_start: Instant,
+        base_tool_calls: usize,
     ) -> Result<Vec<String>, AgentError> {
         let gate = ToolGate::from_executor(self);
-        gate.execute_many(actions, root_run).await
+        gate.execute_many(actions, root_run, budget, loop_start, base_tool_calls)
+            .await
     }
 
     /// Executes a single tool with optional cross-process resume integration.

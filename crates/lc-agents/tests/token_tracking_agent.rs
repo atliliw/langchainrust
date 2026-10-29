@@ -120,7 +120,8 @@ async fn tracked_llm_plugs_into_function_calling_agent_and_counts() {
             prompt_tokens: 100,
             completion_tokens: 25,
             total_tokens: 125,
-        ..TokenUsage::default()},
+            ..TokenUsage::default()
+        },
         content: "final answer".to_string(),
     };
     let tracked = TokenTrackingLLM::new(mock, Arc::new(CharRatioCounter::new(4)));

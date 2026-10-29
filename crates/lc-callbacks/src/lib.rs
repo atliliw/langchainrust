@@ -51,9 +51,9 @@ pub mod tracing;
 pub use base::{CallbackHandler, CallbackManager};
 pub use circuit_breaker::{BreakerStatus, CircuitBreaker};
 pub use export::{
-    hmac_sha256_hex, sha256_hex, sign_payload, BatchExporter, BatchSink, EdgeBuffer, ExportError,
-    ExportEvent, FlushOutcome, LangfuseConfig, LangfuseError, LangfuseSignature, LangfuseSink,
-    RetryPolicy, DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_ENTRIES, TRACE_EVENT_KIND, trace_event,
+    hmac_sha256_hex, sha256_hex, sign_payload, trace_event, BatchExporter, BatchSink, EdgeBuffer,
+    ExportError, ExportEvent, FlushOutcome, LangfuseConfig, LangfuseError, LangfuseSignature,
+    LangfuseSink, RetryPolicy, DEFAULT_BATCH_SIZE, DEFAULT_BUFFER_ENTRIES, TRACE_EVENT_KIND,
 };
 #[cfg(feature = "opentelemetry")]
 pub use handlers::OtelHandler;

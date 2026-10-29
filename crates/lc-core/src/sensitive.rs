@@ -131,7 +131,10 @@ mod tests {
         let debug = format!("{secret:?}");
         let display = format!("{secret}");
         assert!(!debug.contains("super-secret"), "debug leaked: {debug}");
-        assert!(!display.contains("super-secret"), "display leaked: {display}");
+        assert!(
+            !display.contains("super-secret"),
+            "display leaked: {display}"
+        );
         assert_eq!(debug, "SensitiveString(***)");
         assert_eq!(display, "***");
     }

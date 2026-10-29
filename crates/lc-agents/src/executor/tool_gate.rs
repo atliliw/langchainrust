@@ -42,11 +42,16 @@
 //! error does abort a batch, observations already collected from completed
 //! siblings are preserved in `AgentError::BatchAborted::partial` (stage-G G3).
 
+use super::budget::{budget_tool_gate, BudgetConfig};
 use super::engine::AgentExecutor;
-use super::tools::{denied_observation, run_tool_with_timeout, tool_error_observation, wrap_tool_output};
+use super::tools::{
+    denied_observation, is_non_execution_observation, run_tool_with_timeout,
+    tool_error_observation, wrap_tool_output,
+};
 use super::AgentError;
 use crate::approval::{ApprovalDecision, ApprovalHandler};
 use crate::hooks::{AgentHook, ToolCallAction, ToolCallContext, ToolResultContext};
+use crate::metrics::AgentMetrics;
 use crate::policy::ToolPolicy;
 use crate::resume::{PendingApproval, ResumeStore};
 use crate::types::{AgentAction, ToolInput};
@@ -89,6 +94,23 @@ pub(crate) struct ResumeCtx<'a> {
 /// The index reorders observations back into action order; the inner `Result` is
 /// the tool's own outcome (its `AgentError`), the outer one is the task wrapper.
 type BatchJoinOutput = Result<(usize, Result<String, AgentError>), AgentError>;
+
+/// stage-G G3 / R-1: preserve the observations already collected from completed
+/// siblings when a parallel batch is aborted (framework hard error or the
+/// mid-batch `max_tool_calls` recheck), instead of discarding them. Only
+/// `Ok`/`ToolExecutionError`/`ToolNotFound` members carry an observation; a
+/// hard error member yields nothing (its cause is the batch's abort reason).
+fn collect_partial(results: &[(usize, Result<String, AgentError>)]) -> Vec<String> {
+    results
+        .iter()
+        .filter_map(|(_, rr)| match rr {
+            Ok(o) => Some(o.clone()),
+            Err(e @ AgentError::ToolExecutionError(_)) => Some(tool_error_observation(e)),
+            Err(AgentError::ToolNotFound(name)) => Some(format!("[Tool not found: {name}]")),
+            _ => None,
+        })
+        .collect()
+}
 
 /// Applies an approval decision to `tool_ctx`; returns `Some(reason)` for Deny.
 fn apply_approval_decision(
@@ -439,10 +461,24 @@ impl ToolGate {
     ///   pointlessly. The hard error is returned.
     ///
     /// Concurrency is capped by the gate's shared semaphore.
+    ///
+    /// `budget` / `loop_start` / `base_tool_calls` enable the R-1 mid-batch budget
+    /// recheck: the pre-launch gate in `agent_loop.rs` only verifies the batch *start*
+    /// is under `max_tool_calls`, so a batch of `N` in-flight tools could all execute
+    /// even when the limit allows far fewer. As each member completes, its *executed*
+    /// count (tool ran — a `Deny` / `ToolNotFound` / `Skip` / Rule-of-Two block does not
+    /// count) is added to `base_tool_calls` and re-gated. When the cumulative count
+    /// reaches `max_tool_calls`, the remaining in-flight members are aborted so the
+    /// batch never exceeds the budget — order of completion, not spawn order, decides
+    /// who survives.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn execute_many(
         &self,
         actions: &[AgentAction],
         root_run: &RunTree,
+        budget: Option<&BudgetConfig>,
+        loop_start: Instant,
+        base_tool_calls: usize,
     ) -> Result<Vec<String>, AgentError> {
         let sem = self.concurrency.clone();
         // Shared parent for the spawned tasks. `RunTree::create_child` takes `&self`,
@@ -477,6 +513,11 @@ impl ToolGate {
 
         let mut results: Vec<(usize, Result<String, AgentError>)> =
             Vec::with_capacity(actions.len());
+        // R-1: how many tools in THIS batch have actually executed so far. A
+        // `Deny` / `ToolNotFound` / `Skip` / Rule-of-Two block is a non-execution:
+        // it must not consume `max_tool_calls` (same H2 semantics as the sequential
+        // gate).
+        let mut batch_executed: usize = 0;
         while let Some(outcome) = set.join_next().await {
             let (idx, r) = match outcome {
                 Ok(Ok(pair)) => pair,
@@ -501,28 +542,38 @@ impl ToolGate {
                     results.push((idx, r));
                 }
                 Err(_) => {
+                    let partial = collect_partial(&results);
                     set.abort_all();
-                    // stage-G G3: don't silently discard already-completed siblings;
-                    // carry their observations so the caller can surface them.
-                    let partial = results
-                        .iter()
-                        .filter_map(|(_, rr)| match rr {
-                            Ok(o) => Some(o.clone()),
-                            Err(e @ AgentError::ToolExecutionError(_)) => {
-                                Some(tool_error_observation(e))
-                            }
-                            Err(AgentError::ToolNotFound(name)) => {
-                                Some(format!("[Tool not found: {name}]"))
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
                     return Err(AgentError::BatchAborted {
                         cause: Box::new(r.unwrap_err()),
                         partial,
                     });
                 }
-                Ok(_) => results.push((idx, r)),
+                Ok(_) => {
+                    // A completed member whose observation is a real execution
+                    // consumes a budget slot; a `Deny`/`ToolNotFound`/`Skip`/block
+                    // does not. Re-gate after the completion (not just at launch) so
+                    // an overloaded batch can never sneak past the cap.
+                    if !is_non_execution_observation(&r.as_ref().unwrap()) {
+                        batch_executed += 1;
+                    }
+                    results.push((idx, r));
+                    if let Some(err) = budget_tool_gate(
+                        budget,
+                        &AgentMetrics {
+                            tool_calls: base_tool_calls + batch_executed,
+                            ..Default::default()
+                        },
+                        loop_start,
+                    ) {
+                        let partial = collect_partial(&results);
+                        set.abort_all();
+                        return Err(AgentError::BatchAborted {
+                            cause: Box::new(err),
+                            partial,
+                        });
+                    }
+                }
             }
         }
 

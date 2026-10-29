@@ -16,6 +16,7 @@
 //! let vec = embedder.embed_query("hello world").await?;
 //! ```
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -27,32 +28,76 @@ use crate::{EmbeddingError, Embeddings};
 ///
 /// Wraps the `fastembed::TextEmbedding` ONNX Runtime engine.
 ///
-/// ## §3.4 — why this is a single global lock (deliberate serialization tradeoff)
+/// ## §3.4 / R-5 — bounded worker pool instead of a single global lock
 ///
-/// All concurrent embeddings share one `Arc<Mutex<TextEmbedding>>` and serialize on it. That
-/// is accepted deliberately because the alternatives are not viable here:
+/// `TextEmbedding::embed` needs `&mut self` and is not `Clone`, so parallel inference
+/// requires *independent* pre-constructed model instances — reconstructing one per request is
+/// not viable (`TextEmbedding::try_new` resolves the model repo, reads the `.onnx` weights and
+/// builds an ONNX session, and loads the tokenizer; doing that per call costs more than the
+/// lock it replaces). Previously every call shared one `Arc<Mutex<TextEmbedding>>` and
+/// serialized, losing all cross-call concurrency.
 ///
-/// - **per-request instances are not lightweight.** `TextEmbedding::try_new` resolves the
-///   model repo (first use can download via hf-hub), reads the `.onnx` weight file and
-///   `commit_from_file`s an ONNX session, and loads the tokenizer. Reconstructing that for
-///   every call — especially in a hot batch path — would cost more than the lock it replaces.
-/// - **no cheap clone.** `fastembed::TextEmbedding` is not `Clone`, so there is no
-///   Arc-session clone to hand to each task.
-/// - **`embed(&mut self)` is exclusive.** The engine needs `&mut self` (and is not `Sync`), so
-///   independent instances are the *only* way to run inference in parallel, and they are
-///   ruled out above.
-///
-/// Each `embed_documents` call already batches its whole input under a single lock acquisition,
-/// so parallelism is lost only *across* distinct concurrent calls — the documented tradeoff.
-/// A future pool of pre-constructed models (`Arc<Mutex<TextEmbedding>>` per worker) could
-/// recover cross-call concurrency without reloading per request; wiring it in would keep the
-/// public API unchanged.
+/// Instead this holds a **pool** of pre-constructed workers (`Arc<Mutex<TextEmbedding>>` each),
+/// gated by a [`Semaphore`](tokio::sync::Semaphore). Each embedding call reserves one worker
+/// for the duration of its blocked inference, so up to `pool_size` independent calls run
+/// concurrently while each batch still processes whole under a single lock. The public API is
+/// unchanged: the plain constructors keep a default pool of `1` (identical memory footprint to
+/// the old single-lock behavior) and [`with_pool_size`](Self::with_pool_size) opts into
+/// concurrency — each extra worker costs one more loaded model, so raise it deliberately.
 pub struct FastEmbedEmbeddings {
-    // `TextEmbedding::embed` 需要 `&mut self`,而 `Embeddings` trait 方法只给 `&self`;
-    // 用 `Arc<Mutex<>>` 提供内部可变性,并让 `spawn_blocking` 能以 `'static` 捕获模型。
-    model: Arc<Mutex<TextEmbedding>>,
+    pool: Arc<ModelPool>,
     model_name: String,
     dimension: usize,
+}
+
+/// A bounded set of pre-constructed FastEmbed workers, guarded by a semaphore so at most
+/// `pool_size` embeddings are in flight at once and every live call has its own worker.
+struct ModelPool {
+    /// Bounds concurrent embeddings at `pool_size` (default `DEFAULT_POOL_SIZE`).
+    sem: Arc<tokio::sync::Semaphore>,
+    /// Idle workers ready to be claimed by an embedding call.
+    free: Arc<Mutex<VecDeque<Arc<Mutex<TextEmbedding>>>>>,
+}
+
+impl ModelPool {
+    fn new(workers: Vec<Arc<Mutex<TextEmbedding>>>) -> Self {
+        let size = workers.len();
+        let free = Arc::new(Mutex::new(workers.into()));
+        Self {
+            sem: Arc::new(tokio::sync::Semaphore::new(size)),
+            free,
+        }
+    }
+
+    /// Claim an idle worker. The caller must already hold a semaphore permit, so an idle
+    /// worker is guaranteed to exist (concurrency never exceeds `pool_size`).
+    fn take_worker(&self) -> Result<PooledModel, EmbeddingError> {
+        let mut free = self.free.lock().map_err(|e| {
+            EmbeddingError::ApiError(format!("FastEmbed pool lock poisoned: {}", e))
+        })?;
+        let worker = free.pop_back().ok_or_else(|| {
+            EmbeddingError::ApiError("FastEmbed pool exhausted (invariant broken)".to_string())
+        })?;
+        Ok(PooledModel {
+            free: Arc::clone(&self.free),
+            worker,
+        })
+    }
+}
+
+/// RAII claim on one pooled worker: returns the worker to the idle queue on drop (even on
+/// error / poisoning), so a worker is never leaked out of the pool.
+struct PooledModel {
+    free: Arc<Mutex<VecDeque<Arc<Mutex<TextEmbedding>>>>>,
+    worker: Arc<Mutex<TextEmbedding>>,
+}
+
+impl Drop for PooledModel {
+    fn drop(&mut self) {
+        if let Ok(mut free) = self.free.lock() {
+            free.push_back(self.worker.clone());
+        }
+    }
 }
 
 impl std::fmt::Debug for FastEmbedEmbeddings {
@@ -64,21 +109,45 @@ impl std::fmt::Debug for FastEmbedEmbeddings {
     }
 }
 
+/// Default worker count for the plain constructors: `1`, identical to the legacy single-lock
+/// behavior. Each worker loads its own model session, so raising it multiplies resident memory.
+const DEFAULT_POOL_SIZE: usize = 1;
+
 impl FastEmbedEmbeddings {
     /// Creates a new FastEmbedEmbeddings with the given init options.
     pub fn new(options: TextInitOptions) -> Result<Self, EmbeddingError> {
+        Self::with_pool_size(DEFAULT_POOL_SIZE, options)
+    }
+
+    /// Creates a new FastEmbedEmbeddings with `pool_size` pre-constructed model workers
+    /// (R-5). `pool_size` concurrent embedding calls then run in parallel instead of
+    /// serializing on one global lock. Each worker is an independent ONNX session + tokenizer,
+    /// so memory scales with `pool_size` — start small and measure.
+    pub fn with_pool_size(
+        pool_size: usize,
+        options: TextInitOptions,
+    ) -> Result<Self, EmbeddingError> {
+        if pool_size == 0 {
+            return Err(EmbeddingError::ApiError(
+                "FastEmbed pool size must be >= 1".to_string(),
+            ));
+        }
         // P1-7: model_name 存用户友好名称（如 "BGE-small-en-v1.5"），
         // 而非内部 Debug 标识（如 "BGESmallENV15"）。
         let model_name = Self::friendly_model_name(options.model_name.clone()).to_string();
         // P1-2: 维度未知即报错，不得回落默认 384 撒谎。
         let dimension = Self::infer_dimension(options.model_name.clone())?;
 
-        let model = TextEmbedding::try_new(options).map_err(|e| {
-            EmbeddingError::ApiError(format!("Failed to initialize FastEmbed model: {}", e))
-        })?;
+        let mut workers = Vec::with_capacity(pool_size);
+        for _ in 0..pool_size {
+            let model = TextEmbedding::try_new(options.clone()).map_err(|e| {
+                EmbeddingError::ApiError(format!("Failed to initialize FastEmbed model: {e}"))
+            })?;
+            workers.push(Arc::new(Mutex::new(model)));
+        }
 
         Ok(Self {
-            model: Arc::new(Mutex::new(model)),
+            pool: Arc::new(ModelPool::new(workers)),
             model_name,
             dimension,
         })
@@ -206,32 +275,49 @@ impl Embeddings for FastEmbedEmbeddings {
         }
 
         let text = text.to_string();
-        let model = Arc::clone(&self.model);
+        let pool = Arc::clone(&self.pool);
         // §4 (return-side): the model's dimension comes from the static
         // `infer_dimension` table; the ONNX runtime's actual output width must be
         // checked against it rather than trusted.
         let expected_dim = self.dimension;
 
-        tokio::task::spawn_blocking(move || -> Result<Vec<f32>, EmbeddingError> {
-            let mut model = model.lock().map_err(|e| {
-                EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
-            })?;
-            let result = model.embed(vec![text.as_str()], None).map_err(|e| {
-                EmbeddingError::ApiError(format!("FastEmbed inference failed: {}", e))
-            })?;
+        // R-5: reserve a pool permit *before* the blocking task (the semaphore is async, so it
+        // cannot be awaited inside `spawn_blocking`). The permit guarantees `take_worker` finds
+        // an idle worker and bounds total concurrent embeddings at `pool_size`.
+        let permit = Arc::clone(&pool.sem)
+            .acquire_owned()
+            .await
+            .map_err(|e| EmbeddingError::ApiError(format!("FastEmbed pool closed: {}", e)))?;
 
-            let mut embedding = result
-                .first()
-                .ok_or_else(|| EmbeddingError::ApiError("No embedding returned".to_string()))?
-                .clone();
-            // §3.1: returned width must equal the static-model-table dimension.
-            crate::ensure_dimension(&embedding, expected_dim)?;
-            // A12: uniform L2 normalization, matching every other backend (P2-8).
-            crate::l2_normalize(&mut embedding);
-            Ok(embedding)
-        })
-        .await
-        .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?
+        let embedding_result =
+            tokio::task::spawn_blocking(move || -> Result<Vec<f32>, EmbeddingError> {
+                // Claim an idle worker (permit held ⇒ available). Dropping `claim` at the end of
+                // the closure returns the worker to the pool even on the `?` error paths below.
+                let claim = pool.take_worker()?;
+                let mut model = claim.worker.lock().map_err(|e| {
+                    EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
+                })?;
+                let result = model.embed(vec![text.as_str()], None).map_err(|e| {
+                    EmbeddingError::ApiError(format!("FastEmbed inference failed: {}", e))
+                })?;
+                drop(model);
+
+                let mut embedding = result
+                    .first()
+                    .ok_or_else(|| EmbeddingError::ApiError("No embedding returned".to_string()))?
+                    .clone();
+                // §3.1: returned width must equal the static-model-table dimension.
+                crate::ensure_dimension(&embedding, expected_dim)?;
+                // A12: uniform L2 normalization, matching every other backend (P2-8).
+                crate::l2_normalize(&mut embedding);
+                Ok(embedding)
+            })
+            .await
+            .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?;
+
+        // Return the permit once inference is done, releasing pool capacity.
+        drop(permit);
+        embedding_result
     }
 
     async fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
@@ -244,13 +330,22 @@ impl Embeddings for FastEmbedEmbeddings {
         }
 
         let text_vec: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-        let model = Arc::clone(&self.model);
+        let pool = Arc::clone(&self.pool);
         // §4 (return-side): same width check as embed_query — the static table's
         // dimension is separate from what the ONNX model actually emits.
         let expected_dim = self.dimension;
 
-        tokio::task::spawn_blocking(move || {
-            let mut model = model.lock().map_err(|e| {
+        // R-5: reserve a pool permit before the blocking task (see `embed_query`).
+        let permit = Arc::clone(&pool.sem)
+            .acquire_owned()
+            .await
+            .map_err(|e| EmbeddingError::ApiError(format!("FastEmbed pool closed: {}", e)))?;
+
+        let batch_result = tokio::task::spawn_blocking(move || {
+            // Claim an idle worker; returning `claim` at the end rebuilds it into the pool on
+            // every path (including `?`).
+            let claim = pool.take_worker()?;
+            let mut model = claim.worker.lock().map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed model lock poisoned: {}", e))
             })?;
             // 批次大小从源 Vec 取:新版 fastembed 的 `embed` 按值消费迭代器
@@ -261,6 +356,7 @@ impl Embeddings for FastEmbedEmbeddings {
             let result = model.embed(str_vec, None).map_err(|e| {
                 EmbeddingError::ApiError(format!("FastEmbed batch inference failed: {}", e))
             })?;
+            drop(model);
 
             // 0.21.0 BUG-2 (P0-1 alignment contract): provider 返回的向量数与
             // 请求批次数不符必须显式报错，禁止静默返回对齐错误的向量。
@@ -282,7 +378,10 @@ impl Embeddings for FastEmbedEmbeddings {
             Self::aligned_batch(normalized, expected)
         })
         .await
-        .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?
+        .map_err(|e| EmbeddingError::ApiError(format!("Task execution failed: {}", e)))?;
+
+        drop(permit);
+        batch_result
     }
 
     fn dimension(&self) -> usize {
@@ -383,6 +482,20 @@ mod tests {
         assert_eq!(
             FastEmbedEmbeddings::friendly_model_name(EmbeddingModel::SnowflakeArcticEmbedMLong),
             "snowflake-arctic-embed-m-long"
+        );
+    }
+
+    /// R-5: a pool of zero workers is rejected up front, before any model load.
+    #[test]
+    fn test_with_pool_size_zero_rejected() {
+        let err = FastEmbedEmbeddings::with_pool_size(
+            0,
+            TextInitOptions::new(EmbeddingModel::BGESmallENV15),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, EmbeddingError::ApiError(_)),
+            "pool size 0 must be rejected without loading a model"
         );
     }
 

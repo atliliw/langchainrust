@@ -20,10 +20,10 @@ use crate::hooks::{HookError, StreamAction};
 use crate::metrics::AgentMetrics;
 use crate::streaming::state::AgentStreamEvent;
 use crate::types::{AgentOutput, AgentStep, ToolInput};
-use lc_memory::BaseMemory;
 use futures_util::Stream;
 use lc_callbacks::{semconv::GEN_AI_OPERATION_NAME, CallbackManager, RunTree, RunType};
 use lc_core::observability::{MetricsSink, ObsEvent};
+use lc_memory::BaseMemory;
 use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
@@ -222,7 +222,8 @@ impl AgentExecutor {
                     Ok(vars) => vars,
                     Err(e) => {
                         let msg = format!("Failed to load memory: {e}");
-                        emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                        emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg)
+                            .await;
                         for hook in &hooks {
                             hook.on_error(&HookError::Other(msg.clone()));
                         }
@@ -274,7 +275,14 @@ impl AgentExecutor {
                 if let Some(err) =
                     budget_iteration_gate(budget.as_ref(), max_iterations, iteration, loop_start)
                 {
-                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
+                    emit_stream_failure(
+                        &callbacks,
+                        &mut root_run,
+                        &memory,
+                        &inputs,
+                        &err.to_string(),
+                    )
+                    .await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
@@ -346,7 +354,8 @@ impl AgentExecutor {
                         Ok(o) => o,
                         Err(e) => {
                             let msg = e.to_string();
-                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg)
+                                .await;
                             for hook in &hooks {
                                 hook.on_error(&HookError::Other(msg.clone()));
                             }
@@ -368,7 +377,14 @@ impl AgentExecutor {
                 // Budget gate: cumulative tokens after the LLM call. Over the limit →
                 // send Err and stop.
                 if let Some(err) = budget_token_gate(budget.as_ref(), &metrics) {
-                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
+                    emit_stream_failure(
+                        &callbacks,
+                        &mut root_run,
+                        &memory,
+                        &inputs,
+                        &err.to_string(),
+                    )
+                    .await;
                     publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                     let _ = tx.send(Err(err)).await;
                     return;
@@ -381,7 +397,14 @@ impl AgentExecutor {
                     if let Some(err) =
                         budget_cost_gate(budget.as_ref(), tracker.run_cost_usd(&scope).await)
                     {
-                        emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
+                        emit_stream_failure(
+                            &callbacks,
+                            &mut root_run,
+                            &memory,
+                            &inputs,
+                            &err.to_string(),
+                        )
+                        .await;
                         publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                         let _ = tx.send(Err(err)).await;
                         return;
@@ -451,7 +474,14 @@ impl AgentExecutor {
                         if let Some(policy) = &tool_policy {
                             if let Err(e) = policy.check(&action.tool) {
                                 let msg = e.to_string();
-                                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                                emit_stream_failure(
+                                    &callbacks,
+                                    &mut root_run,
+                                    &memory,
+                                    &inputs,
+                                    &msg,
+                                )
+                                .await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -479,7 +509,14 @@ impl AgentExecutor {
                         // executed-only (no pre-increment), so a denied / not-found call
                         // never trips the gate prematurely.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
+                            emit_stream_failure(
+                                &callbacks,
+                                &mut root_run,
+                                &memory,
+                                &inputs,
+                                &err.to_string(),
+                            )
+                            .await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -524,7 +561,14 @@ impl AgentExecutor {
                                 }
                                 Err(e) => {
                                     let msg = e.to_string();
-                                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                                    emit_stream_failure(
+                                        &callbacks,
+                                        &mut root_run,
+                                        &memory,
+                                        &inputs,
+                                        &msg,
+                                    )
+                                    .await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -559,7 +603,14 @@ impl AgentExecutor {
                             for action in &actions {
                                 if let Err(e) = policy.check(&action.tool) {
                                     let msg = e.to_string();
-                                    emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                                    emit_stream_failure(
+                                        &callbacks,
+                                        &mut root_run,
+                                        &memory,
+                                        &inputs,
+                                        &msg,
+                                    )
+                                    .await;
                                     publish_metrics(
                                         &metrics,
                                         &metrics_store,
@@ -578,7 +629,14 @@ impl AgentExecutor {
                         // batch whose denied / not-found members would be refunded does
                         // not trip the gate before anything runs.
                         if let Some(err) = budget_tool_gate(budget.as_ref(), &metrics, loop_start) {
-                            emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &err.to_string()).await;
+                            emit_stream_failure(
+                                &callbacks,
+                                &mut root_run,
+                                &memory,
+                                &inputs,
+                                &err.to_string(),
+                            )
+                            .await;
                             publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start)
                                 .await;
                             let _ = tx.send(Err(err)).await;
@@ -607,7 +665,16 @@ impl AgentExecutor {
                             return;
                         }
 
-                        let observations = match gate.execute_many(&actions, &root_run).await {
+                        let observations = match gate
+                            .execute_many(
+                                &actions,
+                                &root_run,
+                                budget.as_ref(),
+                                loop_start,
+                                metrics.tool_calls,
+                            )
+                            .await
+                        {
                             Ok(obs) => obs,
                             // A-H1 (0.20.0) / B5: a framework guardrail in any one tool
                             // of the batch ends the stream hard (batch aborted, matching
@@ -628,7 +695,14 @@ impl AgentExecutor {
                                         }))
                                         .await;
                                 }
-                                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, &msg).await;
+                                emit_stream_failure(
+                                    &callbacks,
+                                    &mut root_run,
+                                    &memory,
+                                    &inputs,
+                                    &msg,
+                                )
+                                .await;
                                 publish_metrics(
                                     &metrics,
                                     &metrics_store,
@@ -673,7 +747,14 @@ impl AgentExecutor {
                 on_max_iterations
             );
             if on_max_iterations == MaxIterationsPolicy::Error {
-                emit_stream_failure(&callbacks, &mut root_run, &memory, &inputs, "max iterations reached").await;
+                emit_stream_failure(
+                    &callbacks,
+                    &mut root_run,
+                    &memory,
+                    &inputs,
+                    "max iterations reached",
+                )
+                .await;
                 publish_metrics(&metrics, &metrics_store, &metrics_sink, loop_start).await;
                 let _ = tx.send(Err(AgentError::MaxIterationsReached)).await;
                 return;

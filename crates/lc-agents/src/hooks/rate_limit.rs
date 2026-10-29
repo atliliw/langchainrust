@@ -176,7 +176,8 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 20,
                 total_tokens: 30,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
         };
         hook.on_after_completion(&mut result).unwrap();
         assert_eq!(hook.tokens_used(), 30);
@@ -213,7 +214,8 @@ mod tests {
                 prompt_tokens: 0,
                 completion_tokens: 90,
                 total_tokens: 90,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
         };
         hook.on_after_completion(&mut result).unwrap();
         let action = hook.on_before_completion(&mut completion_ctx("a long enough message"));

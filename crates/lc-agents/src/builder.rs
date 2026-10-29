@@ -138,12 +138,10 @@ impl AgentBuilder {
             AgentError::Other("AgentBuilder: LLM is required. Call .llm() first.".into())
         })?;
 
-        Ok(FunctionCallingAgent::from_arc(
-            llm,
-            self.tools,
-            self.system_prompt,
+        Ok(
+            FunctionCallingAgent::from_arc(llm, self.tools, self.system_prompt)
+                .with_max_iterations(self.max_iterations),
         )
-        .with_max_iterations(self.max_iterations))
     }
 
     /// Builds and wraps as `Arc<dyn BaseAgent>` for direct use with `AgentExecutor`
@@ -291,8 +289,7 @@ mod tests {
             .max_iterations(5)
             .build()
             .unwrap();
-        let executor = AgentExecutor::new(Arc::new(agent), Vec::new())
-            .with_max_iterations(20);
+        let executor = AgentExecutor::new(Arc::new(agent), Vec::new()).with_max_iterations(20);
         assert_eq!(executor.max_iterations(), 20);
     }
 }

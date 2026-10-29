@@ -408,11 +408,7 @@ impl<P: AgenticPlanner> AgenticRetriever<P> {
     /// ([`AgenticTermination::Sufficient`]), when a round yields no hits at all
     /// ([`AgenticTermination::NoHits`]), or at `max_rounds`
     /// ([`AgenticTermination::MaxRoundsReached`]).
-    pub async fn retrieve(
-        &self,
-        query: &str,
-        k: usize,
-    ) -> Result<AgenticRetrieval, AgenticError> {
+    pub async fn retrieve(&self, query: &str, k: usize) -> Result<AgenticRetrieval, AgenticError> {
         let mut round_query = query.trim().to_string();
         let mut accumulated: Vec<SearchResult> = Vec::new();
         let mut trace: Vec<AgenticRound> = Vec::new();
@@ -597,14 +593,9 @@ impl<M: BaseChatModel> AgenticPlanner for LlmAgenticPlanner<M> {
         round: usize,
     ) -> Result<RetrievalPlan, AgenticError> {
         let messages = vec![Message::human(self.build_prompt(query, evidence, round))];
-        structured_call(
-            &*self.llm,
-            Self::plan_tool(),
-            messages,
-            parse_plan_fallback,
-        )
-        .await
-        .map_err(|e| AgenticError::Planner(e.to_string()))
+        structured_call(&*self.llm, Self::plan_tool(), messages, parse_plan_fallback)
+            .await
+            .map_err(|e| AgenticError::Planner(e.to_string()))
     }
 }
 

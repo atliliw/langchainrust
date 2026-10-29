@@ -88,10 +88,7 @@ impl EdgeBuffer {
 
     /// Number of batches discarded so far because the queue was full.
     pub fn dropped(&self) -> u64 {
-        self.state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .dropped
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).dropped
     }
 
     /// Append one batch, dropping the oldest batch when the queue is full.
@@ -104,7 +101,9 @@ impl EdgeBuffer {
             state.next_seq += 1;
             seq
         };
-        let path = self.dir.join(format!("{FILE_PREFIX}{seq:020}{FILE_SUFFIX}"));
+        let path = self
+            .dir
+            .join(format!("{FILE_PREFIX}{seq:020}{FILE_SUFFIX}"));
         std::fs::write(&path, &bytes)
             .map_err(|e| ExportError::Io(format!("write {}: {e}", path.display())))?;
         self.enforce_capacity()
@@ -296,14 +295,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let buffer = EdgeBuffer::open(dir.path(), 8).unwrap();
         buffer.push(&batch(&["good"])).unwrap();
-        std::fs::write(dir.path().join("batch-00000000000000000099.json"), b"{not json").unwrap();
+        std::fs::write(
+            dir.path().join("batch-00000000000000000099.json"),
+            b"{not json",
+        )
+        .unwrap();
 
         let queued = buffer.batches().unwrap();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].1[0].id, "good");
-        assert!(!dir
-            .path()
-            .join("batch-00000000000000000099.json")
-            .exists());
+        assert!(!dir.path().join("batch-00000000000000000099.json").exists());
     }
 }

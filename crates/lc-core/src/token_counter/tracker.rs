@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::language_models::{BaseLanguageModel, LLMResult, StreamChunk, TokenUsage};
-use crate::observability::{MetricsSink, ObsEvent};
+use crate::observability::{MetricsSink, ObsEvent, TokenUsageEvent};
 use crate::runnables::Runnable;
 use crate::runnables::{RUN_META_COST_SCOPE, RUN_META_TRACE_ID};
 use crate::tools::ToolDefinition;
@@ -148,14 +148,18 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
 
         self.usage.lock().await.add(prompt, completion);
 
+        // Model the call is attributed to (reported by the model, else the
+        // configured model name); shared by cost attribution and the exported
+        // token-usage event.
+        let model = if result.model.is_empty() {
+            self.llm.model_name().to_string()
+        } else {
+            result.model.clone()
+        };
+
         // B3: price the call on the shared tracker (no-op without a tracker;
         // unpriced models aggregate tokens/calls at zero cost).
         if let Some(tracker) = &self.cost_tracker {
-            let model = if result.model.is_empty() {
-                self.llm.model_name().to_string()
-            } else {
-                result.model.clone()
-            };
             // P0-5: attribute to the enclosing run's cost scope when the config
             // carries one, so concurrent runs sharing this tracker don't bleed
             // spend into each other's incremental budget.
@@ -174,15 +178,21 @@ impl<L: BaseChatModel> TokenTrackingLLM<L> {
         // v0.20.2: export a TokenUsage event once counted (real or estimate).
         // Failure is only warned — never propagated to the caller.
         if let Some(sink) = &self.metrics_sink {
-            let evt = ObsEvent::TokenUsage(TokenUsage {
-                prompt_tokens: prompt,
-                completion_tokens: completion,
-                total_tokens: result
-                    .token_usage
-                    .as_ref()
-                    .map(|u| u.total_tokens)
-                    .unwrap_or(prompt + completion),
-            ..TokenUsage::default()});
+            let evt = ObsEvent::TokenUsage(TokenUsageEvent {
+                usage: TokenUsage {
+                    prompt_tokens: prompt,
+                    completion_tokens: completion,
+                    total_tokens: result
+                        .token_usage
+                        .as_ref()
+                        .map(|u| u.total_tokens)
+                        .unwrap_or(prompt + completion),
+                    ..TokenUsage::default()
+                },
+                trace_id: trace_id.clone(),
+                provider: self.provider.clone(),
+                model: Some(model),
+            });
             if let Err(e) = sink.export(&evt).await {
                 log::warn!(target: "lc_core::token_counter", "token usage export failed: {e}");
             }
@@ -361,7 +371,12 @@ where
                                 .await;
                         }
                         if let Some(sink) = &sink {
-                            let evt = ObsEvent::TokenUsage(u.clone());
+                            let evt = ObsEvent::TokenUsage(TokenUsageEvent {
+                                usage: u.clone(),
+                                trace_id: trace_id.clone(),
+                                provider: provider.clone(),
+                                model: Some(model_name.clone()),
+                            });
                             if let Err(e) = sink.export(&evt).await {
                                 log::warn!(target: "lc_core::token_counter", "token usage export failed: {e}");
                             }
@@ -587,7 +602,8 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 20,
                 total_tokens: 120,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             false,
         );
         let msgs = vec![Message::human("hi")];
@@ -609,7 +625,8 @@ mod tests {
                 prompt_tokens: 7,
                 completion_tokens: 3,
                 total_tokens: 10,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             false,
         );
         let model: &dyn BaseChatModel<Error = MockError> = &tracked;
@@ -644,7 +661,8 @@ mod tests {
                 prompt_tokens: 50,
                 completion_tokens: 15,
                 total_tokens: 65,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
@@ -670,7 +688,8 @@ mod tests {
                 prompt_tokens: 5,
                 completion_tokens: 5,
                 total_tokens: 10,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
@@ -696,7 +715,8 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 4,
                 total_tokens: 14,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             true,
         );
 
@@ -736,7 +756,8 @@ mod tests {
                 prompt_tokens: 3,
                 completion_tokens: 1,
                 total_tokens: 4,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             false,
         );
         let tracked = tracked.with_temperature(0.5).with_max_tokens(128);
@@ -778,7 +799,8 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 20,
                 total_tokens: 120,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             tool_capable,
         )
         .with_metrics_sink(Arc::new(MockSink {
@@ -802,9 +824,9 @@ mod tests {
         assert_eq!(captured.len(), 1);
         match &captured[0] {
             ObsEvent::TokenUsage(u) => {
-                assert_eq!(u.prompt_tokens, 100);
-                assert_eq!(u.completion_tokens, 20);
-                assert_eq!(u.total_tokens, 120);
+                assert_eq!(u.usage.prompt_tokens, 100);
+                assert_eq!(u.usage.completion_tokens, 20);
+                assert_eq!(u.usage.total_tokens, 120);
             }
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
@@ -821,7 +843,8 @@ mod tests {
                 prompt_tokens: 50,
                 completion_tokens: 15,
                 total_tokens: 65,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
@@ -841,7 +864,7 @@ mod tests {
         let captured = events.lock().await;
         assert_eq!(captured.len(), 1);
         match &captured[0] {
-            ObsEvent::TokenUsage(u) => assert_eq!(u.total_tokens, 65),
+            ObsEvent::TokenUsage(u) => assert_eq!(u.usage.total_tokens, 65),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
             ObsEvent::RunError(_) => panic!("unexpected event kind"),
@@ -855,7 +878,8 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 4,
                 total_tokens: 14,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             false,
         )
         .with_metrics_sink(Arc::new(MockSink {
@@ -886,7 +910,7 @@ mod tests {
         let captured = events.lock().await;
         assert_eq!(captured.len(), 1);
         match &captured[0] {
-            ObsEvent::TokenUsage(u) => assert_eq!(u.prompt_tokens, 100),
+            ObsEvent::TokenUsage(u) => assert_eq!(u.usage.prompt_tokens, 100),
             ObsEvent::AgentMetrics(_) => panic!("unexpected event kind"),
             ObsEvent::Cost(_) => panic!("unexpected event kind"),
             ObsEvent::RunError(_) => panic!("unexpected event kind"),
@@ -906,7 +930,8 @@ mod tests {
                 prompt_tokens: 1000,
                 completion_tokens: 500,
                 total_tokens: 1500,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             false,
         )
         .with_provider("mock")
@@ -938,7 +963,8 @@ mod tests {
                 prompt_tokens: 1000,
                 completion_tokens: 1000,
                 total_tokens: 2000,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             tool_capable: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
@@ -964,7 +990,8 @@ mod tests {
                 prompt_tokens: 10,
                 completion_tokens: 10,
                 total_tokens: 20,
-            ..TokenUsage::default()}),
+                ..TokenUsage::default()
+            }),
             true,
         )
         .with_cost_tracker(tracker.clone());

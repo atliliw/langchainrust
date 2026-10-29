@@ -7,9 +7,9 @@ use std::collections::HashMap;
 #[cfg(feature = "opentelemetry")]
 use crate::semconv;
 
-use crate::export::ExportError;
 use super::span::{build_tree, TraceNode, TraceSpan};
 use super::TracingBackend;
+use crate::export::ExportError;
 
 // ---------------------------------------------------------------------------
 // In-memory backend
@@ -573,14 +573,20 @@ mod in_memory_tests {
         let sink = Arc::clone(&fired);
         backend.add_trace_flush_callback(Arc::new(move |node: &TraceNode| {
             let ids: Vec<String> = node.flatten().iter().map(|s| s.id.clone()).collect();
-            sink.lock().unwrap_or_else(|p| p.into_inner())
+            sink.lock()
+                .unwrap_or_else(|p| p.into_inner())
                 .push(ids.join(","));
             Ok(())
         }));
         assert_eq!(backend.trace_flush_callback_count(), 1);
 
         let root = make_span("root".into(), None, "agent", crate::SpanKind::Agent);
-        let child = make_span("child".into(), Some("root".into()), "llm", crate::SpanKind::Llm);
+        let child = make_span(
+            "child".into(),
+            Some("root".into()),
+            "llm",
+            crate::SpanKind::Llm,
+        );
         let gchild = make_span(
             "gchild".into(),
             Some("child".into()),

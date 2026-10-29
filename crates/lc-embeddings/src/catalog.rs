@@ -399,10 +399,7 @@ impl ModelCatalog {
         if !missing.is_empty() {
             return Err(EmbeddingError::ModelNotReady {
                 name: name.to_string(),
-                missing: missing
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect(),
+                missing: missing.iter().map(|p| p.display().to_string()).collect(),
             });
         }
         Ok(entry)
@@ -462,9 +459,8 @@ impl ModelCatalog {
                 }
             }
             let dir = fetcher.fetch(spec)?;
-            let mut entry =
-                ModelEntry::new(spec.name.clone(), dir, spec.layout, spec.dimension)
-                    .with_source(spec.source.clone());
+            let mut entry = ModelEntry::new(spec.name.clone(), dir, spec.layout, spec.dimension)
+                .with_source(spec.source.clone());
             let missing = entry.missing_files();
             if !missing.is_empty() {
                 return Err(EmbeddingError::Config(format!(
@@ -839,10 +835,7 @@ mod tests {
         // A well-formed document from the future is rejected too.
         fs::write(&path, br#"{"version": 99, "entries": {}}"#).unwrap();
         let err = ModelCatalog::open(&path).unwrap_err();
-        assert!(
-            err.to_string().contains("format version 99"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("format version 99"), "got {err}");
 
         // An empty file is an empty catalog (a truncated write is impossible
         // thanks to the atomic rename, but a user-created placeholder is fine).
@@ -880,7 +873,10 @@ mod tests {
             .unwrap();
 
         assert!(catalog.unregister("m").unwrap());
-        assert!(!catalog.unregister("m").unwrap(), "second removal is a no-op");
+        assert!(
+            !catalog.unregister("m").unwrap(),
+            "second removal is a no-op"
+        );
         assert!(ModelCatalog::open(&path).unwrap().is_empty());
     }
 
@@ -921,7 +917,10 @@ mod tests {
             assert_eq!(entry.dimension, 768);
         }
         // The lock file is released.
-        assert!(!path.with_extension("lock").exists(), "lock removed on drop");
+        assert!(
+            !path.with_extension("lock").exists(),
+            "lock removed on drop"
+        );
     }
 
     #[test]
@@ -950,12 +949,7 @@ mod tests {
     #[test]
     fn checksum_of_missing_weights_errors() {
         let tmp = TempDir::new("checksum-missing");
-        let entry = ModelEntry::new(
-            "ghost",
-            tmp.path().join("ghost"),
-            ModelLayout::Onnx,
-            384,
-        );
+        let entry = ModelEntry::new("ghost", tmp.path().join("ghost"), ModelLayout::Onnx, 384);
         let err = entry.compute_checksum().unwrap_err();
         assert!(matches!(err, EmbeddingError::Config(_)));
         assert!(err.to_string().contains("model.onnx"), "got {err}");
@@ -1014,15 +1008,8 @@ mod tests {
 
         let mut catalog = ModelCatalog::open(&path).unwrap();
         // 1. A directory that does not exist → the fetcher refuses.
-        let missing = ModelSpec::new(
-            "absent",
-            tmp.path().join("nope"),
-            ModelLayout::Onnx,
-            384,
-        );
-        let err = catalog
-            .prefetch(&[missing], &LocalOnlyFetcher)
-            .unwrap_err();
+        let missing = ModelSpec::new("absent", tmp.path().join("nope"), ModelLayout::Onnx, 384);
+        let err = catalog.prefetch(&[missing], &LocalOnlyFetcher).unwrap_err();
         assert!(matches!(err, EmbeddingError::Config(_)));
         assert!(catalog.is_empty());
 
@@ -1032,14 +1019,9 @@ mod tests {
             ModelSpec::new("good", &good, ModelLayout::CandleBert, 384),
             ModelSpec::new("incomplete", &incomplete, ModelLayout::Onnx, 384),
         ];
-        let err = catalog
-            .prefetch(&specs, &LocalOnlyFetcher)
-            .unwrap_err();
+        let err = catalog.prefetch(&specs, &LocalOnlyFetcher).unwrap_err();
         assert!(err.to_string().contains("incomplete"), "got {err}");
-        assert!(
-            catalog.is_empty(),
-            "all-or-nothing: nothing was registered"
-        );
+        assert!(catalog.is_empty(), "all-or-nothing: nothing was registered");
         assert!(ModelCatalog::open(&path).unwrap().is_empty());
     }
 
@@ -1095,7 +1077,10 @@ mod tests {
             candle.tokenizer_path().file_name().unwrap(),
             "tokenizer.json"
         );
-        assert_eq!(candle.config_path().unwrap().file_name().unwrap(), "config.json");
+        assert_eq!(
+            candle.config_path().unwrap().file_name().unwrap(),
+            "config.json"
+        );
         assert_eq!(candle.model_path().parent().unwrap(), candle.dir);
 
         let onnx = ModelEntry::new("o", "models/o", ModelLayout::Onnx, 768);

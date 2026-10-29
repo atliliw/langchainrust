@@ -27,6 +27,37 @@ impl std::fmt::Display for RerankingError {
 
 impl std::error::Error for RerankingError {}
 
+/// True min-max normalization to [0, 1], monotonic over the real scores.
+///
+/// Unlike magnitude-max (`|s|`) normalization, a negative score maps below
+/// every positive one while preserving their relative order — so reranking
+/// never flips sign or collapses strong positives toward zero. A degenerate
+/// input (all equal, or max <= min) yields all zeros, keeping the sum stable
+/// when every candidate ties.
+fn normalize_minmax(scores: &[f32]) -> Vec<f32> {
+    if scores.is_empty() {
+        return Vec::new();
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for &s in scores {
+        if s.is_finite() {
+            min = min.min(s);
+            max = max.max(s);
+        }
+    }
+    // Non-finite (e.g. BM25 edge-case NaN/Inf) or all-equal input: no range to
+    // span; map everything to 0.0 so a NaN never leaks into the combined score.
+    if !(max > min) {
+        return vec![0.0; scores.len()];
+    }
+    let span = max - min;
+    scores
+        .iter()
+        .map(|&s| if s.is_finite() { (s - min) / span } else { 0.0 })
+        .collect()
+}
+
 /// Reranking configuration
 pub struct RerankingConfig {
     /// Number of documents returned in the final result
@@ -202,29 +233,24 @@ impl RerankingExecutor {
         let scores = self.reranker.score(query, &documents)?;
         Self::ensure_score_count(documents.len(), scores.len())?;
 
-        // Normalize scores to [0, 1] range before combining (H51)
-        let max_original = results
-            .iter()
-            .map(|r| r.score.abs())
-            .fold(0.0_f32, f32::max);
-        let max_rerank = scores.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
+        // Normalize scores to [0, 1] range before combining. The prior code divided by the
+        // max *magnitude* (`r.score.abs()`), which collapsed strong positives toward zero
+        // and gave a lone negative candidate a huge `|norm|` — flipping the ranking/truncation
+        // semantics whenever scores carried negative values (BM25/neural scores often do).
+        // True min-max over the real scores is monotonic: ordering is preserved, negatives
+        // stay below positives, and both contributions land on [0,1] so `min_score` filtering
+        // and `top_n` truncation compare like values. A degenerate constant set (max <= min,
+        // includes the all-zero / all-equal case) maps every candidate to 0.0.
+        let norm_original =
+            normalize_minmax(&results.iter().map(|r| r.score).collect::<Vec<f32>>());
+        let norm_rerank = normalize_minmax(&scores);
 
         let mut reranked: Vec<SearchResult> = results
             .iter()
             .enumerate()
             .map(|(idx, r)| {
                 let new_score = if self.config.preserve_original_score {
-                    let norm_original = if max_original > 0.0 {
-                        r.score / max_original
-                    } else {
-                        0.0
-                    };
-                    let norm_rerank = if max_rerank > 0.0 {
-                        scores[idx] / max_rerank
-                    } else {
-                        0.0
-                    };
-                    norm_original + norm_rerank
+                    norm_original[idx] + norm_rerank[idx]
                 } else {
                     scores[idx]
                 };
@@ -608,6 +634,74 @@ mod tests {
         let scores = reranker.score("test", &documents).unwrap();
 
         assert!(scores[0] > 0.0);
+    }
+
+    /// R-6: a negative score must not be flipped to a positive by `.abs()`
+    /// magnitude normalization. A doc with a strongly-negative original score
+    /// stays worst-ranked; a positive one stays best, and `min_score` filtering
+    /// does not admit a doc purely because its magnitude was large.
+    #[test]
+    fn rerank_preserves_order_with_negative_scores() {
+        // KeywordReranker emits only >= 0, so craft a custom Reranker that
+        // returns a deliberately negative mix to exercise the min-max path.
+        struct NegReranker;
+        impl Reranker for NegReranker {
+            fn score(
+                &self,
+                _query: &str,
+                _documents: &[Document],
+            ) -> Result<Vec<f32>, RerankingError> {
+                Ok(vec![-10.0, 5.0, -2.0])
+            }
+        }
+        let executor = RerankingExecutor::new(Box::new(NegReranker))
+            .with_preserve_original_score(true)
+            .with_top_n(3);
+        // Original scores also span negative → positive to stress both sides.
+        let results = vec![
+            SearchResult {
+                document: Document::new("c"),
+                score: -7.0,
+            },
+            SearchResult {
+                document: Document::new("a"),
+                score: 8.0,
+            },
+            SearchResult {
+                document: Document::new("b"),
+                score: 0.5,
+            },
+        ];
+        let reranked = executor.rerank("q", results).unwrap();
+        // idx1 (orig 8 / rerank 5) must be highest; idx2 (0.5, -2) above idx0.
+        assert_eq!(reranked[0].document.content, "a");
+        assert_eq!(reranked[1].document.content, "b");
+        assert_eq!(reranked[2].document.content, "c");
+        let scores: Vec<f32> = reranked.iter().map(|r| r.score).collect();
+        assert!(
+            scores.windows(2).all(|w| w[0] >= w[1]),
+            "must be non-increasing, got {scores:?}"
+        );
+        // The worst doc normalizes its min original to 0.0 (never promoted by a
+        // large |magnitude|), so it lands at the bottom—it must not outrank the
+        // positive candidates despite its large negative magnitude.
+        assert!(
+            scores[2] < scores[1] && scores[2] < scores[0],
+            "worst doc must rank last despite large magnitude, got {scores:?}"
+        );
+    }
+
+    #[test]
+    fn normalize_minmax_is_monotonic_and_sign_preserving() {
+        // Pure helper: negatives stay below positives, order preserved, span -> [0,1].
+        assert_eq!(normalize_minmax(&[0.0, 4.0, 2.0]), vec![0.0, 1.0, 0.5]);
+        let out = normalize_minmax(&[-10.0, 5.0, -2.0]);
+        // Argmax / argmin correspond to the original order; a negative maps to
+        // its true rank in the span (min→0.0), never to a large positive.
+        assert_eq!(out, vec![0.0, 1.0, 8.0 / 15.0]);
+        // All-equal and all-NaN degenerate to zeros (no range to span).
+        assert_eq!(normalize_minmax(&[3.0, 3.0, 3.0]), vec![0.0, 0.0, 0.0]);
+        assert_eq!(normalize_minmax(&[f32::NAN, f32::INFINITY]), vec![0.0, 0.0]);
     }
 
     #[test]

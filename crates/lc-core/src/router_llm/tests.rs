@@ -115,7 +115,8 @@ impl ScriptedModel {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt + completion,
-        ..TokenUsage::default()});
+            ..TokenUsage::default()
+        });
         self
     }
 

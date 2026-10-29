@@ -21,7 +21,7 @@ use serde::Serialize;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ObsEvent {
     /// Token usage of a single LLM call (exported as it happens).
-    TokenUsage(TokenUsage),
+    TokenUsage(TokenUsageEvent),
     /// Aggregated metrics of one agent run (exported once at the end).
     AgentMetrics(AgentMetrics),
     /// Priced USD cost of one LLM call (B3; exported as it happens).
@@ -30,6 +30,35 @@ pub enum ObsEvent {
     /// roll-up (jsonl / mongo / otlp). Carries the same run `trace_id` join key as
     /// [`AgentMetrics`]/[`CostEvent`] so the failure joins the run's other events.
     RunError(RunEvent),
+}
+
+/// Token-usage payload for a single LLM call ([`ObsEvent::TokenUsage`]).
+///
+/// Mirrors [`CostEvent`]/[`RunEvent`]: the run `trace_id` joins this call to the
+/// run's other events for cross-backend roll-up, and `provider`/`model` attribute
+/// the call to the model that served it. The shared
+/// `lc_core::language_models::TokenUsage` is flattened so the serialized record
+/// keeps `prompt_tokens`/`completion_tokens`/`total_tokens` at the top level
+/// (the same JSON shape as the shared-type events). Unlike the shared `TokenUsage`
+/// (constructed at ~77 sites across embeddings/rag/chains), this wrapper is
+/// observability-specific, so it can carry join keys without a broad cross-crate
+/// API churn.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenUsageEvent {
+    /// The call's token counts (flattened into the JSON record).
+    #[serde(flatten)]
+    pub usage: TokenUsage,
+    /// trace_id of the owning run (`None` when absent). Joins this call to the
+    /// run's `AgentMetrics`/`Cost`/`RunError` events so token spend rolls up per
+    /// trace and every event of a run shares one OTel trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// Provider slug (`"openai"`, ...); `None` when undeclared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model id as reported by the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// A failed run (emitted by `AgentExecutor`/run executors on error).
@@ -97,7 +126,13 @@ mod tests {
 
     #[test]
     fn obs_event_token_usage_serializes_with_kind_tag() {
-        let json = serde_json::to_string(&ObsEvent::TokenUsage(sample_usage())).unwrap();
+        let json = serde_json::to_string(&ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: sample_usage(),
+            trace_id: None,
+            provider: None,
+            model: None,
+        }))
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["kind"], "token_usage");
         assert_eq!(v["prompt_tokens"], 10);

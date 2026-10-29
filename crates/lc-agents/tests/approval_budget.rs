@@ -124,7 +124,8 @@ impl BaseAgent for TokenLoopAgent {
             prompt_tokens: 4,
             completion_tokens: 2,
             total_tokens: 6,
-        ..TokenUsage::default()})
+            ..TokenUsage::default()
+        })
     }
 }
 

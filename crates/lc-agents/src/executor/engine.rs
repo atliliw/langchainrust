@@ -20,7 +20,9 @@ use crate::types::{AgentAction, AgentOutput, AgentStep, ToolInput};
 use lc_callbacks::{semconv::GEN_AI_OPERATION_NAME, CallbackManager, RunTree, RunType};
 use lc_core::cost::{CostTracker, CostType};
 use lc_core::observability::{MetricsSink, ObsEvent, RunEvent};
-use lc_core::runnables::{RunnableConfig, RUN_META_COST_SCOPE, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID};
+use lc_core::runnables::{
+    RunnableConfig, RUN_META_COST_SCOPE, RUN_META_PARENT_RUN_ID, RUN_META_TRACE_ID,
+};
 use lc_core::tools::BaseTool;
 use lc_memory::{BaseMemory, MemoryExtractor, TwoTierMemory};
 use serde_json::json;
@@ -456,7 +458,14 @@ impl AgentExecutor {
     ) {
         if let Some(tracker) = &self.cost_tracker {
             tracker
-                .record_cost_scoped(None, Some(scope), CostType::Embedding, provider, model, cost_usd)
+                .record_cost_scoped(
+                    None,
+                    Some(scope),
+                    CostType::Embedding,
+                    provider,
+                    model,
+                    cost_usd,
+                )
                 .await;
         }
     }

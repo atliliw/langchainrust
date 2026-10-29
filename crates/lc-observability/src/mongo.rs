@@ -118,6 +118,7 @@ impl MetricsSink for MongoSink {
 mod tests {
     use super::*;
     use lc_core::language_models::TokenUsage;
+    use lc_core::observability::TokenUsageEvent;
 
     #[test]
     fn ttl_seconds_are_clamped_to_positive() {
@@ -132,11 +133,17 @@ mod tests {
         let uri =
             std::env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".into());
         let sink = MongoSink::new(&uri, "lc_obs_test", "events").await.unwrap();
-        sink.export(&ObsEvent::TokenUsage(TokenUsage {
-            prompt_tokens: 1,
-            completion_tokens: 1,
-            total_tokens: 2,
-        ..TokenUsage::default()}))
+        sink.export(&ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                ..TokenUsage::default()
+            },
+            trace_id: None,
+            provider: None,
+            model: None,
+        }))
         .await
         .unwrap();
     }
@@ -151,11 +158,17 @@ mod tests {
             .unwrap()
             .with_expire_after_seconds(3600);
         sink.ensure_indexes().await.unwrap();
-        sink.export(&ObsEvent::TokenUsage(TokenUsage {
-            prompt_tokens: 1,
-            completion_tokens: 1,
-            total_tokens: 2,
-        ..TokenUsage::default()}))
+        sink.export(&ObsEvent::TokenUsage(TokenUsageEvent {
+            usage: TokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                total_tokens: 2,
+                ..TokenUsage::default()
+            },
+            trace_id: None,
+            provider: None,
+            model: None,
+        }))
         .await
         .unwrap();
     }

@@ -1330,10 +1330,17 @@ async fn test_resume_deny_does_not_consume_tool_calls() {
     });
 
     // Approval entered → checkpoint persisted → simulate a crash (abort).
-    persisted_rx.recv().await.expect("approval should be entered");
+    persisted_rx
+        .recv()
+        .await
+        .expect("approval should be entered");
     task.abort();
 
-    let pending = store.load_pending().await.unwrap().expect("checkpoint on disk");
+    let pending = store
+        .load_pending()
+        .await
+        .unwrap()
+        .expect("checkpoint on disk");
     // The fix's assertion: no blind `+1` — the in-flight tool is not pre-counted.
     assert_eq!(pending.tool_calls_consumed, 0);
 
@@ -1833,8 +1840,7 @@ async fn tool_resolved_by_final_name_after_hook_modify() {
     // FINAL tool's output arrives delimited. (Intent rewritten from a bare
     // "ran-new" under the old spotlight-off default to the new default-on form.)
     assert_eq!(
-        out,
-        "<untrusted_data>ran-new</untrusted_data>",
+        out, "<untrusted_data>ran-new</untrusted_data>",
         "the renamed FINAL tool must execute and its observation be wrapped"
     );
     let input = seen.lock().unwrap().clone();
@@ -2005,13 +2011,11 @@ async fn budget_mixed_batch_not_found_does_not_trip_gate() {
         ..Default::default()
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(10), executor.invoke("go".to_string()))
-            .await
-            .expect("mixed batch must complete — the not-found slot must not trip the gate");
+    let result = tokio::time::timeout(Duration::from_secs(10), executor.invoke("go".to_string()))
+        .await
+        .expect("mixed batch must complete — the not-found slot must not trip the gate");
 
-    let out =
-        result.expect("with executed-only counting the run must finish, not BudgetExceeded");
+    let out = result.expect("with executed-only counting the run must finish, not BudgetExceeded");
     assert!(
         out.contains("[Tool not found"),
         "the hallucinated slot must surface as a soft observation, got: {out}"
@@ -2209,8 +2213,10 @@ impl BaseAgent for ServerExecInjectionAgent {
 /// spotlight-wrapped observation into the model context.
 #[tokio::test]
 async fn t7_default_tool_output_is_spotlight_wrapped() {
-    let executor =
-        AgentExecutor::new(Arc::new(InjectionProbeAgent), vec![Arc::new(EchoMaliciousTool)]);
+    let executor = AgentExecutor::new(
+        Arc::new(InjectionProbeAgent),
+        vec![Arc::new(EchoMaliciousTool)],
+    );
 
     let out = executor.invoke("fetch".to_string()).await.unwrap();
     assert!(
@@ -2287,8 +2293,7 @@ async fn t7_parallel_invoke_inherits_default_wrapping() {
         .expect("parallel invoke must finish ok");
 
     assert_eq!(
-        out,
-        "<untrusted_data>T7-A</untrusted_data> | <untrusted_data>T7-B</untrusted_data>",
+        out, "<untrusted_data>T7-A</untrusted_data> | <untrusted_data>T7-B</untrusted_data>",
         "both parallel observations must inherit default wrapping, got: {out}"
     );
 }

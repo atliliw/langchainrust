@@ -88,6 +88,26 @@ fn pop_span_id_if_matches(span_id: &str) {
     });
 }
 
+/// Remove a span id from the span stack wherever it appears (polypop),
+/// thread-local or task-local.
+///
+/// Unlike [`pop_span_id_if_matches`], this removes a span that is not on top.
+/// The callback manager uses it when auto-closing an evicted span (R-4): a span
+/// whose paired `end` never fired may sit buried under newer leaked spans, and
+/// its id must not keep poisoning parentage even when it is no longer on top.
+pub(crate) fn pop_span_id(span_id: &str) {
+    let remove = |stack: &SpanStack| {
+        let mut s = stack.borrow_mut();
+        if let Some(pos) = s.iter().position(|id| id == span_id) {
+            s.remove(pos);
+        }
+    };
+    if ASYNC_SPAN_STACK.try_with(remove).is_ok() {
+        return;
+    }
+    span_stack_tls::SPAN_STACK.with(remove);
+}
+
 /// Clear the thread-local span stack.
 ///
 /// This is primarily useful for test isolation when spans from prior tests

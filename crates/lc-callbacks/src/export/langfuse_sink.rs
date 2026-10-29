@@ -212,7 +212,10 @@ impl BatchSink for LangfuseSink {
             .map_err(|_| ExportError::Fatal("timestamp out of range".to_string()))?;
         let (content, sig) = self.build_request(batch, ts);
 
-        let url = format!("{}/api/public/ingestion", self.config.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/api/public/ingestion",
+            self.config.base_url.trim_end_matches('/')
+        );
         let resp = self
             .client
             .post(&url)
@@ -334,9 +337,17 @@ mod tests {
                 "unexpected request line: {header}"
             );
             // Read body per Content-Length.
-            let len_line = header.lines().find(|l| l.to_ascii_lowercase().starts_with("content-length:")).map(|l| {
-                l.split(':').nth(1).unwrap().trim().parse::<usize>().unwrap()
-            });
+            let len_line = header
+                .lines()
+                .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
+                .map(|l| {
+                    l.split(':')
+                        .nth(1)
+                        .unwrap()
+                        .trim()
+                        .parse::<usize>()
+                        .unwrap()
+                });
             let mut body = vec![0u8; len_line.unwrap()];
             sock.read_exact(&mut body).await.unwrap();
             // Acknowledge.
@@ -359,7 +370,10 @@ mod tests {
         assert!(header.contains("x-langfuse-sdk-version:"));
         let expected_sha = sha256_hex(body.as_bytes());
         assert!(
-            header.contains(&format!("x-langfuse-content-sha256: {expected_sha} {}", body.len())),
+            header.contains(&format!(
+                "x-langfuse-content-sha256: {expected_sha} {}",
+                body.len()
+            )),
             "content-sha256 header must match signed body"
         );
         assert!(header.contains("x-langfuse-signature:"));
@@ -392,7 +406,14 @@ mod tests {
                 let len = String::from_utf8_lossy(&buf)
                     .lines()
                     .find(|l| l.to_ascii_lowercase().starts_with("content-length:"))
-                    .map(|l| l.split(':').nth(1).unwrap().trim().parse::<usize>().unwrap());
+                    .map(|l| {
+                        l.split(':')
+                            .nth(1)
+                            .unwrap()
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap()
+                    });
                 let mut body = vec![0u8; len.unwrap()];
                 sock.read_exact(&mut body).await.unwrap();
                 sock.write_all(format!("HTTP/1.1 {status}\r\n\r\n").as_bytes())
@@ -409,8 +430,14 @@ mod tests {
         }
 
         let fatal = with_status("401 Unauthorized").await;
-        assert!(matches!(fatal, Err(ExportError::Fatal(_))), "4xx must be fatal: {fatal:?}");
+        assert!(
+            matches!(fatal, Err(ExportError::Fatal(_))),
+            "4xx must be fatal: {fatal:?}"
+        );
         let retryable = with_status("503 Service Unavailable").await;
-        assert!(matches!(retryable, Err(ExportError::Retryable(_))), "5xx must be retryable");
+        assert!(
+            matches!(retryable, Err(ExportError::Retryable(_))),
+            "5xx must be retryable"
+        );
     }
 }
