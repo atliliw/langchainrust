@@ -73,13 +73,6 @@ impl TokenBucket {
         }
     }
 
-    /// Burst-only bucket: admits up to `capacity` requests, never refills
-    /// ([`acquire`](TokenBucket::acquire) blocks forever afterwards). Useful for
-    /// bounding concurrent in-flight requests without a rate target.
-    pub fn burst(capacity: usize) -> Self {
-        Self::new(capacity, 0.0)
-    }
-
     /// Wait until a token is available, then consume one.
     ///
     /// Refill is computed lazily from elapsed time on entry. If a token is ready the
@@ -143,7 +136,7 @@ mod tests {
     /// bucket. Exactly the configured number slip through — the "并发" cap.
     #[tokio::test]
     async fn burst_only_bounds_concurrent_acquires() {
-        let b = Arc::new(TokenBucket::burst(2));
+        let b = Arc::new(TokenBucket::new(2, 0.0));
         let mut handles = Vec::new();
         for _ in 0..5 {
             let b = b.clone();

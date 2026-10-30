@@ -36,11 +36,6 @@ use lc_embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings};
 use lc_embeddings::{cosine_similarity, EmbeddingError};
 use serde::{Deserialize, Serialize};
 
-/// Default hinge margin for [`maxsim_margin_loss`]: a candidate pair is "in the
-/// clear" once `score(pos) - score(neg) >= margin`. 0.2 is a conventional
-/// ColBERT SimCSE-style margin.
-pub const DEFAULT_MARGIN: f32 = 0.2;
-
 /// A single training triplet: a query plus one positive and one mined negative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TripletExample {

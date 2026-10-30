@@ -118,17 +118,13 @@ impl TokenValidator for StaticBearerValidator {
 /// on the length of their shared prefix (A17): every byte is XOR-accumulated
 /// and the loop never short-circuits. A length mismatch returns early — the
 /// length of a bearer token is not a secret (mirrors `subtle::ConstantTimeEq`).
+///
+/// Implemented once in `lc_core::crypto` (workspace single source of truth —
+/// the old hand-rolled copy was mirrored in `lc-a2a`; framework audit Class 1
+/// #1). Delegating keeps every internal caller, and the tests below, unchanged
+/// while removing the duplicate XOR loop here.
 pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
-    let a = a.as_bytes();
-    let b = b.as_bytes();
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    lc_core::constant_time_eq(a, b)
 }
 
 /// Cryptographic verification of a raw, complete JWT, supplied by the

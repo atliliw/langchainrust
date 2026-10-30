@@ -511,32 +511,6 @@ pub(crate) fn mean_pool_rows_flat(
     Ok(out)
 }
 
-/// Row-vector form of [`mean_pool_rows_flat`], for callers that already hold
-/// per-row masks. Flattens once and delegates, so both entry points share one
-/// implementation of the pooling math.
-pub(crate) fn mean_pool_rows(
-    hidden: &[f32],
-    batch: usize,
-    seq_len: usize,
-    hidden_size: usize,
-    masks: &[Vec<i64>],
-) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-    let mut flat: Vec<i64> = Vec::with_capacity(batch * seq_len);
-    for b in 0..batch {
-        let row = masks
-            .get(b)
-            .ok_or_else(|| EmbeddingError::ParseError("missing attention mask row".to_string()))?;
-        if row.len() < seq_len {
-            return Err(EmbeddingError::ParseError(format!(
-                "attention mask row {b} too short: need {seq_len} entries, got {}",
-                row.len()
-            )));
-        }
-        flat.extend_from_slice(&row[..seq_len]);
-    }
-    mean_pool_rows_flat(hidden, batch, seq_len, hidden_size, &flat)
-}
-
 #[async_trait]
 impl Embeddings for CandleEmbeddings {
     async fn embed_query(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
@@ -842,8 +816,8 @@ mod tests {
             1.0, 1.0, 3.0, 3.0, // row0: [1,1] and [3,3] → mean [2,2]
             5.0, 7.0, 100.0, 100.0, // row1: [5,7] only (second masked) → [5,7]
         ];
-        let masks = vec![vec![1, 1], vec![1, 0]];
-        let rows = mean_pool_rows(&hidden, 2, 2, 2, &masks).unwrap();
+        let flat_masks: Vec<i64> = vec![1, 1, 1, 0];
+        let rows = mean_pool_rows_flat(&hidden, 2, 2, 2, &flat_masks).unwrap();
         assert_eq!(rows[0], vec![2.0, 2.0]);
         assert_eq!(rows[1], vec![5.0, 7.0], "pad position excluded");
     }
@@ -852,9 +826,9 @@ mod tests {
     #[test]
     fn mean_pool_all_masked_row_is_zero() {
         let hidden = vec![1.0, 2.0];
-        // 形参收 &[Vec<usize>],直接传切片字面量,无需 vec! 套 vec!
-        // (stable clippy::useless_vec;该模块 Linux CI 才编译,本机 gnu 无 ort 预构建)。
-        let rows = mean_pool_rows(&hidden, 1, 1, 2, &[vec![0]]).unwrap();
+        // 形参收 &[i64],直接传切片字面量,无需 vec! 套 vec!
+        // (stable clippy::useless_vec;该模块 local-candle 才编译,本机 gnu 无 ort 预构建)。
+        let rows = mean_pool_rows_flat(&hidden, 1, 1, 2, &[0]).unwrap();
         assert_eq!(rows[0], vec![0.0, 0.0]);
         assert!(rows[0].iter().all(|v| v.is_finite()));
     }
@@ -862,7 +836,7 @@ mod tests {
     /// Short tensor errors instead of panicking on the index.
     #[test]
     fn mean_pool_short_tensor_errors() {
-        let err = mean_pool_rows(&[1.0, 2.0], 1, 2, 2, &[vec![1, 1]]).unwrap_err();
+        let err = mean_pool_rows_flat(&[1.0, 2.0], 1, 2, 2, &[1, 1]).unwrap_err();
         assert!(matches!(err, EmbeddingError::ParseError(_)));
     }
 
@@ -967,24 +941,6 @@ mod tests {
         // half-ULP rounding step of a 3-mantissa-bit format is 2^5 = 32× FP16's,
         // so a value near 4 has a step of 2^2 × 2^-3 = 0.5 → ≤0.25 error.
         assert!(max_err < 0.5, "FP8 round-trip max error {max_err}");
-    }
-
-    /// v0.27.0 T3: the flat-mask pooling reads the same numbers as the
-    /// row-vector form — the zero-copy refactor changes nothing about the
-    /// result.
-    #[test]
-    fn mean_pool_rows_flat_matches_rowwise() {
-        let hidden = vec![
-            1.0, 1.0, 3.0, 3.0, // row0: [1,1] and [3,3] → mean [2,2]
-            5.0, 7.0, 100.0, 100.0, // row1: [5,7] only (second masked) → [5,7]
-        ];
-        let row_masks = vec![vec![1, 1], vec![1, 0]];
-        let flat_masks: Vec<i64> = row_masks.iter().flatten().copied().collect();
-        let by_rows = mean_pool_rows(&hidden, 2, 2, 2, &row_masks).unwrap();
-        let by_flat = mean_pool_rows_flat(&hidden, 2, 2, 2, &flat_masks).unwrap();
-        assert_eq!(by_rows, by_flat);
-        assert_eq!(by_flat[0], vec![2.0, 2.0]);
-        assert_eq!(by_flat[1], vec![5.0, 7.0], "pad position excluded");
     }
 
     /// The quantized constructors thread the knob and fail fast on missing files.

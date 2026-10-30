@@ -359,12 +359,6 @@ impl<M: BaseChatModel, E: Embeddings> AnswerRelevancy<M, E> {
         }
     }
 
-    /// Sets how many questions the generator should produce (clamped to at least 1).
-    pub fn with_n_questions(mut self, n: usize) -> Self {
-        self.n_questions = n.max(1);
-        self
-    }
-
     /// Score for an empty prediction (default 0.0: no answer is not relevant).
     pub fn with_empty_score(mut self, score: f64) -> Self {
         self.empty_score = score;

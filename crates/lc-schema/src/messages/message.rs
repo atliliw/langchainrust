@@ -324,12 +324,6 @@ impl Message {
         self
     }
 
-    /// Adds an additional keyword argument.
-    pub fn with_additional_kwarg(mut self, key: impl Into<String>, value: Value) -> Self {
-        self.additional_kwargs.insert(key.into(), value);
-        self
-    }
-
     /// Adds an image to the message (vision).
     pub fn with_image(mut self, image: ImageContent) -> Self {
         self.images.push(image);
@@ -363,21 +357,6 @@ impl Message {
     /// Clears all image attachments.
     pub fn clear_images(&mut self) {
         self.images.clear();
-    }
-
-    /// Clears all audio attachments.
-    pub fn clear_audio(&mut self) {
-        self.audio.clear();
-    }
-
-    /// Clears all video attachments.
-    pub fn clear_videos(&mut self) {
-        self.videos.clear();
-    }
-
-    /// Clears all file attachments.
-    pub fn clear_files(&mut self) {
-        self.files.clear();
     }
 
     /// Clears every media attachment (images, audio, video, and files) at once.

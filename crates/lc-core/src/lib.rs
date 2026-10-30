@@ -13,6 +13,7 @@
 pub mod batch;
 pub mod cache;
 pub mod cost;
+pub mod crypto;
 pub mod http;
 pub mod json_parse;
 pub mod judge;
@@ -32,6 +33,7 @@ pub mod token_counter;
 pub mod tools;
 
 // Re-export key types at crate root for convenience
+pub use crypto::constant_time_eq;
 pub use cost::{
     CostError, CostRecord, CostReport, CostTracker, CostType, ModelPrice, ModelSpend, PricingTable,
     ScopeCosts,
