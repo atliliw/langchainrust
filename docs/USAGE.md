@@ -4,171 +4,224 @@
 
 ---
 
-## 目录
+**架构与代码地图** —— 23 个 crate 一句定责,落到本手册章节;读代码前先看这张表,再顺着对应章节往下钻。
 
-- [LLM](#llm)
-  - 多 Provider 支持
-  - 统一客户端与自动发现 ✨ v0.15.0
-  - OpenAI Chat
-  - 流式输出
-  - 函数调用
-  - Ollama（本地 LLM）
-  - Google Gemini
-  - 多模态视觉
-  - Message 结构 ✨ v0.15.0
-  - MultimodalModel ✨ v0.15.0
-  - OpenAI Assistants API
-- [嵌入](#embeddings)
-  - OpenAI Embeddings
-  - DeepSeek Embeddings
-  - Qwen Embeddings
-  - Qwen3-Embedding 与 matryoshka 维度 ✨ v0.21.0
-  - LocalEmbeddings
-  - CandleEmbeddings（纯 Rust 本地推理） ✨ v0.21.0
-  - Token 级嵌入（TokenLevelEmbeddings） ✨ v0.21.0
-  - Late Chunking（后分块） ✨ v0.21.0
-- [提示词](#prompts)
-  - FewShotPrompt + ExampleSelectors
-  - 版本化提示词注册表（PromptRegistry） ✨ v0.22.4
-- [输出解析器](#output-parsers)
-- [记忆](#memory)
-  - VectorStoreRetrieverMemory
-  - MongoPersistentMemory ✨ v0.15.0
-  - ContextWindow（长上下文管理） ✨ v0.4.1
-  - 两层语义记忆（TwoTierMemory） ✨ v0.22.4
-- [LLM 缓存](#llm-cache)
-- [链](#chains)
-  - ConversationRetrievalChain
-  - RouterChain ✨ v0.14.0
-  - 链流式输出 ✨ v0.4.1
-  - ConversationChain ✨ v0.13.0
-  - invoke_with_config ✨ v0.15.0
-- [LCEL (LangChain Expression Language)](#lcel-langchain-expression-language-) ✨ v0.9.0
-  - RunnableWithFallbacks ✨ v0.10.0
-  - RunnableAssign ✨ v0.10.0
-  - RunnableRetry ✨ v0.11.0
-  - CancellationToken ✨ v0.11.0
-  - 适配器 (AgentEventRunnable / OrchestratorRunnable) ✨ v0.13.0
-  - 统一组合 (v0.15.0)
-- [文档链](#document-chains)
-- [智能体](#agents)
-  - Agent Hooks ✨ v0.11.0
-  - Agent 流式输出 ✨ v0.12.0
-  - Agent Web SSE（浏览器事件流） ✨ v0.22.4
-  - AgentBuilder ✨ v0.14.0
-  - Orchestrator ✨ v0.14.0
-  - Supervisor 子 Agent 动态路由 ✨ v0.24.0
-  - ApprovalGate 图路径审批门 ✨ v0.24.0
-  - 并行工具调用（信号量限流） ✨ v0.24.0
-  - ToolPolicy ✨ v0.14.0
-  - 上下文压缩（CompactionConfig） ✨ v0.21.0
-- [Plan-Execute 智能体](#plan-execute-agent)
-- [Handoffs](#handoffs)
-- [流式工具调用](#streaming-tool-calls)
-- [护栏](#guardrails)
-  - Guardable ✨ v0.15.0
-  - 流式护栏 ✨ v0.15.0
-  - PII 脱敏护栏（改写而非阻断） ✨ v0.22.4
-  - Schema 输出护栏（边生成边验 JSON） ✨ v0.22.4
-  - 审计持久化 ✨ v0.15.0
-  - Retrieval Rail（检索护栏） ✨ v0.21.0
-  - AI 透明披露（disclose） ✨ v0.21.0
-- [Token 计数器](#token-counter)
-  - 成本台账（PricingTable + CostTracker + 美元硬闸门） ✨ v0.22.4
-- [会话](#sessions)
-  - 事件溯源重写 ✨ v0.22.0（推荐路径）
-  - 会话分叉（fork）
-  - 会话生命周期 ✨ v0.15.0
-  - 接入记忆系统 ✨ v0.15.0
-- [MCP](#mcp)
-  - MCPServer
-  - ConnectionManager ✨ v0.15.0
-  - SamplingGuard ✨ v0.15.0
-  - MCPGateway ✨ v0.15.0
-- [工具](#tools)
-  - WikipediaTool
-  - DuckDuckGoSearchTool
-  - PythonREPLTool
-  - 扩展工具 (HTTPTool / FileTool / SQLTool)
-  - `#[tool]` 过程宏 ✨ v0.10.0
-  - ToolRegistry ✨ v0.15.0
-  - StructuredTool ✨ v0.15.0
-  - SSRF 防护 ✨ v0.15.0
-- [RAG](#rag)
-  - RAGPipeline ✨ v0.15.0
-  - ChromaDB
-  - PGVectorStore
-  - PineconeStore
-  - SemanticSplitter
-  - 统一 VectorStore trait ✨ v0.15.0
-  - MetadataFilter ✨ v0.18.0
-  - Contextual Retrieval ✨ v0.21.0
-  - 语义缓存（SemanticCache） ✨ v0.21.0
-- [BM25](#bm25)
-  - 小到大检索（句子窗口 / 父文档） ✨ v0.24.0
-- [混合检索](#hybrid-retrieval)
-  - 原生混合搜索（Qdrant Query API） ✨ v0.21.0
-  - Weighted 加权融合 + MMR 多样性 ✨ v0.23.0
-  - Late Chunking 双腿注入 ✨ v0.24.0
-- [文档加载器](#document-loaders)
-  - HTMLLoader
-  - DocxLoader ✨ v0.4.1
-  - WebScraperLoader ✨ v0.4.1
-  - SitemapLoader ✨ v0.4.1
-- [MultiQueryRetriever](#multiqueryretriever)
-- [HyDE 检索器](#hyde-retriever)
-- [SelfQueryRetriever](#selfqueryretriever) ✨ v0.18.0
-- [重排序](#reranking)
-  - 神经重排序（Cohere / Jina 交叉编码器） ✨ v0.24.0
-- [回调](#callbacks)
-  - OtelHandler
-- [评估](#evaluation)
-  - 评估器（10 种类型）
-  - EvalRunner
-  - LLMAsJudge ✨ v0.15.0
-  - PairwiseJudge ✨ v0.15.0
-  - trace → golden → 回归门禁 ✨ v0.24.0
-- [LangGraph](#langgraph)
-  - Reducer ✨ v0.15.0
-  - 边类型 ✨ v0.15.0
-  - Checkpointer 家族 ✨ v0.15.0
-  - 子图 / 动态规划 / 流式 ✨ v0.15.0
-  - 节点内动态中断 / 恢复（interrupt + resume） ✨ v0.24.0
-  - 审批 / 恢复收敛（ApprovalGate） ✨ v0.24.0
-  - 状态历史与时间旅行（fork_from） ✨ v0.24.0
-- [A2A 智能体协议](#a2a-agent-protocol) ✨ v0.4.1
-  - v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
-  - 卡片签名（JWS HS256） ✨ v0.22.0
-- [with_structured_output](#with_structured_output) ✨ v0.4.1
-  - 原生 JSON Schema 引擎约束 ✨ v0.21.0
-- [FileVectorStore](#filevectorstore) ✨ v0.4.1
-- [ComputerUseTool](#computerusetool) ✨ v0.4.1
-- [v0.5.0 新特性](#v050-new-features) ✨ v0.5.0
-  - RouterLLM（模型路由 + 回退）
-  - CorrectiveRAG
-  - AdaptiveRAG
-  - GraphRAG（知识图谱 RAG）
-  - Deep Research 智能体
-  - MCP 协议原语
-  - 代码解释器沙箱
-  - OpenAI Responses API
-  - Anthropic Extended Thinking
-  - 流式结构化输出
-  - Batch API
-  - 追踪（分布式追踪）
-  - v0.5.0 质量加固（176 项修复）
-- [v0.5.2 修复](#v052-fixes) ✨ v0.5.2
-- [测试](#testing)
-- [MongoDB 存储](#mongodb-storage)
-- [Redis / SQLite 存储](#redis--sqlite-storage)
+| Crate | 职责 | 手册章节 |
+|-------|------|----------|
+| `lc` | 门面:统一 re-export,一条 use 覆盖全部能力 | 本手册 |
+| `lc-core` | 核心抽象:LLM / 结构化输出 / LLM 缓存 / Token 计数&成本 / Router | [第二章](#第二章--语言模型与提示) · [第六章](#第六章--检索与知识) |
+| `lc-providers` | 11+ 模型 Provider:OpenAI / Groq / Ollama / DeepSeek / Qwen / Anthropic / Gemini… | [LLM](#21-llm) |
+| `lc-prompts` | 提示词模板 / FewShot / PromptRegistry | [提示词](#23-提示词) |
+| `lc-schema` | 共享数据模型:Message / ImageContent 等 | [第二章](#第二章--语言模型与提示) |
+| `lc-shared` | 跨 crate 共享类型:ToolCall / Document / TextSplitter | [第二章](#第二章--语言模型与提示) · [第五章](#第五章--智能体与工具) · [第六章](#第六章--检索与知识) |
+| `lc-memory` | 会话记忆:Buffer / TwoTier / MongoPersistent / ContextWindow | [记忆](#31-记忆) |
+| `lc-sessions` | 会话生命周期 / 事件溯源 / 分叉 | [Sessions](#32-sessions) |
+| `lc-chains` | LCEL / Chains / Document Chains | [LCEL (LangChain Expression Language)](#41-lcel-langchain-expression-language--v090) |
+| `lc-langgraph` | 状态图编排:Reducer / 子图 / Checkpointer / 中断 | [LangGraph](#44-langgraph) |
+| `lc-agents` | 智能体核心:React / FunctionCalling / Handoffs / Plan-Execute / 压缩 | [Agents](#51-agents) |
+| `lc-tools` | 内置 + 扩展工具:HTTP / File / SQL / ComputerUse | [Tools](#55-tools) |
+| `lc-tools-derive` | #[tool] 过程宏 | [Tools](#55-tools) |
+| `lc-rag` | RAG 流水线 / Retriever / BM25 / 混合检索 / 文档加载器 / 语义缓存 | [RAG](#63-rag) |
+| `lc-embeddings` | 嵌入:OpenAI / Qwen / Local / Candle / TokenLevel | [Embeddings](#62-embeddings) |
+| `lc-vector-stores` | 向量库:Chroma / PGVector / Pinecone / Qdrant / File / Redis / SQLite / Mongo | [RAG](#63-rag) · [第九章](#第九章--数据持久化) |
+| `lc-mcp` | MCP 客户端 / 服务端(Stateless / Stdio / Streamable) | [MCP](#71-mcp) |
+| `lc-a2a` | A2A 智能体互操作协议 | [A2A 智能体协议](#72-a2a-智能体协议--v041) |
+| `lc-guardrails` | 护栏:Guardable / PII / Schema / 流式 / 审计 | [Guardrails](#81-guardrails) |
+| `lc-callbacks` | 回调 / OTel 处理 | [回调](#82-回调) |
+| `lc-observability` | 可观测导出:JsonLines / Mongo / OTel sink | [回调](#82-回调) |
+| `lc-evaluation` | 评估:10 评估器 / EvalRunner / Judge | [评估](#84-评估) |
+| `lc-testkit` | 测试辅助工具 | [测试](#85-测试) |
 
 ---
 
-## 快速上手
+## 目录
+
+- **第一章 · 快速上手**
+  - [1.1 安装与环境变量](#11-安装与环境变量)
+  - [1.2 第一次聊天](#12-第一次聊天)
+  - [1.3 提示词模板](#13-提示词模板)
+  - [1.4 用 LCEL 组合成一条链](#14-用-lcel-组合成一条链)
+  - [1.5 加记忆:让它记住你](#15-加记忆让它记住你)
+  - [1.6 接上检索:RAG](#16-接上检索rag)
+  - [1.7 给它工具:变成智能体](#17-给它工具变成智能体)
+  - [1.8 下一步](#18-下一步)
+- **第二章 · 语言模型与提示**
+  - [2.1 LLM](#21-llm)
+    - 多 Provider 支持
+    - 统一客户端与自动发现
+    - OpenAI Chat
+    - 流式输出
+    - 函数调用
+    - Ollama（本地 LLM）
+    - Google Gemini
+    - 多模态视觉
+    - Message 结构
+    - MultimodalModel
+    - OpenAI Assistants API
+  - [2.2 with_structured_output](#22-with_structured_output--v041)
+    - 原生 JSON Schema 引擎约束
+  - [2.3 提示词](#23-提示词)
+    - FewShotPrompt + ExampleSelectors
+    - 版本化提示词注册表（PromptRegistry）
+  - [2.4 输出解析器](#24-输出解析器)
+  - [2.5 LLM 缓存](#25-llm-缓存)
+  - [2.6 RouterLLM（模型路由 + 回退）](#26-routerllm模型路由--回退)
+- **第三章 · 记忆与会话**
+  - [3.1 记忆](#31-记忆)
+    - VectorStoreRetrieverMemory
+    - MongoPersistentMemory
+    - ContextWindow（长上下文管理）
+    - 两层语义记忆（TwoTierMemory）
+  - [3.2 Sessions](#32-sessions)
+    - 事件溯源重写（推荐路径）
+    - 会话分叉（fork）
+    - 会话生命周期
+    - 接入记忆系统
+- **第四章 · 组合与编排**
+  - [4.1 LCEL (LangChain Expression Language)](#41-lcel-langchain-expression-language--v090)
+    - RunnableWithFallbacks
+    - RunnableAssign
+    - RunnableRetry
+    - CancellationToken
+    - 适配器 (AgentEventRunnable / OrchestratorRunnable)
+    - 统一组合 (v0.15.0)
+  - [4.2 Chains](#42-chains)
+    - ConversationRetrievalChain
+    - RouterChain
+    - 链流式输出
+    - ConversationChain
+    - invoke_with_config
+  - [4.3 Document Chains](#43-document-chains)
+  - [4.4 LangGraph](#44-langgraph)
+    - Reducer
+    - 边类型
+    - Checkpointer 家族
+    - 子图 / 动态规划 / 流式
+    - 节点内动态中断 / 恢复（interrupt + resume）
+    - 审批 / 恢复收敛（ApprovalGate）
+    - 状态历史与时间旅行（fork_from）
+- **第五章 · 智能体与工具**
+  - [5.1 Agents](#51-agents)
+    - Agent Hooks
+    - Agent 流式输出
+    - Agent Web SSE（浏览器事件流）
+    - AgentBuilder
+    - Orchestrator
+    - Supervisor 子 Agent 动态路由
+    - ApprovalGate 图路径审批门
+    - 并行工具调用（信号量限流）
+    - ToolPolicy
+    - 上下文压缩（CompactionConfig）
+  - [5.2 Streaming Tool Calls](#52-streaming-tool-calls)
+  - [5.3 Plan-Execute Agent](#53-plan-execute-agent)
+  - [5.4 Handoffs](#54-handoffs)
+  - [5.5 Tools](#55-tools)
+    - WikipediaTool
+    - DuckDuckGoSearchTool
+    - PythonREPLTool
+    - 扩展工具 (HTTPTool / FileTool / SQLTool)
+    - `#[tool]` 过程宏
+    - ToolRegistry
+    - StructuredTool
+    - SSRF 防护
+  - [5.6 ComputerUseTool](#56-computerusetool--v041)
+  - [5.7 Deep Research（深度研究智能体）](#57-deep-research深度研究智能体)
+- **第六章 · 检索与知识**
+  - [6.1 文档加载器](#61-文档加载器)
+    - HTMLLoader
+    - DocxLoader
+    - WebScraperLoader
+    - SitemapLoader
+  - [6.2 Embeddings](#62-embeddings)
+    - OpenAI Embeddings
+    - DeepSeek Embeddings
+    - Qwen Embeddings
+    - Qwen3-Embedding 与 matryoshka 维度
+    - LocalEmbeddings
+    - CandleEmbeddings（纯 Rust 本地推理）
+    - Token 级嵌入（TokenLevelEmbeddings）
+    - Late Chunking（后分块）
+  - [6.3 RAG](#63-rag)
+    - RAGPipeline
+    - ChromaDB
+    - PGVectorStore
+    - PineconeStore
+    - SemanticSplitter
+    - 统一 VectorStore trait
+    - MetadataFilter
+  - [6.4 BM25](#64-bm25)
+    - 小到大检索（句子窗口 / 父文档）
+  - [6.5 混合检索](#65-混合检索)
+    - 原生混合搜索（Qdrant Query API）
+    - Weighted 加权融合 + MMR 多样性
+    - Late Chunking 双腿注入
+  - [6.6 MultiQueryRetriever](#66-multiqueryretriever)
+  - [6.7 HyDE 检索器](#67-hyde-检索器)
+  - [6.8 SelfQueryRetriever](#68-selfqueryretriever--v0180)
+  - [6.9 Contextual Retrieval](#69-contextual-retrieval--v0210)
+  - [6.10 语义缓存（SemanticCache）](#610-语义缓存semanticcache-v0210)
+  - [6.11 重排序](#611-重排序)
+    - 神经重排序（Cohere / Jina 交叉编码器）
+  - [6.12 FileVectorStore](#612-filevectorstore--v041)
+  - [6.13 GraphRAG（知识图谱检索）](#613-graphrag知识图谱检索)
+- **第七章 · 协议与互联**
+  - [7.1 MCP](#71-mcp)
+    - MCPServer
+    - ConnectionManager
+    - SamplingGuard
+    - MCPGateway
+  - [7.2 A2A 智能体协议](#72-a2a-智能体协议--v041)
+    - v1.0.1：多传输声明（supportedInterfaces）
+    - 卡片签名（JWS HS256）
+- **第八章 · 安全、可观测与质量**
+  - [8.1 Guardrails](#81-guardrails)
+    - Guardable
+    - 流式护栏
+    - PII 脱敏护栏（改写而非阻断）
+    - Schema 输出护栏（边生成边验 JSON）
+    - 审计持久化
+    - Retrieval Rail（检索护栏）
+    - AI 透明披露（disclose）
+  - [8.2 回调](#82-回调)
+    - OtelHandler
+  - [8.3 Token Counter](#83-token-counter)
+    - 成本台账（PricingTable + CostTracker + 美元硬闸门）
+  - [8.4 评估](#84-评估)
+    - 评估器（10 种类型）
+    - EvalRunner
+    - LLMAsJudge
+    - PairwiseJudge
+    - trace → golden → 回归门禁
+  - [8.5 测试](#85-测试)
+- **第九章 · 数据持久化**
+  - [9.1 MongoDB 存储](#91-mongodb-存储)
+  - [9.2 Redis / SQLite 存储](#92-redis--sqlite-存储)
+- **附录**
+  - [附录.1 v0.5.0 新特性](#附录1-v050-新特性--v050)
+    - RouterLLM（模型路由 + 回退）
+    - CorrectiveRAG
+    - AdaptiveRAG
+    - GraphRAG（知识图谱 RAG）
+    - Deep Research 智能体
+    - MCP 协议原语
+    - 代码解释器沙箱
+    - OpenAI Responses API
+    - Anthropic Extended Thinking
+    - 流式结构化输出
+    - Batch API
+    - 追踪（分布式追踪）
+    - v0.5.0 质量加固（176 项修复）
+  - [附录.2 v0.5.2 修复](#附录2-v052-修复--v052)
+  - [附录.3 更多资源](#附录3-更多资源)
+
+---
+
+## 第一章 · 快速上手
+
 
 > 这个教程带你从零搭一个 LLM 应用:先能**对话**,再能**记住上下文**,然后能**检索文档**,最后能**调用工具**。它是一段连续的程序,每一节在前一节的基础上加一块能力,照着往下读就能跑通。
 
-### 1. 安装与环境变量
+### 1.1 安装与环境变量
 
 在 `Cargo.toml` 中加入:
 
@@ -178,14 +231,14 @@ langchainrust = "0.28.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
-设置环境变量(以 OpenAI 为例;换 Provider 只需换环境变量,见 [LLM](#llm)):
+设置环境变量(以 OpenAI 为例;换 Provider 只需换环境变量,见 [LLM](#21-llm)):
 
 ```bash
 export OPENAI_API_KEY="sk-..."
 export OPENAI_BASE_URL="https://api.openai.com/v1"   # 可选,默认官方地址
 ```
 
-### 2. 第一次聊天
+### 1.2 第一次聊天
 
 最直接的用法:构造一个 LLM,传进系统提示词和用户消息,拿到回复。
 
@@ -219,9 +272,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 要点:
 - 11 家 Provider 都实现同一个 `BaseChatModel` trait,换 Provider 只改 `XxxConfig` 一处;
 - `Message::system` / `Message::human` 构造消息,`chat(Vec<Message>, None)` 返回完整 `LLMResult`;
-- 想边生成边看?用 `stream_chat()` 或 `config.streaming = true`,见 [流式输出](#流式输出)。
+- 想边生成边看?用 `stream_chat()` 或 `config.streaming = true`,见 [流式输出](#214-流式输出)。
 
-### 3. 提示词模板
+### 1.3 提示词模板
 
 把系统/用户消息模板化,运行期用变量填充,避免写死字符串:
 
@@ -245,9 +298,9 @@ let messages = prompt.invoke(vars, None).await?;
 要点:
 - 消息用 `{变量名}` 占位,`invoke` 时传入 `HashMap<String, String>` 填充;
 - 变量缺失会**响亮报错**,不会静默产出坏提示词;
-- 完整介绍见 [提示词](#提示词)。
+- 完整介绍见 [提示词](#23-提示词)。
 
-### 4. 用 LCEL 组合成一条链
+### 1.4 用 LCEL 组合成一条链
 
 `Runnable` 之间用 `.pipe()` 组合。`prompt.pipe(llm).pipe(parser)` 就是一条完整链,调用它一次拿到最终答案:
 
@@ -272,9 +325,9 @@ println!("{answer}");
 要点:
 - `StrOutputParser` 从 `LLMResult` 里取 `content`,链的输出类型变成 `String`;
 - 四个基础操作统一:`invoke` / `batch` / `stream` / `transform`;
-- LCEL 全部操作符见 [LCEL 章节](#lcel-langchain-expression-language-)。
+- LCEL 全部操作符见 [LCEL 章节](#41-lcel-langchain-expression-language--v090)。
 
-### 5. 加记忆:让它记住你
+### 1.5 加记忆:让它记住你
 
 `RunnableWithMessageHistory` 把「读记忆 → 拼输入 → LLM → 写回」整个封装成一个 Runnable,多轮对话不用自己拼历史:
 
@@ -295,10 +348,10 @@ let r2: String = chat.invoke("我叫什么名字?".to_string(), None).await?;
 
 要点:
 - 输入直接是 `String`,记忆的读写被封装在 Runnable 内部;
-- 四种记忆各有取舍(全量 / 滑动窗口 / 摘要 / 摘要+原文),见 [记忆](#memory);
-- 跨进程持久化用 `MongoPersistentMemory`,见 [MongoPersistentMemory](#mongopersistentmemory)。
+- 四种记忆各有取舍(全量 / 滑动窗口 / 摘要 / 摘要+原文),见 [记忆](#31-记忆);
+- 跨进程持久化用 `MongoPersistentMemory`,见 [MongoPersistentMemory](#316-mongopersistentmemory跨进程持久化--v0150)。
 
-### 6. 接上检索:RAG
+### 1.6 接上检索:RAG
 
 `RAGPipelineBuilder` 组装「检索 + 生成」,`RagRunnable` 把它变成链的一段。下面用 **BM25 本地关键词检索**,不依赖任何向量数据库:
 
@@ -326,10 +379,10 @@ let answer: String = rag_chain.invoke("Rust 有哪些核心特性?".to_string(),
 
 要点:
 - 只有回答生成走 LLM,检索全部本地完成,零向量库也能跑;
-- 想要引用来源,`RAGPipeline::query_with_sources()` 返回每条引文,见 [端到端 RAGPipeline](#end-to-end-ragpipeline);
-- 向量 / BM25 / 混合检索怎么选,见 [检索模式对比](#检索模式对比)。
+- 想要引用来源,`RAGPipeline::query_with_sources()` 返回每条引文,见 [端到端 RAGPipeline](#631-端到端-ragpipeline--v0150);
+- 向量 / BM25 / 混合检索怎么选,见 [检索模式对比](#655-检索模式对比)。
 
-### 7. 给它工具:变成智能体
+### 1.7 给它工具:变成智能体
 
 让应用不只是问答,还能**决定调用哪个工具**。`FunctionCallingAgent` 读模型的 `tool_calls`,`AgentExecutor` 负责执行:
 
@@ -351,25 +404,28 @@ let result = executor.invoke("25 + 17 等于多少?".to_string()).await?;
 
 要点:
 - `FunctionCallingAgent` 是推荐路径(原生 tool_calls);不支持函数调用的模型用 `ReActAgent`;
-- `max_iterations` 上限保护、工具超时、LLM 重试都由 Executor 兜底,见 [智能体](#agents)。
+- `max_iterations` 上限保护、工具超时、LLM 重试都由 Executor 兜底,见 [智能体](#51-agents)。
 
-### 下一步
+### 1.8 下一步
 
 | 想做什么 | 去读 |
 |----------|------|
-| 换别家模型 / 流式 / 结构化输出 | [LLM](#llm) |
-| 多轮记忆与持久化 | [记忆](#memory) |
-| 完整 RAG 与检索策略 | [RAG](#rag) · [BM25](#bm25) · [混合检索](#hybrid-retrieval) |
-| 接入 MCP 工具生态 | [MCP](#mcp) |
-| 生产级护栏 / 评估 / 追踪 | [护栏](#guardrails) · [评估](#evaluation) · [回调](#callbacks) |
+| 换别家模型 / 流式 / 结构化输出 | [LLM](#21-llm) |
+| 多轮记忆与持久化 | [记忆](#31-记忆) |
+| 完整 RAG 与检索策略 | [RAG](#63-rag) · [BM25](#64-bm25) · [混合检索](#65-混合检索) |
+| 接入 MCP 工具生态 | [MCP](#71-mcp) |
+| 生产级护栏 / 评估 / 追踪 | [护栏](#81-guardrails) · [评估](#84-评估) · [回调](#82-回调) |
 
 ---
 
-## LLM
 
-本节讲怎么接入大模型:实例化任意一家 Provider、流式输出、函数调用、多模态。所有 Provider 都实现同一个 `BaseChatModel` trait,API 完全一致——先用一家把流程跑通,后面随时可换,不用改业务代码。初次上手请看[快速上手](#快速上手)第 2 节。
+## 第二章 · 语言模型与提示
 
-### 多 Provider 支持
+### 2.1 LLM
+
+本节讲怎么接入大模型:实例化任意一家 Provider、流式输出、函数调用、多模态。所有 Provider 都实现同一个 `BaseChatModel` trait,API 完全一致——先用一家把流程跑通,后面随时可换,不用改业务代码。初次上手请看[快速上手](#第一章--快速上手)第 2 节。
+
+#### 2.1.1 多 Provider 支持
 
 LangChainRust 支持多个 LLM Provider，提供统一的 API：
 
@@ -388,7 +444,7 @@ LangChainRust 支持多个 LLM Provider，提供统一的 API：
 | **Mistral** | `MistralChat` | Mistral Large/Medium |
 | **任意 OpenAI 兼容端点** | `OpenAICompatibleChat` | Groq / OpenRouter / xAI 预设 + 自建 vLLM、LM Studio、SGLang、内网网关(v0.22.4) |
 
-#### 统一客户端与自动发现 ✨ v0.15.0
+##### 2.1.1.8 统一客户端与自动发现 ✨ v0.15.0
 
 `LLMClient::from_env()` 自动识别 11 家 Provider 的环境变量,零配置切换;`LLMClient::from_llm(provider)` 手动包装任意 `BaseChatModel`。`ChatModelWrapper` / `wrap_chat_model` 提供 trait 对象包装。
 
@@ -406,7 +462,7 @@ let client = LLMClient::from_llm(DeepSeekChat::from_env_result()?);
 
 错误类型统一为 `ProviderError`,按供应商区分变体(OpenAI / Anthropic / Gemini / Azure / Cohere / Ollama / DeepSeek / Qwen / Moonshot / Zhipu / Mistral),`config.streaming` 决定 `chat()` 走流式还是普通路径。
 
-#### DeepSeek（高性价比）
+##### 2.1.1.9 DeepSeek（高性价比）
 
 ```rust
 use langchainrust::{DeepSeekChat, DeepSeekConfig, BaseChatModel};
@@ -423,7 +479,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-#### OpenAI 兼容端点:Groq / OpenRouter / xAI / 自建网关 ✨ v0.22.4
+##### 2.1.1.10 OpenAI 兼容端点:Groq / OpenRouter / xAI / 自建网关 ✨ v0.22.4
 
 **解决什么问题**:OpenAI Chat Completions 协议已经成了行业事实标准——Groq、OpenRouter、xAI 以及自建的 vLLM、LM Studio、SGLang、Ollama 的 `/v1` 垫片、公司内网网关全都讲这套协议。旧做法是每接一家就复制一份约 300 行的委托代码(DeepSeek/Qwen/Moonshot 就是这么来的),厂商出新旗舰模型还得等框架升级。v0.22.4 新增 `OpenAICompatibleChat`:**一个传输层通吃所有兼容端点,厂商之间只差配置**(base URL、鉴权、默认模型、错误标签);流式、函数调用、结构化输出、重试和回调全部复用 `OpenAIChat` 的成熟实现。
 
@@ -474,7 +530,7 @@ let gw = OpenAICompatibleChat::new(
 
 **边界**:它只实现 Chat Completions 协议;厂商特有能力(OpenAI Responses API、Anthropic extended thinking 等)还得用各自的原生类型。它是完整的 `BaseChatModel`(trait 错误类型为 `ProviderError`),可以直接塞进 agent / 链。
 
-#### Moonshot（长上下文）
+##### 2.1.1.11 Moonshot（长上下文）
 
 ```rust
 use langchainrust::MoonshotChat;
@@ -486,7 +542,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-#### Qwen
+##### 2.1.1.12 Qwen
 
 ```rust
 use langchainrust::QwenChat;
@@ -498,7 +554,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-#### Zhipu（ChatGLM）
+##### 2.1.1.13 Zhipu（ChatGLM）
 
 ```rust
 use langchainrust::ZhipuChat;
@@ -510,7 +566,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-#### Anthropic Claude
+##### 2.1.1.14 Anthropic Claude
 
 ```rust
 use langchainrust::{AnthropicChat, AnthropicConfig};
@@ -527,7 +583,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-### Google Gemini
+#### 2.1.2 Google Gemini
 
 ```rust
 use langchainrust::{GeminiChat, GeminiConfig, BaseChatModel};
@@ -546,7 +602,7 @@ let response = llm.chat(vec![
 ], None).await?;
 ```
 
-### OpenAI Chat
+#### 2.1.3 OpenAI Chat
 
 使用 OpenAI GPT 系列模型。支持自定义 base_url（兼容所有 OpenAI API 格式的服务），temperature 控制随机性。
 
@@ -572,7 +628,7 @@ let response = llm.chat(vec![
 println!("{}", response.content);
 ```
 
-### 流式输出
+#### 2.1.4 流式输出
 
 LLM 生成文本是逐 token 的，流式输出让你实时看到每个 token，而不是等整个回答完成。适合聊天界面、实时展示等场景。
 
@@ -598,7 +654,7 @@ while let Some(chunk) = stream.next().await {
 }
 ```
 
-### 函数调用
+#### 2.1.5 函数调用
 
 让 LLM 决定何时调用工具。`bind_tools` 将工具定义附加到 LLM，LLM 返回 `tool_calls` 而非纯文本。框架负责解析参数、调用工具、返回结果。
 
@@ -631,7 +687,7 @@ if let Some(tool_calls) = response.tool_calls {
 }
 ```
 
-### Ollama（本地 LLM）
+#### 2.1.6 Ollama（本地 LLM）
 
 Ollama 让你在本地运行开源模型（Llama、Mistral 等），无需 API Key，数据不出本机。适合隐私敏感场景或离线使用。
 
@@ -653,7 +709,7 @@ let response = llm.chat(vec![
 
 > **截断流不再被当成完整回答（✨ v0.24.0）**：Ollama 曾是唯一不检查终止标记的 chat provider——字节流提前 EOF（本地模型进程崩了 / 连接被切断）时会带着半截内容**成功返回**。v0.24.0 起解析器跟踪 `saw_terminal`（`[DONE]` 或 `choice.finish_reason`），EOF 前没见到终止标记就返回 `OllamaError::StreamInterrupted(String)`（`#[non_exhaustive]` 新变体，携带已收到的部分内容），与 OpenAI / Azure / Anthropic / Gemini 的契约对齐。升级时注意为这个新错误变体补一个 match 分支。
 
-### 多模态视觉
+#### 2.1.7 多模态视觉
 
 `ImageContent` 表示一张图片（URL 或 base64 数据 URI）。使用 `Message::human_with_image` 构建包含图片的消息；`OpenAIChat` 和 `OllamaChat` 会自动将其序列化为各自原生的多模态格式。
 
@@ -675,7 +731,7 @@ println!("{}", resp.content);
 
 `ImageContent::from_url(url)` / `from_base64(data)` / `from_base64_with_mime(data, mime)`；也可以链式调用 `Message::human(text).with_image(ImageContent)`。`OllamaChat` 同样适用。
 
-### Message 结构 ✨ v0.15.0
+#### 2.1.8 Message 结构 ✨ v0.15.0
 
 `Message` 是统一的对话消息结构，除文本 `content` 外还携带多模态附件与工具调用：
 
@@ -705,7 +761,7 @@ let msg = Message::ai_with_tool_calls("", vec![
 
 构造器覆盖常见组合：`Message::system/human/ai`、`human_with_image(s)`、`human_with_audio`、`human_with_file`、`ai_with_tool_calls`；serde 向后兼容（附件字段带 `#[serde(default)]`，旧数据可反序列化）。
 
-### MultimodalModel（多模态能力） ✨ v0.15.0
+#### 2.1.9 MultimodalModel（多模态能力） ✨ v0.15.0
 
 `MultimodalModel` trait（`BaseChatModel` 扩展）声明语音识别 / 语音合成 / 文生图三个能力接口。**默认实现返回 `MultimodalError::Unsupported`**——只有真正支持该能力的 Provider 才覆盖，避免"看似可用实则报错"的假多模态。OpenAI 系列已实现；其余 Provider 调用对应方法会得到明确的 Unsupported 错误而非静默失败。
 
@@ -719,7 +775,7 @@ let text = llm.transcribe(AudioContent::from_base64(data)).await?; // 仅支持 
 
 ---
 
-### OpenAI Assistants API
+#### 2.1.10 OpenAI Assistants API
 
 `OpenAIAssistant` 封装了官方 OpenAI Assistants API（Assistants / Threads / Run），具有服务端会话状态，适合多轮复杂任务。需要 OpenAI 官方端点；部分兼容模式端点可能不支持。
 
@@ -736,11 +792,133 @@ let answer = assistant.run_once("Translate: Hello").await?;
 **Run 状态**：带工具调用的 Run（`requires_action`）在 `run_once` 的轮询循环内自动处理——`handle_requires_action` 会向 Assistant API 提交工具输出后继续轮询，直至 `completed` 或 `failed`。
 
 <a id="prompts"></a>
-## 提示词
+
+### 2.2 with_structured_output ✨ v0.4.1
+
+#### 2.2.1 概念引入：给个 schema，一步拿到强类型对象
+
+传统做法是"提示模型输出 JSON → 手动解析 → 出错容错 → 再转成类型"，又烦又容易坏——模型输出常常裹着 JSON 代码块、带点废话、偶尔格式不标准。`with_structured_output` 让框架替你完成整套流程：**给个 schema，一步拿到强类型对象**。
+
+什么时候用：
+
+- 需要把模型输出解析成程序可直接使用的结构体
+- 想省掉手写"提示 JSON → 解析 → 容错 → 转换"的胶水
+- 对输出字段有强类型要求，编译期就想要类型安全
+
+#### 2.2.2 工作机制：两套同名 API，别混用
+
+框架里有**两个** `with_structured_output`，名字相同、形状不同：
+
+1. **Provider 自带方法（工具调用约束，推荐）**：`OpenAIChat`（以及 `OpenAICompatibleChat`、`OllamaChat` 等）上的 `chat.with_structured_output::<T>()`——**同步**返回一个 `StructuredOutputMethod<T>`，它把 schema 作为一个 strict 工具声明绑给模型，再用消息调用 `invoke`，从结构化工具参数里直接解析出 `T`：
+
+   ```rust
+   use schemars::JsonSchema;
+   use serde::Deserialize;
+   use langchainrust::language_models::openai::OpenAIChat;
+   use langchainrust::schema::Message;
+
+   #[derive(JsonSchema, Deserialize)]
+   struct Answer {
+       city: String,
+       population: u64,
+   }
+
+   let chat = OpenAIChat::new(config);
+   let method = chat.with_structured_output::<Answer>();        // 注意:不 async,返回的是"方法对象"
+   let answer: Answer = method
+       .invoke(vec![Message::human("日本人口最多的城市是哪座?人口多少?")])
+       .await?;
+   ```
+
+2. **泛用 trait 方法（任意 chat 模型，提示注入 + 容错解析）**：`StructuredOutputExt` 对所有 `BaseChatModel` 自动实现，入参是**手写 JSON Schema + 提示词**，把 schema 注入 system 消息，输出经 `JsonOutputParser` 自动剥 markdown 代码块、容错修复后反序列化：
+
+   ```rust
+   use langchainrust::StructuredOutputExt;
+
+   let schema = serde_json::json!({
+       "type": "object",
+       "properties": { "city": {"type":"string"}, "population": {"type":"integer"} },
+       "required": ["city", "population"]
+   });
+   let answer: Answer = chat
+       .with_structured_output::<Answer>(schema, "日本人口最多的城市是哪座?人口多少?")
+       .await?;
+   ```
+
+选型很简单：OpenAI 及其兼容后端用第 1 种（走原生工具调用，不依赖模型自觉遵守文本格式）；模型不支持工具调用、或你只拿到一个泛型 `BaseChatModel` 时用第 2 种。
+
+#### 2.2.3 流式版本 stream_structured_output
+
+`StreamingStructuredOutputExt` trait（同样对所有 `BaseChatModel` 自动实现）提供流式版：JSON 一边生成一边经 `PartialJsonParser` 增量解析，**字段一出来就能用**——每成功解析一次就 yield 一个 `T`（已生成的字段填值，其余为默认），流末给最终完整对象。适合前端边收边渲染，比如"书名先出来、作者后出来、年份最后"。
+
+```rust
+use langchainrust::StreamingStructuredOutputExt;
+use futures_util::StreamExt;
+
+let mut stream = chat
+    .stream_structured_output::<Answer>(schema, "列出三本 Rust 经典书")
+    .await?;
+while let Some(item) = stream.next().await {
+    let partial: Answer = item?;   // 累积中的部分结果
+}
+```
+
+> 注意 trait 约束：流式版的 `T` 除 `Deserialize + Serialize` 外还需 `Clone + PartialEq + Unpin`（相邻解析结果去重）。
+
+#### 2.2.4 关键行为
+
+| 行为 | 说明 |
+|---|---|
+| schema 定义 | 用 Rust 结构体 + `JsonSchema` / `Deserialize` 派生声明输出结构（provider 方法自动 `schema_for!`） |
+| 工具调用约束 | `OpenAIChat` 等的方法把 schema 绑成 strict 工具，从 tool 参数直接解析，不靠文本格式 |
+| 泛用回落 | `StructuredOutputExt` 对任意模型注入 schema 提示 + `JsonOutputParser` 容错解析 |
+| 类型安全 | 返回编译期确定的强类型，不手写解析 |
+| 流式版本 | `stream_structured_output` + `PartialJsonParser` 边生成边解析，产出部分结果流 |
+
+#### 2.2.5 怎么选
+
+- OpenAI / 兼容后端、要"一次拿完整结果、类型确定"→ `chat.with_structured_output::<T>()` 再 `invoke(messages)`。
+- 要"边生成边用、逐字段渲染"→ `stream_structured_output(schema, prompt)`。
+- 要引擎在解码层就**保证**合法 JSON（而不是事后解析）→ 下一节 `with_json_schema_output`。
+- 只是想解析模型已有的输出（不是让模型按 schema 返回）→ 直接用 `JsonOutputParser` 或 `TypedOutputParser` 等解析器。
+
+#### 2.2.6 原生 JSON Schema 引擎约束（with_json_schema_output）✨ v0.21.0
+
+上面两条路径都是**拿到输出后再解析**——模型仍可能给出不合 schema 的内容。`with_json_schema_output` 把 schema 直接下发给 OpenAI（`response_format: {type: "json_schema", strict: true}`），由**引擎在解码时约束**每个 token 只能生成合乎 schema 的 JSON，从源头消灭格式错误。
+
+```rust
+use schemars::JsonSchema;
+use serde::Deserialize;
+use langchainrust::language_models::openai::OpenAIChat;
+use langchainrust::schema::Message;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Person {
+    name: String,
+    age: u32,
+}
+
+let chat = OpenAIChat::new(config);
+let method = chat.with_json_schema_output::<Person>(); // 自动生成 strict json_schema
+let person: Person = method.invoke(vec![Message::human("Introduce Alice, 30.")]).await?;
+```
+
+**关键行为**：
+
+- schema 由 **schemars 1.x** 从 Rust 类型生成;`make_strict_schema` 自动补 `additionalProperties: false` + 全字段 `required`(strict 模式要求)
+- 提供该方法的只有 `OpenAIChat` 与 v0.22.4 起的 `OpenAICompatibleChat`(后者原样转发 `response_format`,Groq/OpenRouter/xAI 等后端在底层模型支持时才生效);不支持时服务端会显式回 4xx,不静默降级。`OllamaChat` 等其他 provider 只有工具调用版 `with_structured_output`
+- `AnthropicChat` / `GeminiChat` 各有自己的结构化输出方法类型(`AnthropicStructuredOutputMethod` / `GeminiStructuredOutputMethod`)
+- `PartialJsonParser` 流式增量解析保留为泛用 fallback 与流式路径
+
+---
+
+<a id="filevectorstore"></a>
+
+### 2.3 提示词
 
 提示词模板将变量占位符（`{name}`）替换为实际值，避免手动拼接字符串。框架提供三种模板，覆盖从简单到复杂的所有场景。
 
-### PromptTemplate
+#### 2.3.1 PromptTemplate
 
 最基础的模板——单条文本，用 `{variable}` 占位。适合不需要区分角色、只需拼一段 prompt 的场景。
 
@@ -766,7 +944,7 @@ let prompt = template.format(&vars)?;
 - **缺失变量报错**：模板引用了变量但未提供时，`format` 返回包含 `missing` 的明确错误，**不会**静默保留 `{var}` 原文——避免脏 prompt 悄悄进 LLM
 - **FewShot 后缀同样校验**：后缀中的未声明变量也报错（原先会静默保留 `{answer}` 原文，已修复）
 
-### ChatPromptTemplate
+#### 2.3.2 ChatPromptTemplate
 
 多轮消息模板——每条消息有角色（system/human/ai），变量在消息文本中替换。适合需要设定系统角色、区分对话轮次的场景，是 Agent 和 Chain 中最常用的模板。
 
@@ -790,7 +968,7 @@ let vars = HashMap::from([
 let messages = template.format(&vars)?;
 ```
 
-### FewShotPromptTemplate
+#### 2.3.3 FewShotPromptTemplate
 
 少样本模板——在 prompt 前插入若干"输入→输出"示例，教 LLM 按特定格式回答。适合需要引导输出格式（如翻译、情感分析、格式转换）的场景。LLM 看到示例后，会模仿示例的格式来回答。
 
@@ -816,7 +994,7 @@ let prompt = FewShotPromptTemplate::new(
 );
 ```
 
-### ExampleSelectors
+#### 2.3.4 ExampleSelectors
 
 当示例很多时，不需要全部塞给 LLM——选择器按策略挑选最相关的示例，节省 token 并提高质量。
 
@@ -828,7 +1006,7 @@ let selector = LengthBasedExampleSelector::new(examples) // examples: Vec<HashMa
     .with_max_length(50);
 ```
 
-### 版本化提示词注册表(PromptRegistry) ✨ v0.22.4
+#### 2.3.5 版本化提示词注册表(PromptRegistry) ✨ v0.22.4
 
 **解决什么痛点:** prompt 是整个系统里调得最勤的"代码",但散落在各文件里的 `&str` 常量让三件事做不到——线上回答突然变差,查不出是哪次改 prompt 导致的;想回滚必须重新发版;多个组件共享一份字符串,谁都能悄悄改掉,正在跑的评测无法钉在"当时那一版"上。`PromptRegistry` 给提示词一个**只增不改、可寻址、可审计**的登记处。
 
@@ -883,7 +1061,8 @@ let _  = registry.resolve_ref("customer/support/zh@hash:9f2a1c0")?; // 或裸十
 ---
 
 <a id="output-parsers"></a>
-## 输出解析器
+
+### 2.4 输出解析器
 
 LLM 返回的是纯文本字符串，输出解析器将其转换为结构化数据。选择哪个解析器取决于你需要什么格式：
 
@@ -897,7 +1076,7 @@ LLM 返回的是纯文本字符串，输出解析器将其转换为结构化数�
 
 > **提示**：如果 LLM 支持 Function Calling，优先使用 `with_structured_output()`——它比解析器更可靠。
 
-### StrOutputParser
+#### 2.4.1 StrOutputParser
 
 最简单的解析器——原样返回文本。通常作为 LCEL 管道的最后一步，确保输出类型是 `String`。
 
@@ -908,7 +1087,7 @@ let parser = StrOutputParser::new();
 let result = parser.parse("Hello world")?;
 ```
 
-### CommaSeparatedListOutputParser
+#### 2.4.2 CommaSeparatedListOutputParser
 
 将逗号分隔的文本解析为字符串列表。适合让 LLM 列举项目、标签、关键词等场景。
 
@@ -919,7 +1098,7 @@ let parser = CommaSeparatedListOutputParser::new();
 let result = parser.parse("apple, banana, cherry")?;
 ```
 
-### JsonOutputParser
+#### 2.4.3 JsonOutputParser
 
 从 LLM 输出中提取 JSON。支持完整 JSON 和从 markdown 代码块中提取部分 JSON（LLM 经常把 JSON 包在 ` ```json ``` ` 里）。
 
@@ -935,7 +1114,7 @@ let result: Value = parser.parse(r#"{"name": "Rust"}"#)?;
 let partial = parser.parse_partial("Here is the JSON:\n```json\n{\"name\": \"Rust\"\n}")?;
 ```
 
-### StructuredOutputParser
+#### 2.4.4 StructuredOutputParser
 
 将 `key: value` 格式的文本解析为 HashMap。比 JsonOutputParser 更宽松——LLM 不需要输出严格的 JSON 格式，只需按行写 `key: value` 即可。
 
@@ -953,7 +1132,7 @@ let result: HashMap<String, String> = parser.parse(
 )?;
 ```
 
-### TypedOutputParser\<T\>
+#### 2.4.5 TypedOutputParser\<T\>
 
 将 JSON 文本反序列化为强类型结构体。需要 `T` 实现 `Deserialize`。比 `JsonOutputParser<Value>` 更安全——编译时就能检查字段类型。
 
@@ -976,7 +1155,103 @@ let person: Person = parser.parse(
 ---
 
 <a id="memory"></a>
-## 记忆
+
+### 2.5 LLM 缓存
+
+#### 2.5.1 概念引入：为什么要缓存
+
+LLM 调用是应用中最慢、最贵的部分——一次请求要跨网络、排队、生成，既耗时又花钱。当用户反复问同一个问题、或批处理里出现大量重复请求时，每次都真实调用 API 既慢又费预算。缓存的思路很朴素：**同样的输入直接复用上次的结果**，不再发起真实 LLM 调用。
+
+什么时候用：
+
+- 高频重复查询（如同一个问题发给多用户、同一批文档反复摘要）
+- 批处理 / 评测中大量相似或相同的输入
+- 结果确定性要求高、可容忍偶发陈旧
+
+工作流程（2 步）：
+
+1. 构造 `CacheConfig`，声明 TTL（存活时间）与容量上限
+2. 创建 `LLMCache`，用 `build_key` 判键 + `get`/`put` 读写缓存（`LLMCache` 是独立组件，不自动挂到模型上）
+
+#### 2.5.2 工作机制
+
+##### 2.5.2.5 判键逻辑
+
+缓存以调用输入作为判键：输入完全一致（如相同的消息序列）时命中，直接复用上次结果；输入不同则视为新条目。判键决定了缓存"认不认识"这次请求——想让缓存生效，重复调用的输入就要保持一致。
+
+##### 2.5.2.6 TTL 过期
+
+每条记录带 TTL（存活时间），超过多久自动失效。`with_ttl` 设置全局过期时间。过期条目在访问 / 淘汰时被清理，避免"旧答案一直占着位置"。
+
+##### 2.5.2.7 容量限制 + LRU 淘汰
+
+`with_max_entries` 声明最多缓存多少条。缓存满了要淘汰旧条目——采用 **LRU（最久未用）淘汰**：淘汰"最久没被访问过"的那条，而不是"最早插入"的那条。这样频繁命中的热点不会被新条目挤掉，缓存命中率才稳。v0.14.0 起，命中缓存会刷新条目的"最近使用时间"，淘汰语义为真正的 LRU。
+
+##### 2.5.2.8 命中刷新
+
+每次缓存命中（get）时刷新条目的"最近使用时间"，保证 LRU 语义正确——刚被用过的条目"变年轻"，不会被紧接着的插入挤掉。
+
+#### 2.5.3 带 TTL 的内存缓存
+
+```rust
+use langchainrust::core::cache::{CacheConfig, LLMCache};
+use std::time::Duration;
+
+let config = CacheConfig::new()
+    .with_ttl(Duration::from_secs(3600))  // 1 小时
+    .with_max_entries(1000);              // 1000 条记录
+
+let cache = LLMCache::with_config(config);
+
+// LLMCache 是独立组件，手动接入调用路径：build_key 判键，get/put 读写
+let messages = vec![Message::human("Hello")];
+let key = LLMCache::build_key(&messages, "gpt-4o")?;
+
+if let Some(hit) = cache.get(&key).await {
+    // 缓存命中，直接用缓存结果
+    let result = hit.result;
+} else {
+    // 未命中，真实调用后写入缓存
+    let result = llm.chat(messages, None).await?;
+    cache.put(key, result).await;
+}
+```
+
+#### 2.5.4 关键行为一览
+
+| 行为 | 说明 |
+|---|---|
+| 判键 | 相同输入直接复用上次结果，不再真实调用 |
+| TTL 过期 | 超过存活时间自动失效 |
+| 容量上限 | `with_max_entries` 控制最多缓存条数，满了触发淘汰 |
+| LRU 淘汰 | 淘汰"最久未用"的条目，热点不被挤掉 |
+| 命中刷新 | get 命中刷新最近使用时间，保证 LRU 语义正确 |
+
+#### 2.5.5 怎么选 / 使用建议
+
+- 结果越稳定、请求越重复，缓存收益越大；`with_ttl` 设长一点能覆盖更多重复请求。
+- 对实时性敏感的数据（价格、库存、最新状态）不建议缓存，或把 TTL 调短。
+- 这是**内存级**缓存——进程重启即清空；需要跨进程 / 重启持久化时，应把"判键 → 结果"落到外部存储。
+
+---
+
+<a id="lcel-langchain-expression-language-"></a>
+
+### 2.6 RouterLLM（模型路由 + 回退）
+`RouterLLM` 是一个 `BaseChatModel` 之上的路由层:把一次请求投给路由池里最合适的模型,失败 / 超预算时自动回退到下一个候选。它是多模型灰度、预算 / 延迟路由、高可用兜底的一体化方案。
+
+- 六种 `RoutingStrategy`(首选 / Fallback / 预算 / RPS / 延迟加权抽签)
+- 共享 `RouterBudget` 美元/token 闸门(可多路由共享、超限让路)
+- 每模型限流 `ModelRateLimit`(RPS / RPM / 并发 / 等待队列)
+
+> 完整 API、约束与代码示例见 [**附录.1.1 RouterLLM（模型路由 + 回退）**](#附录11-routerllm模型路由--回退)
+
+
+> **相关能力延伸:** [OpenAI Responses API（见附录）](#附录18-openai-responses-api) · [Anthropic Extended Thinking（见附录）](#附录19-anthropic-extended-thinking) · [流式结构化输出（见附录）](#附录110-流式结构化输出)
+
+## 第三章 · 记忆与会话
+
+### 3.1 记忆
 
 记忆给链或智能体加"上下文":让多轮对话记住前面说了什么,而不用每次把整段历史塞进提示词。内置的对话记忆有四种,另有向量检索记忆,各有取舍:
 
@@ -993,7 +1268,7 @@ let person: Person = parser.parse(
 - 想跨会话记住"关于用户的事实"(偏好、身份、项目背景)而不是对话原文 → 用两层语义记忆 `TwoTierMemory`(v0.22.4,见本章末);
 - 所有对话记忆实现统一 `BaseChatMemory` trait,可即插即换。
 
-### ConversationBufferMemory
+#### 3.1.1 ConversationBufferMemory
 
 保留所有对话历史：
 
@@ -1011,7 +1286,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 // 输出："Human: My name is Alice\nAI: Hello Alice!"
 ```
 
-### ConversationBufferWindowMemory
+#### 3.1.2 ConversationBufferWindowMemory
 
 仅保留最近 k 轮对话。当对话很长、不需要完整历史时使用，避免 token 超限。
 
@@ -1032,7 +1307,7 @@ for i in 1..=5 {
 let vars = memory.load_memory_variables(&HashMap::new()).await?;
 ```
 
-### ConversationSummaryBufferMemory（推荐）
+#### 3.1.3 ConversationSummaryBufferMemory（推荐）
 
 对旧消息进行摘要压缩，保留近期消息原文。结合了 BufferMemory（保留近期细节）和 SummaryMemory（压缩旧内容）的优点，是长对话场景的最佳选择。
 
@@ -1061,7 +1336,7 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 ---
 
-### VectorStoreRetrieverMemory
+#### 3.1.4 VectorStoreRetrieverMemory
 
 将每轮对话嵌入向量存储，根据当前输入的语义相似度召回 top-k 相关历史。与固定窗口的缓冲记忆相比，在长对话/跨会话场景中能保留更多有用的上下文。
 
@@ -1082,12 +1357,12 @@ let vars = memory.load_memory_variables(&HashMap::new()).await?;
 
 **权衡**：语义召回在长对话中保留关键信息；但依赖向量存储 + 嵌入模型（额外成本）。
 
-### 统一 BaseChatMemory trait ✨ v0.15.0
+#### 3.1.5 统一 BaseChatMemory trait ✨ v0.15.0
 
 所有对话记忆实现统一的 `BaseChatMemory` trait（`save_context` / `load_memory_variables` / `clear`），可互换、可进入 LCEL 管道（`RunnableWithMessageHistory::new(llm, memory)` 直接收任意 `BaseMemory`）。
 
 <a id="mongopersistentmemory"></a>
-### MongoPersistentMemory（跨进程持久化） ✨ v0.15.0
+#### 3.1.6 MongoPersistentMemory（跨进程持久化） ✨ v0.15.0
 
 把对话历史持久化到 MongoDB，服务重启不丢，多实例共享同一份记忆。内部组合 `ConversationSummaryBufferMemory`，自带 token 预算；并发写入用乐观锁防丢更新。
 
@@ -1106,11 +1381,11 @@ memory.set_session_id_async("user-123".to_string()).await;  // 绑定会话
 memory.save_context(&inputs, &outputs).await?;
 ```
 
-### 摘要失败的可见性
+#### 3.1.7 摘要失败的可见性
 
 `ConversationSummaryMemory` / `ConversationSummaryBufferMemory` 提供 `last_summary_error() -> Option<&str>`：LLM 摘要步骤失败时不会吞错，调用方可读取上次失败原因并决定降级策略。
 
-### ContextWindow（长上下文管理） ✨ v0.4.1
+#### 3.1.8 ContextWindow（长上下文管理） ✨ v0.4.1
 
 `ContextWindow` 管理长对话的 token 预算，提供两种策略：截断（Truncate）和摘要（Summarize）。
 
@@ -1133,13 +1408,13 @@ let fitted = cw.fit(messages).await?;
 
 > **细节**：`Truncate` 策略总是保留 `System` 消息（角色/指令不因截断而丢失）；`Summarize` 策略生成的摘要计入 token 预算，避免压缩后再超限。
 
-### 两层语义记忆:跨会话的"事实记忆" ✨ v0.22.4
+#### 3.1.9 两层语义记忆:跨会话的"事实记忆" ✨ v0.22.4
 
 上面的所有记忆管的都是**对话历史**——下一条 prompt 里要放哪些消息。v0.22.4 在 `lc-memory` 里新增了第二套抽象,管的是**知识**:从已完成的对话轮次中提炼出的、关于用户/任务的**持久事实**("用户偏好 Rust"、"用户在做 langchainrust 项目"),按命名空间隔离、按含义而不是按消息时间线召回。
 
 **它解决的痛点**:对话窗口装不下跨会话事实。会话摘要记忆压缩的是"聊了什么",事实会随摘要轮次损耗;而且摘要只在本会话内有效。语义记忆把"值得长期记住的事实"单独存一份,新会话开始时按当前问题的语义召回相关条目注入 prompt——这正是生成式智能体(generative agents)类系统的记忆模型。
 
-#### 统一接口 MemoryStore
+##### 3.1.9.7 统一接口 MemoryStore
 
 三种存储(`ShortTermMemory` / `LongTermMemory` / `TwoTierMemory`)实现同一个 trait,都可以 `Arc` 共享给多个执行器:
 
@@ -1161,7 +1436,7 @@ pub trait MemoryStore: Send + Sync {
 - 返回的 `MemoryHit { key, text, score, importance, tier: MemoryTier, metadata }` 标明命中来自 `MemoryTier::Short` 还是 `Long`。
 - `get` / 被 `search` 命中都算**一次访问**(刷新 `last_access_at`、`access_count +1`)——这是后面晋升机制的计数来源。
 
-#### 相似度从哪来:SemanticScorer 与零依赖默认值
+##### 3.1.9.8 相似度从哪来:SemanticScorer 与零依赖默认值
 
 ```rust
 #[async_trait]
@@ -1172,7 +1447,7 @@ pub trait SemanticScorer: Send + Sync {
 
 默认实现 `LexicalScorer` **不调用任何模型**:对两段文本做 Unicode 感知分词、算词频向量的 cosine 相似度,完全离线、确定、零额外依赖。这意味着开箱即用的"语义"召回实质上是**词汇重合度**匹配——问"退款政策"能召回含"退款""政策"字样的事实,但召不回只写了"退货多久能到账"的近义条目。想要真正的向量语义,自己实现 `SemanticScorer`(内部调你的嵌入模型),通过 `ShortTermMemory::with_scorer(capacity, Arc::new(scorer))` 或 `LongTermMemory::with_config(weights, Arc::new(scorer))` 注入,存储层不用改一行。
 
-#### 两层各是什么
+##### 3.1.9.9 两层各是什么
 
 | | 短期 `ShortTermMemory::new(capacity)` | 长期 `LongTermMemory::new()` |
 |---|---|---|
@@ -1190,7 +1465,7 @@ score = 0.70 · 相似度 + 0.15 · 2^(−age / 半衰期 · ln2) + 0.15 · 重�
 - 可调:`DecayWeights::new().with_weights(0.6, 0.2, 0.2).with_half_life(Duration::from_secs(3*24*3600))`。
 - 效果:常被召回的事实持续"保鲜",高重要度的旧事实仍能被翻出来,又老又没人碰的事实自然沉底。
 
-#### TwoTierMemory:组合两层 + 晋升
+##### 3.1.9.10 TwoTierMemory:组合两层 + 晋升
 
 ```rust
 use langchainrust::memory::{TwoTierMemory, MemoryItem, MemoryQuery, PromotionPolicy};
@@ -1217,7 +1492,7 @@ let hits = mem.search(&MemoryQuery::new("user-42", "他喜欢什么语言").k(5)
 
 晋升是 **OR 条件**:重要度达标(写入时就被认定的高价值事实)**或**反复被访问(用出来的高价值事实),任一满足即晋升。重复晋升不会产生重复条目——长期层按 key 合并:保留最早创建时间、累加访问次数、重要度取最大、文本更新为最新、metadata 合并。
 
-#### 与 AgentExecutor 接线:回忆在前、抽取在后
+##### 3.1.9.11 与 AgentExecutor 接线:回忆在前、抽取在后
 
 `lc-agents` 提供了 LLM 事实抽取器 `LlmMemoryExtractor`(facade 顶层直接导出),并在执行器上留了一个开关,**默认关闭**:
 
@@ -1240,7 +1515,7 @@ let executor = executor.with_semantic_memory(
 
 `LlmMemoryExtractor` 的容错设计值得知道:模型被要求只回一个 JSON 数组(`{key, text, importance}`),但解析器容忍围栏代码块和前后散文(走 `parse_llm_json`),也接受 `{"memories":[...]}` / `{"items":[...]}` 信封;单条坏数据跳过不致命;缺 importance 默认 0.5;缺 key 时由事实文本归一化派生稳定 key(同一事实抽两次只更新一条);每轮最多收 10 条防失控;assistant 输出为空白时直接短路、不调模型。
 
-#### 边界与注意
+##### 3.1.9.12 边界与注意
 
 - **纯内存,没有内置持久化**:三个存储都是进程内结构(`Arc` 可跨任务共享),drop 即遗忘。跨进程/重启保留需要自己实现 `MemoryStore`(接 Mongo 等),或在应用层定期快照。
 - **默认打分是词面匹配不是向量语义**;要嵌入语义请自备 `SemanticScorer`。
@@ -1248,93 +1523,175 @@ let executor = executor.with_semantic_memory(
 - 召回注入的是模型外部内容,已按不可信数据处理,但你的模板应避免把该块放进可执行指令位置。
 
 <a id="llm-cache"></a>
-## LLM 缓存
 
-### 概念引入：为什么要缓存
+### 3.2 Sessions
 
-LLM 调用是应用中最慢、最贵的部分——一次请求要跨网络、排队、生成，既耗时又花钱。当用户反复问同一个问题、或批处理里出现大量重复请求时，每次都真实调用 API 既慢又费预算。缓存的思路很朴素：**同样的输入直接复用上次的结果**，不再发起真实 LLM 调用。
+> **⚠️ v0.22.0 起推荐事件溯源路径**：本节前半部分介绍的 `SessionManager` 已标 `#[deprecated]`（原计划 0.23.0 移除；截至 0.24.0 仍随 crate 保留、可编译运行，仅发出 deprecation 警告）。新代码请直接用 [`EventSessionManager`](#327-事件溯源重写--v0220推荐路径)（见下方"事件溯源重写"节）；存量代码升级后仍可编译运行，只会出现 deprecation 警告。
 
-什么时候用：
+**解决什么问题**：多轮对话必须记住上下文——用户上一轮说了什么、助手怎么回的。但"记在哪、怎么存、怎么取"是每个应用都要重复实现的样板。`SessionManager` 把会话抽象成生命周期管理：创建会话 → 往里写对话 → 随时取历史 → 归档/清理。同时天然支持**多会话隔离**：每个会话有独立 id 和归属用户，不同用户、不同话题的对话互不串扰。
 
-- 高频重复查询（如同一个问题发给多用户、同一批文档反复摘要）
-- 批处理 / 评测中大量相似或相同的输入
-- 结果确定性要求高、可容忍偶发陈旧
-
-工作流程（2 步）：
-
-1. 构造 `CacheConfig`，声明 TTL（存活时间）与容量上限
-2. 创建 `LLMCache`，用 `build_key` 判键 + `get`/`put` 读写缓存（`LLMCache` 是独立组件，不自动挂到模型上）
-
-### 工作机制
-
-#### 判键逻辑
-
-缓存以调用输入作为判键：输入完全一致（如相同的消息序列）时命中，直接复用上次结果；输入不同则视为新条目。判键决定了缓存"认不认识"这次请求——想让缓存生效，重复调用的输入就要保持一致。
-
-#### TTL 过期
-
-每条记录带 TTL（存活时间），超过多久自动失效。`with_ttl` 设置全局过期时间。过期条目在访问 / 淘汰时被清理，避免"旧答案一直占着位置"。
-
-#### 容量限制 + LRU 淘汰
-
-`with_max_entries` 声明最多缓存多少条。缓存满了要淘汰旧条目——采用 **LRU（最久未用）淘汰**：淘汰"最久没被访问过"的那条，而不是"最早插入"的那条。这样频繁命中的热点不会被新条目挤掉，缓存命中率才稳。v0.14.0 起，命中缓存会刷新条目的"最近使用时间"，淘汰语义为真正的 LRU。
-
-#### 命中刷新
-
-每次缓存命中（get）时刷新条目的"最近使用时间"，保证 LRU 语义正确——刚被用过的条目"变年轻"，不会被紧接着的插入挤掉。
-
-### 带 TTL 的内存缓存
+**核心三件套**：`Session`（会话本身）← `SessionStore`（怎么存）← `SessionManager`（怎么用）。
 
 ```rust
-use langchainrust::core::cache::{CacheConfig, LLMCache};
-use std::time::Duration;
+use langchainrust::sessions::{SessionManager, MemorySessionStore};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
 
-let config = CacheConfig::new()
-    .with_ttl(Duration::from_secs(3600))  // 1 小时
-    .with_max_entries(1000);              // 1000 条记录
+let manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
+let id = manager.create_session_for("user_1").await?;
 
-let cache = LLMCache::with_config(config);
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?; // 记住上一轮对话
 
-// LLMCache 是独立组件，手动接入调用路径：build_key 判键，get/put 读写
-let messages = vec![Message::human("Hello")];
-let key = LLMCache::build_key(&messages, "gpt-4o")?;
-
-if let Some(hit) = cache.get(&key).await {
-    // 缓存命中，直接用缓存结果
-    let result = hit.result;
-} else {
-    // 未命中，真实调用后写入缓存
-    let result = llm.chat(messages, None).await?;
-    cache.put(key, result).await;
-}
+let history = manager.history(&id).await?;  // Vec<Message>
+manager.clear(&id).await?;                   // 清除历史（保留会话）
+manager.archive(&id).await?;                 // 归档
+let sessions = manager.list_by_user("user_1").await?;
 ```
 
-### 关键行为一览
+#### 3.2.1 会话模型
 
-| 行为 | 说明 |
+| 字段 | 作用 |
 |---|---|
-| 判键 | 相同输入直接复用上次结果，不再真实调用 |
-| TTL 过期 | 超过存活时间自动失效 |
-| 容量上限 | `with_max_entries` 控制最多缓存条数，满了触发淘汰 |
-| LRU 淘汰 | 淘汰"最久未用"的条目，热点不被挤掉 |
-| 命中刷新 | get 命中刷新最近使用时间，保证 LRU 语义正确 |
+| `id` | 会话唯一标识 |
+| `user_id` | 归属用户（可空，支持匿名） |
+| `messages` | 对话消息列表（`Vec<Message>`），追加式增长 |
+| `status` | 生命周期状态（`Active` / `Archived` / `Deleted`） |
+| `metadata` | 自由键值扩展属性 |
 
-### 怎么选 / 使用建议
+#### 3.2.2 SessionManager 方法
 
-- 结果越稳定、请求越重复，缓存收益越大；`with_ttl` 设长一点能覆盖更多重复请求。
-- 对实时性敏感的数据（价格、库存、最新状态）不建议缓存，或把 TTL 调短。
-- 这是**内存级**缓存——进程重启即清空；需要跨进程 / 重启持久化时，应把"判键 → 结果"落到外部存储。
+| 方法 | 作用 |
+|---|---|
+| `create_session_for(user)` | 建新会话，返回会话 id |
+| `chat(&id, &llm, msg)` | 核心：追加用户消息 → 拿历史喂 LLM → 把回复追加回会话（自动维护历史） |
+| `history(&id)` | 取完整对话历史（`Vec<Message>`） |
+| `clear(&id)` | 清除历史（保留会话） |
+| `archive(&id)` | 归档（不再活跃，但保留） |
+| `list_by_user(user)` | 列出某用户的全部会话 |
+
+`chat()` 是核心——调用方只传"会话 id + LLM + 用户消息"，历史读写都由 `SessionManager` 包办，不需要手动维护 `Vec<Message>`。
+
+#### 3.2.3 会话级历史管理
+
+- 每个会话的历史独立维护；`chat()` 每次基于该会话已有历史喂给 LLM，所以同一会话第二句才能"记住上一轮"。
+- 默认用内部缓冲直接维护完整历史，简单直接；长会话 token 会随轮数线性增长，需要控制成本时挂记忆组件（见下）。
+- `SessionStore` trait 包含 `create/get/update/delete/list_by_user`；`MemorySessionStore` 为内置实现（进程内存 + tokio 锁），适用于测试和单进程使用；可实现自己的后端（Redis / 数据库）。
+
+#### 3.2.4 会话生命周期 ✨ v0.15.0
+
+`SessionStatus` 状态机闭环：`Active` → `Archived` → `Deleted`。删除为**软删除**：记录保留（可审计/恢复），但不再出现在用户会话列表中。
+
+#### 3.2.5 接入记忆系统 ✨ v0.15.0
+
+`SessionManager` 默认用内部缓冲维护历史；`with_memory` 可挂接任意 `BaseMemory`（如 `ConversationSummaryBufferMemory` / `MongoPersistentMemory`），让会话历史走摘要压缩或跨进程持久化：
+
+```rust
+let mut manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
+manager = manager.with_memory(Arc::new(Mutex::new(
+    ConversationSummaryBufferMemory::new(llm, 2000),
+)));
+let r = manager.chat(&id, &llm, "问题".to_string()).await?;
+```
+
+**怎么选记忆（人话）**：不挂，保持全量历史，语义最简单但长会话会膨胀；挂 `ConversationSummaryBufferMemory`，长会话被压成"摘要 + 近期窗口"，控制 token 成本；挂持久化记忆，历史能跨进程存活、多实例共享。挂上后对话历史由记忆组件处理，而不是全量透传。
+
+#### 3.2.6 注意
+
+- **并发写同一会话**：`chat()` 内部是"读取 → 追加 → 写回"三步，同一会话的并发写入需要自行串行化（如按会话加锁），否则可能丢消息。
+- **会话 vs 长期记忆**：lc-sessions 管"一次对话的过程记录"，跨会话的长期记忆（人设、偏好）交给 lc-memory；会话是按时间组织的对话上下文。
+- **会话 vs 检查点**：会话存"聊了什么"；检查点（Checkpointer）存"图执行到哪一步"（lc-langgraph）。两者都涉及持久化，但语义不同。
+- **存储选型**：测试、单进程场景用 `MemorySessionStore` 足够；多实例 / 需要跨进程共享历史时，换数据库或 Redis 后端实现 `SessionStore`。
+
+#### 3.2.7 事件溯源重写 ✨ v0.22.0（推荐路径）
+
+**解决什么问题**：旧 `SessionManager` 是"改写式"——每次对话把整个 `Session` 读出来、改完写回去。三个硬伤：① 进程崩溃在"读-改-写"中间会**丢消息或丢整轮**；② 无法分叉——想试验一个分支对话只能复制整个会话；③ 没有"时间旅行"——无法回答"第 5 轮时的历史长什么样"。
+
+0.22.0 起 lc-sessions 重写为**事件溯源（Event Sourcing）**：会话不再是可变对象，而是一条**只追加（append-only）的事件日志**。每次对话只追加事件，历史 = 从头投影（replay），崩溃安全、可分叉、可回放。
+
+**核心四件套**：`SessionEvent`（事件）← `EventStore`（怎么存）← `EventSessionManager`（怎么用）← `project()`（怎么投影）。
+
+```rust
+use langchainrust::sessions::{EventSessionManager, MemoryEventStore, AutoCompaction};
+use langchainrust::{OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let manager = EventSessionManager::new(Arc::new(MemoryEventStore::new()))
+    .with_max_context_turns(10)                                  // 轮窗（默认全量）
+    .with_auto_compaction(AutoCompaction::new(20)?);             // 超 20 轮自动压快照
+
+let id = manager.create_session().await?;                        // uuid v7
+
+let llm = OpenAIChat::new(OpenAIConfig::default());
+let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
+let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?;
+
+let history = manager.history(&id).await?;   // 投影后的 Vec<Message>
+// 清理/归档/删除:向 EventStore 追加 Metadata 事件(日志不可变,见下文"事件类型")
+```
+
+**旧 API → 新 API 对照**（旧 `SessionManager` / `SessionManagerRunnable` 自 0.22.0 起标 `#[deprecated]`，原计划 0.23.0 移除；截至 0.24.0 仍保留可用，`#[allow(deprecated)]` 可静默警告）：
+
+| 旧（0.21.x） | 新（0.22.0） | 语义变化 |
+|---|---|---|
+| `SessionManager::new(Arc<dyn SessionStore>)` | `EventSessionManager::new(Arc<dyn EventStore>)` | 存储换为 append-only 事件日志；`MemoryEventStore` 对应 `MemorySessionStore` |
+| `create_session() / create_session_for(user)` | `create_session()`（uuid v7） | 会话存在性 = 日志非空；用户归属走 `Metadata` 事件 |
+| `chat(&id, &llm, msg)` | `chat(&id, &llm, msg)` | 同签名同语义，持久化从"改写"变为"追加"——崩溃安全 |
+| `history(&id)` | `history(&id)` / `replay_session(&id)` | history = 投影后的消息；`replay_session` 给出旧式可变 `Session` 视图 |
+| （无） | `fork_session(&id, branch, until)` | **新**：从主干复制前缀到新分支，主干不受影响 |
+| `max_context_messages(n)`（消息计数窗） | `with_max_context_turns(n)`（轮窗） | n=1 含完整上一轮 + 当前消息；保证 user/ai 成对、无孤儿工具结果 |
+| （无） | `with_auto_compaction(AutoCompaction)` | **新**：超 N 轮自动追加确定性 Snapshot 事件（无 LLM 调用） |
+| `clear / archive / delete_session` | 直接向 `EventStore` 追加 `Metadata` 事件（截至 0.24.0 仍由调用方直接追加，封装方法尚未落地） | 事件日志不可变,"清理"变为追加状态事件 |
+| `SessionStore`（自定义存储 trait） | `EventStore` | 四方法：`append / append_batch / read / fork`；append 幂等键 `(session, branch, id)` |
+
+#### 3.2.8 会话分叉（fork）
+
+```rust
+// 从主干复制"到某事件序号为止"的前缀到新分支,主干不受影响
+// 返回的是一个绑定到新分支的 manager(同一 session_id,事件序号独立)
+let mut experiment = manager.fork_session(&id, "experiment", None).await?;
+// 继续在分支上 chat:写进 "experiment" 分支,主干看不到
+experiment.chat(&id, &llm, "分支消息".to_string()).await?;
+// 对同一 (session, branch) 重复 fork 是幂等的——前缀一致,不重复
+```
+
+`until_id: Option<u64>` 是事件序号(从 0 起):只复制到该序号为止——"回到第 5 轮再试另一种回答"就是 `fork_session(&id, "retry", Some(5))`。
+
+#### 3.2.9 崩溃安全与回放
+
+- **幂等追加**：`append` 以 `(session_id, branch, id)` 为幂等键，同一事件重放不会重复写入——进程在"追加到一半"崩溃后，重启重放残缺批次是安全的。
+- **投影（project）**：`project(&events)` / `to_session(&events)` 从事件流重建会话状态；孤儿工具结果（有 tool result 无对应 tool call）在投影时被检测并报错，保证喂给 LLM 的历史永远成对合法。
+- **检查点占位**：`SessionCheckpoint` trait + `NoopCheckpoint` 已就位；持久化检查点（把投影落库）原计划 0.23.0 接入，截至 0.24.0 仍只有 no-op 实现，恢复时需全量重放事件日志。
+
+#### 3.2.10 事件类型
+
+| `EventPayload` 变体 | 含义 |
+|---|---|
+| `SessionCreated` | 会话建立（uuid v7 时间有序） |
+| `UserMessage` | 用户消息 |
+| `AssistantMessage` | 助手回复（一轮一个 Turn） |
+| `ToolCall` / `ToolResult` | 工具调用与结果（成对追加） |
+| `Snapshot` | 确定性压缩快照（投影时用它替代重放前缀） |
+| `Metadata` | 生命周期/归属等键值状态（clear / archive / delete / user） |
+
+#### 3.2.11 事件存储选型
+
+测试、单进程用 `MemoryEventStore` 足够；多实例 / 跨进程 / 需要审计历史时，实现 `EventStore`（数据库 / Redis / Kafka 均可）——append-only + 幂等键的契约对后端非常友好，不存在"读改写竞态"。
 
 ---
 
-<a id="lcel-langchain-expression-language-"></a>
-## LCEL (LangChain Expression Language) ✨ v0.9.0
+
+
+## 第四章 · 组合与编排
+
+### 4.1 LCEL (LangChain Expression Language) ✨ v0.9.0
 
 LCEL 提供类似 Python LangChain 的管道组合语法：把 `Runnable` 组件通过 `.pipe()` 串联成流水线。与手写"取结果 → 传给下一步"的胶水代码不同，LCEL 里拼出来的**整条链本身还是一个 Runnable**——可以继续拼接、可以批量执行、可以流式输出、可以自动重试降级。
 
 打个比方：如果把一次 LLM 调用比作一个加工工位，LCEL 就是**传送带**——把提示词模板、模型、解析器、记忆、检索器这些"工位"用 `.pipe()` 连起来，数据自动流过去；每加一段管道，就多一层能力。
 
-### 为什么需要 LCEL
+#### 4.1.1 为什么需要 LCEL
 
 v0.14.0 之前，框架里每类组件"能不能进链"不一致，用户被迫到处写 `.content` 提取、手动拼消息、套包装：
 
@@ -1345,9 +1702,9 @@ v0.14.0 之前，框架里每类组件"能不能进链"不一致，用户被迫�
 | 记忆 | 无 Runnable | 手写"读记忆 → 调模型 → 写回"胶水 |
 | 原生 Provider | 错误不进 `LcelError` | 只有套 `LLMClient` 才能 pipe |
 
-v0.15.0 统一后，提示词、记忆、原生 Provider、解析器、RAG 全部是 Runnable，一条链跑通，见[统一组合 (v0.15.0)](#unified-lcel)。
+v0.15.0 统一后，提示词、记忆、原生 Provider、解析器、RAG 全部是 Runnable，一条链跑通，见[统一组合 (v0.15.0)](#4119-统一组合-v0150--提示词--记忆--llm--解析器--rag-全部可-pipe)。
 
-### Runnable：统一的"可执行单元"
+#### 4.1.2 Runnable：统一的"可执行单元"
 
 框架里各种东西——提示词模板、聊天模型、输出解析器、Agent——调用方式原本各不相同。`Runnable` trait 给它们一个统一接口，任何组件都能用同一套姿势执行、互相拼接。
 
@@ -1365,7 +1722,7 @@ v0.15.0 统一后，提示词、记忆、原生 Provider、解析器、RAG 全�
 - `batch` 支持**并发**：通过 `RunnableConfig.max_concurrency` 控制同时跑多少个，不设就是按顺序跑。
 - 真正的逐字流式（首 token 秒回）需要组件自己覆写 `stream`——语言模型做了，普通函数没有。
 
-### RunnableConfig：一次执行的"设置单"
+#### 4.1.3 RunnableConfig：一次执行的"设置单"
 
 每次执行都想带点附加信息——这条执行属于哪个业务、要不要挂回调、能不能取消。不用改代码，传一张配置单 `RunnableConfig` 就行。
 
@@ -1383,7 +1740,7 @@ v0.15.0 统一后，提示词、记忆、原生 Provider、解析器、RAG 全�
 - **其它字段**：子配置有值的**覆盖**父配置。
 - **回调**：父子**叠加**，两个都会触发。
 
-### 组合算子：把 Runnable 拼成管道
+#### 4.1.4 组合算子：把 Runnable 拼成管道
 
 真实应用不是"调一次模型"这么简单，而是"检索 → 拼提示词 → 问模型 → 解析结果"这种多步骤流程。这些算子就是**搭积木**：把简单单元拼成复杂流程，拼出来的东西本身还是个 Runnable，还能继续拼。串联时**类型安全**——编译器保证"上一步的输出类型 == 下一步的输入类型"，写错了编译不过。
 
@@ -1399,7 +1756,7 @@ v0.15.0 统一后，提示词、记忆、原生 Provider、解析器、RAG 全�
 | `RunnableWithFallbacks`（降级） | 主单元失败，自动换备用单元 | 主模型不可用自动切备用模型 |
 | `with_retry`（重试） | 失败自动再试，带退避等待 | 网络抖动、临时限流不至于整个流程挂掉 |
 
-### 基本管道
+#### 4.1.5 基本管道
 
 ```rust
 use langchainrust::{
@@ -1415,7 +1772,7 @@ let result = chain.invoke(5, None).await?;
 // result = "Result: 10"
 ```
 
-### 三步管道 (Prompt | LLM | Parser)
+#### 4.1.6 三步管道 (Prompt | LLM | Parser)
 
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda, StrOutputParser};
@@ -1432,7 +1789,7 @@ let chain = prompt.pipe(parser);
 let result = chain.invoke("什么是Rust?".to_string(), None).await?;
 ```
 
-### RunnableLambda (包函数)
+#### 4.1.7 RunnableLambda (包函数)
 
 普通函数也能进管道：`new_sync` 包同步闭包、`new_sync_fallible` 包可失败的同步闭包、`new_async` 包异步闭包。这样清洗文本、拼字符串、发请求等任意自定义逻辑都能成为链的一段，返回值自动包成 `Result<_, LcelError>`。
 
@@ -1452,7 +1809,7 @@ let result = chain.invoke("  https://example.com  ".to_string(), None).await?;
 // result = "fetched https://example.com"
 ```
 
-### RunnablePassthrough (透传)
+#### 4.1.8 RunnablePassthrough (透传)
 
 ```rust
 use langchainrust::RunnablePassthrough;
@@ -1466,7 +1823,7 @@ let result = passthrough.invoke("hello".to_string(), None).await?;
 let stream = passthrough.transform(input_stream, None).await;
 ```
 
-### RunnableParallel (扇出/扇入)
+#### 4.1.9 RunnableParallel (扇出/扇入)
 
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
@@ -1482,7 +1839,7 @@ let result = parallel.invoke(5, None).await?;
 // result = {"double": 10, "triple": 15}
 ```
 
-### RunnableBranch (条件路由)
+#### 4.1.10 RunnableBranch (条件路由)
 
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda, RunnableBranch};
@@ -1505,7 +1862,7 @@ let result = branch.invoke("hi".to_string(), None).await?;
 // result = "短: hi"
 ```
 
-### RunnableBinding (配置绑定)
+#### 4.1.11 RunnableBinding (配置绑定)
 
 ```rust
 use langchainrust::{RunnableBinding, RunnableConfig};
@@ -1517,14 +1874,14 @@ let bound = runnable
 let result = bound.invoke(input, None).await?;
 ```
 
-### Batch 批量执行
+#### 4.1.12 Batch 批量执行
 
 ```rust
 let results = chain.batch(vec![1, 2, 3], None).await?;
 // results = ["Result: 2", "Result: 4", "Result: 6"]
 ```
 
-### Stream 流式执行
+#### 4.1.13 Stream 流式执行
 
 ```rust
 use futures_util::StreamExt;
@@ -1535,7 +1892,7 @@ while let Some(item) = stream.next().await {
 }
 ```
 
-### RunnableWithFallbacks (降级回退) ✨ v0.10.0
+#### 4.1.14 RunnableWithFallbacks (降级回退) ✨ v0.10.0
 
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda};
@@ -1551,7 +1908,7 @@ let result = chain.invoke(-5, None).await?;
 // result = 10 (fallback 执行)
 ```
 
-### RunnableAssign (字段注入) ✨ v0.10.0
+#### 4.1.15 RunnableAssign (字段注入) ✨ v0.10.0
 
 ```rust
 use langchainrust::{
@@ -1576,7 +1933,7 @@ let result = chain.invoke("What is Rust?".to_string(), None).await?;
 // result = {"question": "What is Rust?", "context": "some context", "answer": "Based on: some context"}
 ```
 
-### RunnableRetry (自动重试) ✨ v0.11.0
+#### 4.1.16 RunnableRetry (自动重试) ✨ v0.11.0
 
 `with_retry(RetryConfig)` 包装任意 Runnable，失败时按指数退避自动重试。
 
@@ -1606,7 +1963,7 @@ let chain = flaky.with_retry(config);
 - `RetryOn::AllErrors` —— 全部错误都重试
 - `RetryOn::Custom(predicate)` —— 自定义判定
 
-### CancellationToken (取消信号) ✨ v0.11.0
+#### 4.1.17 CancellationToken (取消信号) ✨ v0.11.0
 
 跨任务共享的取消标记：`cancel()` 后所有 clone 同时变为取消态，长任务轮询 `is_cancelled()` 优雅退出。
 
@@ -1634,7 +1991,7 @@ if token.is_cancelled() {
 
 `await token.cancelled()` 可挂起直到取消触发（轻量自旋，不阻塞线程）。
 
-### 适配器 (将现有组件接入 LCEL)
+#### 4.1.18 适配器 (将现有组件接入 LCEL)
 
 ```rust
 use langchainrust::{ChainRunnable, AgentRunnable, RagRunnable};
@@ -1711,7 +2068,7 @@ let result: String = runnable.invoke("Research Rust async runtimes".to_string(),
 ```
 
 <a id="unified-lcel"></a>
-### 统一组合 (v0.15.0) —— 提示词 / 记忆 / LLM / 解析器 / RAG 全部可 pipe
+#### 4.1.19 统一组合 (v0.15.0) —— 提示词 / 记忆 / LLM / 解析器 / RAG 全部可 pipe
 
 v0.15.0 把全框架核心能力统一成 `Runnable`,一条链跑通「提示词 + 记忆 + LLM + 解析器 + RAG」,不再需要手写胶水代码。四件事的变化:
 
@@ -1867,11 +2224,12 @@ let answer = rag_chain.invoke("Rust 有哪些核心特性?".to_string(), None).a
 
 ---
 
-## Chains
+
+### 4.2 Chains
 
 Chain 将 LLM 与提示词、记忆、检索等组件组合成可复用的流水线。每个 Chain 接收输入、执行一系列步骤、返回输出。
 
-### LLMChain
+#### 4.2.1 LLMChain
 
 最基础的链——一个提示词模板 + 一个 LLM。输入变量替换到模板中，发送给 LLM，返回结果。是构建更复杂链的积木。
 
@@ -1889,7 +2247,7 @@ let result = chain.invoke(HashMap::from([
 ])).await?;
 ```
 
-### SequentialChain
+#### 4.2.2 SequentialChain
 
 将多个 Chain 串联——前一个 Chain 的输出作为后一个 Chain 的输入。适合多步骤任务，如"先分析，再总结"。
 
@@ -1909,7 +2267,7 @@ let result = pipeline.invoke(HashMap::from([
 ])).await?;
 ```
 
-### RetrievalQA
+#### 4.2.3 RetrievalQA
 
 检索增强问答——先从向量存储中检索相关文档，再把文档和问题一起发给 LLM 回答。是 RAG 的最简形式。
 
@@ -1932,7 +2290,7 @@ let result = qa.invoke(HashMap::from([("query", "What is BM25?")])).await?;
 // result.source_documents 携带命中的 Document 列表
 ```
 
-### RouterChain（路由链） ✨ v0.14.0
+#### 4.2.4 RouterChain（路由链） ✨ v0.14.0
 
 按规则把不同输入分派给不同子链。`RouterChain` 用关键词匹配；`LLMRouterChain` 用 LLM 判断。
 
@@ -1961,7 +2319,7 @@ let answer = router.invoke(HashMap::from([("input", "用 Rust 写一个冒泡排
 
 > `add_route_with_keywords` 可给每个路由附带关键词做快速命中；无匹配时走 `with_default` 兜底。
 
-### ConversationRetrievalChain
+#### 4.2.5 ConversationRetrievalChain
 
 带记忆的检索增强对话：每次提问时，自动检索相关文档 + 加载对话历史，让 LLM 既能参考知识库，又能记住之前的对话。
 
@@ -1982,7 +2340,7 @@ let answer = chain.invoke(HashMap::from([
 ])).await?;
 ```
 
-### ConversationChain ✨ v0.13.0
+#### 4.2.6 ConversationChain ✨ v0.13.0
 
 带可插拔记忆的对话链——`from_memory` 接受任何实现了 `BaseMemory` 的记忆（窗口 / 摘要 / 向量库 / 持久化），或用 `ConversationChainBuilder` 组装并自定义系统提示词与键名。
 
@@ -2011,7 +2369,8 @@ let answer = chain.predict("What is Rust?").await?;
 
 ---
 
-## Document Chains
+
+### 4.3 Document Chains
 
 当文档太多、无法一次性塞入 prompt 时，Document Chain 提供不同的策略来处理多文档场景：
 
@@ -2022,7 +2381,7 @@ let answer = chain.predict("What is Rust?").await?;
 | **MapReduceDocumentsChain** | 每个文档独立处理，再合并 | 文档多、可并行处理 |
 | **MapRerankDocumentsChain** | 每个文档独立评分，选最佳 | 需要从多个文档中选最相关的 |
 
-### StuffDocumentsChain
+#### 4.3.1 StuffDocumentsChain
 
 将所有文档与提示词组合，一次性发给 LLM。最简单直接，但文档总量不能超过 LLM 的 token 限制。
 
@@ -2039,7 +2398,7 @@ let chain = StuffDocumentsChain::new(llm_chain);
 let result = chain.invoke(documents).await?;
 ```
 
-### RefineDocumentsChain
+#### 4.3.2 RefineDocumentsChain
 
 逐个文档迭代优化：先用第一个文档生成初始答案，再用后续文档逐步精炼。适合需要综合多个文档信息的场景，但无法并行。
 
@@ -2053,7 +2412,7 @@ let chain = RefineDocumentsChain::new(initial_llm, refine_llm);
 let result = chain.invoke(documents).await?;
 ```
 
-### MapReduceDocumentsChain
+#### 4.3.3 MapReduceDocumentsChain
 
 Map 阶段对每个文档独立处理（可并行），Reduce 阶段将所有结果合并。适合文档量大、各文档可独立处理的场景。
 
@@ -2067,7 +2426,7 @@ let chain = MapReduceDocumentsChain::new(map_chain, reduce_chain);
 let result = chain.invoke(documents).await?;
 ```
 
-### MapRerankDocumentsChain
+#### 4.3.4 MapRerankDocumentsChain
 
 对每个文档独立评分，按分数排序选最佳。适合"从多个候选中选最相关"的场景。
 
@@ -2082,7 +2441,7 @@ let (best_doc, score) = chain.invoke(documents).await?;
 
 ---
 
-### Chain Streaming ✨ v0.4.1
+#### 4.3.5 Chain Streaming ✨ v0.4.1
 
 `BaseChain::stream()` 提供逐 token 的流式输出。`LLMChain` 和 `ConversationChain` 有自定义的实现。
 
@@ -2101,7 +2460,7 @@ while let Some(token) = stream.next().await {
 }
 ```
 
-### invoke_with_config（回调透传） ✨ v0.15.0
+#### 4.3.6 invoke_with_config（回调透传） ✨ v0.15.0
 
 `BaseChain::invoke_with_config(inputs, config)` 在调用时注入 `RunnableConfig`（含回调处理器 / 元数据）。复合链（`SequentialChain` / `RouterChain`）会把 config **透传给子链**，不会静默丢弃——整个链路的回调保持一致。
 
@@ -2115,7 +2474,264 @@ let result: ChainResult = chain.invoke_with_config(inputs, config).await?;
 
 ---
 
-## Agents
+
+### 4.4 LangGraph
+
+LangGraph 用有向图定义复杂工作流：每个节点是一个处理步骤，边定义执行顺序。比 Chain 更灵活——支持条件分支、循环、人工介入、子图。适合需要精细控制执行流程的场景。
+
+#### 4.4.1 StateGraph
+
+最基础的图——定义节点和边，状态在节点间传递。`AgentState` 是内置的状态结构，包含 `messages`、`steps` 等字段。
+
+```rust
+use langchainrust::langgraph::{StateGraph, AgentState, START, END};
+
+let mut graph = StateGraph::new();
+
+graph.add_node_fn("analyze", |state: AgentState| {
+    let mut new_state = state.clone();
+    new_state.steps.push("analyzed".to_string());
+    new_state
+});
+
+graph.add_node_fn("process", |state: AgentState| {
+    state
+});
+
+graph.add_edge(START, "analyze");
+graph.add_edge("analyze", "process");
+graph.add_edge("process", END);
+
+let compiled = graph.compile();
+
+let result = compiled.invoke(AgentState::new("用户问题".to_string())).await?;
+```
+
+#### 4.4.2 条件边
+
+根据当前状态动态选择下一个节点。`FunctionRouter` 接收一个闭包，返回目标节点名称。适合"消息多就总结，少就继续"这类分支逻辑。
+
+```rust
+use std::collections::HashMap;
+use langchainrust::langgraph::FunctionRouter;
+
+let router = FunctionRouter::new(|state: &AgentState| {
+    if state.messages.len() > 5 { "summarize" } else { "continue" }
+});
+graph.set_conditional_router("route", router);
+
+graph.add_conditional_edges(
+    "analyze",
+    "route",
+    HashMap::from([
+        ("summarize".to_string(), "summarize".to_string()),
+        ("continue".to_string(), "continue".to_string()),
+    ]),
+    None, // 默认目标;路由返回值不在 targets 时使用
+);
+```
+
+#### 4.4.3 人工介入 / 中断与恢复
+
+在关键节点前暂停执行，等待人工确认后继续。`with_interrupt_before` 指定哪些节点前中断；`MemoryCheckpointer` 保存执行状态，支持跨会话恢复。
+
+```rust
+use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
+
+let compiled = graph.compile()
+    .map_err(|e| ...)?
+    .with_checkpointer(MemoryCheckpointer::new())
+    .with_interrupt_before(vec!["output", "analyze"]);
+
+match compiled.invoke(state).await {
+    Ok(result) => { /* 完成 */ }
+    Err(GraphError::ExecutionInterrupted(node)) => {
+        println!("暂停于: {}", node);
+        if let Some(exec) = compiled.create_resume_execution(&node).await {
+            let result = compiled.resume(exec).await?;
+        }
+    }
+    Err(e) => { /* 错误 */ }
+}
+```
+
+上面的静态中断只能停在**节点边界**(节点前/后),中断点必须在编译期声明。v0.24.0 新增**节点内动态中断**:节点函数自己决定"在什么数据条件下暂停、把什么问题抛给外部",恢复时**重新进入同一个节点**并拿到人工答复,副作用不必重放。
+
+#### 4.4.4 节点内动态中断 / 恢复（interrupt + resume） ✨ v0.24.0
+
+```rust
+use langchainrust::langgraph::{
+    GraphError, InterruptibleNode, StateUpdate, ThreadSafeMemoryCheckpointer,
+};
+use serde_json::json;
+
+// 闭包签名:(&S, Option<&serde_json::Value>) -> boxed future
+// resume=None 表示首次进入;Some(value) 表示带着人工决策重新进入。
+let charge = InterruptibleNode::new("charge", |state, resume| {
+    let command = state.output.clone().unwrap_or_default();
+    Box::pin(async move {
+        match resume {
+            None => Err(GraphError::InterruptRequest {
+                // 抛给外部世界的暂停载荷(要问的问题、上下文……)
+                payload: json!({ "kind": "tool_approval", "command": command }),
+            }),
+            Some(decision) => {
+                // 恢复路径:副作用在这里只发生一次
+                let mut next = state.clone();
+                next.set_output(format!("decision={decision}, charged"));
+                Ok(StateUpdate::full(next))
+            }
+        }
+    })
+});
+
+let compiled = graph.compile()?
+    // 动态中断必须挂 checkpointer——暂停当下先落检查点,进程重启也能恢复
+    .with_checkpointer(ThreadSafeMemoryCheckpointer::new());
+
+// 首次执行:节点内挂起,调用方拿到 DynamicInterrupt { node, payload }
+let err = compiled.invoke(AgentState::new("charge $99")).await.unwrap_err();
+match err {
+    GraphError::DynamicInterrupt { node, payload } => {
+        assert_eq!(node, "charge");
+        // 把 payload 发给审批 UI / 另一进程 / 邮件工单……
+        // 人工决策以任意 JSON 回灌,节点带着它重新进入:
+        let invocation = compiled.resume_with_value(&node, json!({"approved": true})).await?;
+        assert!(invocation.final_state.output.unwrap().contains("charged"));
+    }
+    other => return Err(other),
+}
+```
+
+语义要点:
+
+- **一套持久化**:暂停时检查点已写入 checkpointer(内存 / 文件 / SQLite / Postgres / Redis),恢复值放在 `NodeConfig.metadata` 的 `INTERRUPT_RESUME_KEY`(常量 `"__lc_interrupt_resume"`)里注入,不再有第二套 resume 存储;
+- **副作用只发生一次**:节点重新进入,闭包自己按 `resume` 分支把副作用放在恢复路径——首次进入在挂起前不应落副作用;
+- **可级联**:恢复后另一个节点再次挂起会得到新的 `DynamicInterrupt`,可多轮中断→恢复;递归预算沿用挂起前已消耗的部分,重复中断不能绕过 `recursion_limit`;
+- **流式可见**:`StreamEvent::NodeInterrupt(node, payload)` / `Resumed(node, value)` 在流式执行中实时上报暂停与恢复。
+
+#### 4.4.5 审批 / 恢复收敛（ApprovalGate） ✨ v0.24.0
+
+工具审批不再需要独立的审批存储:`lc_agents::graph_approval::ApprovalGate` 就是一个图节点,把"高风险工具调用"直接表达为一次节点内中断。
+
+```rust,ignore
+use langchainrust::{ApprovalDecision, ApprovalGate};
+
+let gate = ApprovalGate::new("charge_card", |command: &str| {
+    // 真正的副作用只在 Allow / Modify 的恢复路径执行
+    charge_payment(command); "receipt-123".to_string()
+});
+graph.add_node(gate);
+```
+
+首次进入中断载荷固定为 `{"kind":"tool_approval","tool":<name>,"command":<state.output>}`;恢复时回灌序列化后的 `ApprovalDecision`:`Allow`(执行一次工具并继续)、`Deny { reason }`(工具整体跳过、零副作用、图继续走到 END)、`Modify { arguments, note }`(携带改写参数与备注)。图路径上**唯一**持久化是 checkpointer(跨进程审批用 `FileCheckpointer` 等);旧执行器的 `ResumeStore` / `FileResumeStore` 只在非图的 executor 路径(`with_resume_store` / `pending_approval()` / `executor.resume(decision)`)继续服役。
+
+#### 4.4.6 状态历史与时间旅行（fork_from） ✨ v0.24.0
+
+挂上 checkpointer 后,每个检查点都是可回访的状态快照:
+
+```rust
+use langchainrust::langgraph::CheckpointInfo;
+
+// 按时间顺序读出全部快照:id / timestamp / seq / recursion_count / state
+let history: Vec<CheckpointInfo<AgentState>> = compiled.get_state_history()?;
+
+// 从任意旧快照"开一条新时间线":以该快照状态为基底,从指定节点开始只向前跑
+let forked = compiled
+    .fork_from(&history[2].id, "analyze", Some(corrected_state))
+    .await?;
+```
+
+- fork 是**新血统**:从旧快照另存一份新检查点,原时间线不动;
+- **只向前、不回放**:从 `continue_at_node` 开始执行,fork 点之前的副作用不会重跑——"换个分支再试一遍"是安全的;
+- `override_state: None` 用快照原状态;`Some(s)` 可人工修正状态后再继续;
+- fork 与中断可组合:fork 出的执行同样可以在节点内挂起、再 `resume_with_value`。
+
+#### 4.4.7 Reducer（状态合并规则） ✨ v0.15.0
+
+子节点返回的状态如何合并进共享状态，由 Reducer 决定：
+
+- `ReplaceReducer` —— 直接覆盖字段（默认）
+- `AppendReducer` —— 追加（`messages` 数组用它在每步累积）
+
+```rust
+use langchainrust::langgraph::{StateGraph, AppendMessagesReducer};
+
+let mut graph = StateGraph::new();
+graph.set_reducer("messages", std::sync::Arc::new(AppendMessagesReducer));
+```
+
+#### 4.4.8 边类型 ✨ v0.15.0
+
+`GraphEdge` 四种边：
+
+| 边 | 语义 |
+|----|------|
+| `Fixed` | 固定跳转 `source → target` |
+| `Conditional` | 按路由函数动态选择 |
+| `FanOut` | 一个节点并行分发到多个目标 |
+| `FanIn` | 多个节点汇入一个汇聚点 |
+
+```rust
+graph.add_fan_out("query", vec!["crag".to_string(), "graph".to_string(), "vector".to_string()]);
+graph.add_fan_in(vec!["crag".to_string(), "graph".to_string(), "vector".to_string()], "merge");
+```
+
+#### 4.4.9 Checkpointer 家族 ✨ v0.15.0
+
+**内存 / 文件后端**:
+
+- `MemoryCheckpointer` —— 进程内（单线程）
+- `ThreadSafeMemoryCheckpointer` —— 并发安全
+- `FileCheckpointer::new(path)` —— 落盘持久化（不实现 `Default`，必须显式给路径，失败可传播；原子写：先写临时文件再 rename，崩溃不会留下半截检查点）
+
+配合 `with_checkpointer` + `with_interrupt_before` 实现「暂停 → 恢复」工作流。
+
+#### 4.4.10 持久化 Checkpointer(SQLite / Postgres / Redis)✨ v0.22.4
+
+内存/文件检查点随进程消失,多实例部署也无法共享。0.22.4 新增三个生产级后端,挂法与内存版完全一致(`.with_checkpointer(...)`),各走独立 feature:`checkpoint-sqlite` / `checkpoint-postgres` / `checkpoint-redis`。
+
+```rust
+// SQLite —— rusqlite bundled(从源码编译 SQLite amalgamation,不依赖系统 libsqlite3),
+// WAL 日志 + busy timeout,文件可被另一个进程重新打开(写者瞬时交接)
+let cp = SqliteCheckpointer::<MyState>::new("./data/graph.db", "thread-42")?;
+
+// Postgres —— tokio-postgres;条件 UPDATE 做存储侧 OCC
+let cp = PostgresCheckpointer::<MyState>::connect(
+    "host=127.0.0.1 user=app dbname=lg password=…", "thread-42").await?;
+// 或复用已有连接:PostgresCheckpointer::with_client(client, "thread-42").await
+
+// Redis —— Lua 脚本 CAS,单条脚本内完成版本比较与写入
+let cp = RedisCheckpointer::<MyState>::connect("redis://127.0.0.1/", "thread-42").await?;
+// 或复用已有 MultiplexedConnection:RedisCheckpointer::with_connection(conn, "thread-42").await
+
+let compiled = graph.compile()?.with_checkpointer(std::sync::Arc::new(cp));
+```
+
+**乐观并发控制(OCC)**:每个检查点带版本号,`update_state` 要求"我基于版本 N 修改";存储侧发现当前版本已被别的写者推进时,本次写入**整体失败**而不是覆盖对方的编辑,错误为 `GraphError::CheckpointVersionConflict { checkpoint_id, expected, actual }`——调用方据此重读最新状态、合并后重试(后写胜出由调用方决定怎么合并,库不静默丢更新)。Postgres 的版本判定在单条条件 UPDATE 内完成(跨进程串行化),Redis 用 Lua 脚本原子 CAS,SQLite 靠文件写锁 + 版本复查。
+
+**怎么选**:单进程/边缘部署用 SQLite(零运维);已有 Postgres 基础设施、要多实例共享 + 连接池生态选 Postgres;超低延迟、检查点可接受 Redis 持久化语义、已有 Redis 运维选 Redis。三个后端都实现同一个 Checkpointer trait,换后端不动图代码。
+
+#### 4.4.11 图定义持久化 ✨ v0.15.0
+
+`GraphPersistence` trait 把图定义（节点/边/reducer）存下来复用：`MemoryPersistence` / `FilePersistence` / `MongoPersistence`。
+
+#### 4.4.12 子图 / 动态规划 / 流式 ✨ v0.15.0
+
+- `SubgraphNode` —— 图嵌图，把子流程封装成节点复用
+- `DynamicPlanner` / `DynamicInjection` / `DynamicTask` —— 运行时动态构造任务、注入并行分支
+- `compiled.stream_collected(input)` —— 返回 `Vec<StreamEvent<S>>`，逐步观测节点执行进度
+
+---
+
+<a id="document-loaders"></a>
+
+
+> **相关能力延伸:** [Batch API（批量）（见附录）](#附录111-batch-api)
+
+## 第五章 · 智能体与工具
+
+### 5.1 Agents
 
 Agent 是能自主调用工具、多步推理的 LLM 应用。与 Chain 不同，Agent 不是固定流程，而是 LLM 根据输入动态决定调用哪些工具、执行多少步。
 
@@ -2136,7 +2752,7 @@ Agent 是能自主调用工具、多步推理的 LLM 应用。与 Chain 不同�
 | `ReActAgent` | 文本"思考/行动"正则解析 | 不支持函数调用的模型 | 兼容老模型 |
 | `PlanExecuteAgent` | 先规划再逐步执行、失败重规划 | 任何 | 复杂任务分解 |
 
-### FunctionCallingAgent (推荐)
+#### 5.1.1 FunctionCallingAgent (推荐)
 
 使用 LLM 原生的 Function Calling 能力来调用工具。类型安全、可靠性高，是支持 FC 的模型（GPT-4、Claude、Gemini）的首选。
 
@@ -2162,7 +2778,7 @@ let executor = AgentExecutor::new(
 let result = executor.invoke("Calculate 37 + 48".to_string()).await?;
 ```
 
-### ReActAgent (旧版)
+#### 5.1.2 ReActAgent (旧版)
 
 使用 ReAct（Reasoning + Acting）模式：LLM 输出"思考→行动→观察"文本，框架解析后调用工具。兼容性好，但依赖文本解析，可靠性不如 FunctionCallingAgent。适合不支持 FC 的模型。
 
@@ -2188,7 +2804,7 @@ let executor = AgentExecutor::new(
 | FunctionCallingAgent | 原生 FC | 高（类型安全） | GPT-4, Claude, Gemini |
 | ReActAgent | 文本解析 | 中等 | 不支持 FC 的模型 |
 
-### Agent 流式输出 ✨ v0.12.0
+#### 5.1.3 Agent 流式输出 ✨ v0.12.0
 
 CRAG、AdaptiveRAG、DeepResearch 支持 `stream()` 方法，逐步返回管道事件，让你可以实时展示 Agent 的执行进度。
 
@@ -2256,7 +2872,7 @@ let stream = agent.stream_research("Rust async runtimes comparison").await?;
 // FinalAnswer { content: "..." }
 ```
 
-### Agent Web SSE：把 Agent 事件直接推到浏览器 ✨ v0.22.4
+#### 5.1.4 Agent Web SSE：把 Agent 事件直接推到浏览器 ✨ v0.22.4
 
 `AgentStreamEvent` 本来只活在进程内:要在网页上实时显示"打字机正文 + 工具调用进度",你得自己把事件流转成 `text/event-stream`——事件命名、单调 id、空闲心跳、断线重连去重、客户端断开后取消运行,每一样漏了都是坑。v0.22.4 把这套 SSE 桥做进了框架,分**无依赖的帧层**和 **feature 门控的 axum 服务层**两部分。
 
@@ -2357,7 +2973,7 @@ es.addEventListener('done', () => es.close());
 - 成帧器类型(`agent_sse_frames` / `SseFrame` / `SseOptions` 等)随 `lc-agents` 默认导出,`langchainrust::agents::*` 直接可见;**axum 服务件只在 `sse-server` feature 后**——facade crate 自己只在 dev-dependency 里开它(供示例编译),普通依赖不背 axum,下游需要服务件时在自己的 `lc-agents` 依赖上开 feature。
 - 可运行的完整示例:`crates/lc/examples/agent_sse_server.rs`(`cargo run -p langchainrust --example agent_sse_server`,默认 `127.0.0.1:8090`,host/port/model 走 `AGENT_SSE_*` 环境变量)。
 
-### AgentBuilder（链式构造） ✨ v0.14.0
+#### 5.1.5 AgentBuilder（链式构造） ✨ v0.14.0
 
 `AgentBuilder` 提供链式构造,一次性装配 LLM、工具与执行参数;`max_iterations` 强制 clamp 到 `[1, 100]`,避免死循环。
 
@@ -2378,7 +2994,7 @@ let result = executor.invoke("Calculate 37 + 48".to_string()).await?;
 
 `build()` 返回 `AgentExecutor`。健壮性兜底已内置:工具执行超时(`tool_timeout`)、LLM 指数退避重试、Actions 并发 `Semaphore` 限流。
 
-### Orchestrator（编排器） ✨ v0.14.0
+#### 5.1.6 Orchestrator（编排器） ✨ v0.14.0
 
 `Orchestrator` trait 把多个 Agent 组织成工作流:
 
@@ -2397,7 +3013,7 @@ let result = pipeline.run("Rust async runtimes".to_string()).await?;
 
 `OrchestratorRunnable` 把它们包装成 LCEL `Runnable`,可进入 `pipe()` 管道(见 LCEL 适配器一节)。
 
-### Supervisor：LLM 动态路由子 Agent ✨ v0.24.0
+#### 5.1.7 Supervisor：LLM 动态路由子 Agent ✨ v0.24.0
 
 **解决什么问题**：`SequentialPipeline` 的阶段表是写死的,`FanOutFanIn` 每轮都向全员广播——两者都不会根据任务内容决定"下一步该谁干"。多专才 Agent 场景(检索员 / 编码员 / 写手 / 审查员)需要的是一个**路由模型每轮决定**下一个子任务交给哪个具名 worker、或者判定工作已完成。v0.24.0 新增 `Supervisor`:每个 worker 是 `Orchestrator` trait 后面一个完整独立的 Agent(自己的执行器、预算、hooks),worker 的回答回填进路由模型的 scratchpad,下一轮路由基于前序 worker 的真实产出。
 
@@ -2435,7 +3051,7 @@ let answer = supervisor
 - 决策协议:优先解析 JSON `{"next":"<worker>","task":"..."}` / `{"next":"FINISH","answer":"..."}`;弱模型输出不规整时回退 `<<<NEXT>>>` 分隔符格式——解析在 `parse_supervisor_decision`,提示词信封在 `supervisor_envelope(objective, worker_names, round, history)`,`SUPERVISOR_FINISH` 常量即 `"FINISH"`;
 - 入口是 trait 方法 `run_with_context(input, &RunContext)`(不是固有方法 `.run`);`RunContext::new(id)` / `new_random()` 携带运行 id,`AgentTask::new(objective)` 还可链式挂期望产出与允许工具清单。
 
-### Agent Hooks（五类安全控制） ✨ v0.11.0
+#### 5.1.8 Agent Hooks（五类安全控制） ✨ v0.11.0
 
 Hooks 在 Agent 执行生命周期插入安全控制:
 
@@ -2449,7 +3065,7 @@ let hook = AgentHook::new()
     .with_hook(Arc::new(ContentFilterHook::new()));    // 内容过滤
 ```
 
-### ToolPolicy（工具风险分级） ✨ v0.14.0
+#### 5.1.9 ToolPolicy（工具风险分级） ✨ v0.14.0
 
 `ToolPolicy` + `ToolRisk` 给工具分级:高风险工具需要更严格的审批路径,防止越权调用。
 
@@ -2461,7 +3077,7 @@ policy.set_risk("delete_file", ToolRisk::High);
 // 高风险工具调用会走审批,而非直接执行
 ```
 
-### Agent 人审门（ApprovalHandler） ✨ v0.16.0
+#### 5.1.10 Agent 人审门（ApprovalHandler） ✨ v0.16.0
 
 工具执行前异步审批：`Allow` 放行 / `Deny` 拒绝（理由作为 observation 喂回循环，不执行工具）/ `Modify` 改参后执行。默认关（`None` = 原样放行）。
 
@@ -2488,7 +3104,7 @@ let executor = executor.with_approval(Arc::new(MyApproval));
 
 谁审批由调用方实现 trait（CLI 交互 / Webhook / 自动策略路由），框架只提供闸 + 参考实现 `AllowAll`。`approve(ctx).await` 是异步的——挂起后信号到即从同一行续跑，同进程 resume 天然成立。
 
-### Agent 预算门（BudgetConfig） ✨ v0.16.0
+#### 5.1.11 Agent 预算门（BudgetConfig） ✨ v0.16.0
 
 给 Agent 循环设硬上限，超限返回 `AgentError::BudgetExceeded`（带精确 `limit` / `actual`）。默认关。
 
@@ -2506,7 +3122,7 @@ let executor = executor.with_budget(BudgetConfig {
 });
 ```
 
-### 跨进程 resume（ResumeStore / FileResumeStore） ✨ v0.18.0
+#### 5.1.12 跨进程 resume（ResumeStore / FileResumeStore） ✨ v0.18.0
 
 人审门 / 预算门的挂起点可以**落盘**：进程死亡不再丢等待中的审批，重启后从磁盘恢复续跑，而不是从头重放 agent 循环。
 
@@ -2529,7 +3145,7 @@ if let Some(pending) = executor.pending_approval().await? {
 
 框架在每次工具调用进入审批**之前**把 `PendingApproval` 快照写入 store（工具名 / 参数 / 中间步骤 / 迭代序号 / 预算累计），审批决定落地后清除——原子写（先 `pending.json.tmp` 再 rename），崩溃不产生半截 checkpoint。`ApprovalHandler` 接口不变，调用方零改动；`MemoryResumeStore` 是内存版（单进程演示 / 测试用）。并发 executor 须用各自独立目录。
 
-### 上下文压缩（CompactionConfig）✨ v0.21.0
+#### 5.1.13 上下文压缩（CompactionConfig）✨ v0.21.0
 
 长会话跑几十轮后，历史消息会把上下文窗口撑爆。上下文压缩让 executor 在**每轮 `plan()` 之前**检查触发条件，按 turn 边界裁剪历史（不会产生"孤儿 tool result"——工具输出和它的调用总是同进同出）。**默认不压缩**：不配置 `with_compaction` 就是零行为变化。
 
@@ -2552,7 +3168,77 @@ let executor = AgentExecutor::new(agent, tools)
 
 **关键行为**：invoke 与 stream 双路径同语义；压缩次数计入 `AgentMetrics.compactions`（serde default,旧指标载荷兼容）；`min_recent_turns` 下限防止把会话压空。
 
-## Plan-Execute Agent
+
+### 5.2 Streaming Tool Calls
+
+**解决什么问题**：普通 Agent 等整个执行完才返回结果，用户只能干等，无法判断是卡死还是在工作。流式工具调用让 `StreamingFunctionCallingAgent` 逐 token 流式输出 LLM 文本，并通过事件流暴露工具调用状态——用户能实时看到 Agent "正在想、正在调哪个工具、工具调用走到哪个阶段、最后给出答案"的全过程。适合聊天式体验（打字机效果）、长任务进度展示、以及调试 Agent 行为。
+
+```rust
+use langchainrust::StreamingFunctionCallingAgent;
+use langchainrust::agents::streaming::AgentStreamEvent;
+use futures_util::StreamExt;
+
+let agent = StreamingFunctionCallingAgent::new(llm);
+let mut stream = agent.invoke_stream("Describe Rust in one sentence".to_string()).await;
+
+while let Some(event) = stream.next().await {
+    match event {
+        AgentStreamEvent::Text { content } => print!("{}", content),
+        AgentStreamEvent::ToolCall { state } => {
+            // state: Started / ArgumentsStreaming / Completed / Failed ...
+        }
+        AgentStreamEvent::FinalAnswer { content } => println!("\n[done] {}", content),
+    }
+}
+```
+
+#### 5.2.1 事件流
+
+`invoke_stream` 返回一个异步 Stream，逐个产出 `AgentStreamEvent`：
+
+| 事件 | 含义 |
+|---|---|
+| `Text { content }` | LLM 逐 token 文本，直接打印即是打字机效果 |
+| `ToolCall { state }` | 工具调用状态变化（见下） |
+| `FinalAnswer { content }` | 最终答案，一般出现在流末尾 |
+
+`ToolCallState` 覆盖工具调用的生命周期：
+
+| 状态 | 含义 |
+|---|---|
+| `Started` | 工具调用开始 |
+| `ArgumentsStreaming` | 工具参数正在逐段生成 |
+| `Completed` | 工具调用完成 |
+| `Failed` | 工具调用失败 |
+
+#### 5.2.2 适用场景
+
+| 场景 | 为什么用流式 |
+|---|---|
+| 聊天式 UI | 文字逐字显示，等待不煎熬 |
+| 长任务 / 多步任务 | 实时展示"正在做什么"，用户知道没卡死 |
+| 调试 Agent | 直接观察思考文本 + 工具调用时序，快速定位问题 |
+
+#### 5.2.3 注意
+
+- 事件流给到的是 LLM 文本与工具调用的**状态变化**；`ToolCall` 事件描述"调用走到哪一步"，工具执行的结果会回流给 LLM 做下一步决策，但结果正文本身不出现在事件流里。
+- 该 Agent 的流式面聚焦于 LLM 输出 + 工具调用状态；如果只需要工具执行层面的细粒度事件，可另看 `Executor::stream` 的能力面——两者视角不同。
+
+#### 5.2.4 并行工具调用（有界并发） ✨ v0.24.0
+
+模型一轮返回多个 tool call 时,执行器**并发**执行它们,但并发度由信号量封顶(`AgentExecutor::with_max_concurrency`,默认 `DEFAULT_MAX_CONCURRENCY = 8`),而不是来多少起多少任务——对外部 API 配额、数据库连接和本机资源都可控:
+
+```rust
+let executor = AgentExecutor::new(agent, tools)
+    .with_max_concurrency(4);   // 单轮最多 4 个工具调用同时在飞
+```
+
+工具观察值按**模型给出的调用顺序**(而非完成先后)zip 回 actions,因此多工具轮次的喂回序列是确定的;`invoke` 与流式两条路径给出同样的顺序保证。
+
+---
+
+
+### 5.3 Plan-Execute Agent
 
 **解决什么问题**：普通单循环 Agent（`FunctionCallingAgent` / `ReActAgent`）适合"一步能想清楚"的任务——想一步、干一步、再看结果。但像"先调研、再写代码、最后解释要点"这类复杂多步骤任务，模型一步想不出完整方案，直接动手又容易走偏。Plan-Execute Agent 把大任务拆成"先规划 → 逐步执行 → 失败重规划"的循环：先用 LLM 把任务拆成若干可执行步骤，每步交给一个单循环 Agent 执行，某一步失败就重新规划（而不是硬着头皮继续），全部完成后总结出最终结果。适用于复杂、多步骤、允许中途调整计划的任务。
 
@@ -2574,7 +3260,7 @@ let result = agent
 println!("{}", result);
 ```
 
-### 工作流程
+#### 5.3.1 工作流程
 
 | 阶段 | 做什么 |
 |---|---|
@@ -2583,7 +3269,7 @@ println!("{}", result);
 | 失败重规划（Re-plan） | 某步失败时重新规划，重规划次数由 `with_max_replans` 控制，避免空转 |
 | 总结（Answer） | 全部步骤完成后，汇总生成最终回答 |
 
-### 与 FunctionCallingAgent / ReActAgent 的区别
+#### 5.3.2 与 FunctionCallingAgent / ReActAgent 的区别
 
 | | FunctionCallingAgent / ReActAgent | PlanExecuteAgent |
 |---|---|---|
@@ -2594,7 +3280,7 @@ println!("{}", result);
 
 **怎么选（人话）**：简单任务直接用 `FunctionCallingAgent` / `ReActAgent`；任务大到"一眼看不出先做什么"、需要拆步骤时再用 Plan-Execute。它就是"老板"，自己不上手干，把活派给单循环 Agent。
 
-### 关键行为与注意
+#### 5.3.3 关键行为与注意
 
 - **每步都是独立执行（冷启动）**：每个步骤由新的 `FunctionCallingAgent` + `Executor` 执行，跑完即弃，步骤之间默认不共享上下文。对步骤结果强依赖的任务（第 2 步要用第 1 步的产出），需要把上一步结果写进下一步的步骤描述里带上。
 - **失败重规划有上限**：`with_max_replans` 限制重规划次数，防止失败后无限重规划。
@@ -2603,7 +3289,8 @@ println!("{}", result);
 
 ---
 
-## Handoffs
+
+### 5.4 Handoffs
 
 **解决什么问题**：让一个 Agent 包办所有事——既当研究又当写作——模型容易顾此失彼，也不利于复用。Handoffs（交接）让主 Agent 干到一半发现"这事该另一个专家 Agent 干"时，把控制权转交过去。受 OpenAI Agents SDK 启发：主 Agent 通过 `HandoffTool` 将任务委托给已注册的专家 Agent。适合"分工明确的专家 Agent 团队"——主 Agent 只负责判断谁来干，具体活交给对应专家，交接完成后由专家继续往下走。
 
@@ -2636,14 +3323,14 @@ let handoff_tools = mgr.handoff_tools();
 let history = mgr.history(); // 委托历史
 ```
 
-### 怎么用
+#### 5.4.1 怎么用
 
 1. **注册专家 Agent**：`register_agent("writer", writer)` 给每个专家起名并登记。
 2. **设置主 Agent**：`set_primary("researcher")` 指定入口 Agent，任务从它开始跑。
 3. **跑主 Agent**：`mgr.run(...)` 执行任务。
 4. **生成交接工具**：`handoff_tools()` 为每个已注册的 Agent 生成名为 `handoff_to_{agent}` 的工具；把这些工具绑给 Agent 后，模型就能主动选择"交给谁"。也可以不绑工具，在代码里用 `execute_handoff(Handoff)` 直接发起交接。
 
-### 关键行为
+#### 5.4.2 关键行为
 
 | 行为 | 说明 |
 |---|---|
@@ -2652,888 +3339,19 @@ let history = mgr.history(); // 委托历史
 | `history()` | 委托历史，可追溯谁把任务交给了谁 |
 | `max_handoff_depth` | 交接深度上限（默认 10），防止 Agent A↔B 无限互相交接陷入死循环；达到上限时终止交接并返回明确错误 |
 
-### 什么时候用 / 什么时候别用
+#### 5.4.3 什么时候用 / 什么时候别用
 
 - **用**：任务边界清晰、每个子领域有一个专门 Agent（如 writer / researcher / coder），主 Agent 只做调度。
 - **别用**：需要"派活收结果"（把任务分发给多个 Agent 并行干、再聚合结果）时，Handoffs 是**单一控制权转移**，不是分发聚合——这种场景用 `FanOutFanIn` 更合适。
 
 ---
 
-## Streaming Tool Calls
 
-**解决什么问题**：普通 Agent 等整个执行完才返回结果，用户只能干等，无法判断是卡死还是在工作。流式工具调用让 `StreamingFunctionCallingAgent` 逐 token 流式输出 LLM 文本，并通过事件流暴露工具调用状态——用户能实时看到 Agent "正在想、正在调哪个工具、工具调用走到哪个阶段、最后给出答案"的全过程。适合聊天式体验（打字机效果）、长任务进度展示、以及调试 Agent 行为。
-
-```rust
-use langchainrust::StreamingFunctionCallingAgent;
-use langchainrust::agents::streaming::AgentStreamEvent;
-use futures_util::StreamExt;
-
-let agent = StreamingFunctionCallingAgent::new(llm);
-let mut stream = agent.invoke_stream("Describe Rust in one sentence".to_string()).await;
-
-while let Some(event) = stream.next().await {
-    match event {
-        AgentStreamEvent::Text { content } => print!("{}", content),
-        AgentStreamEvent::ToolCall { state } => {
-            // state: Started / ArgumentsStreaming / Completed / Failed ...
-        }
-        AgentStreamEvent::FinalAnswer { content } => println!("\n[done] {}", content),
-    }
-}
-```
-
-### 事件流
-
-`invoke_stream` 返回一个异步 Stream，逐个产出 `AgentStreamEvent`：
-
-| 事件 | 含义 |
-|---|---|
-| `Text { content }` | LLM 逐 token 文本，直接打印即是打字机效果 |
-| `ToolCall { state }` | 工具调用状态变化（见下） |
-| `FinalAnswer { content }` | 最终答案，一般出现在流末尾 |
-
-`ToolCallState` 覆盖工具调用的生命周期：
-
-| 状态 | 含义 |
-|---|---|
-| `Started` | 工具调用开始 |
-| `ArgumentsStreaming` | 工具参数正在逐段生成 |
-| `Completed` | 工具调用完成 |
-| `Failed` | 工具调用失败 |
-
-### 适用场景
-
-| 场景 | 为什么用流式 |
-|---|---|
-| 聊天式 UI | 文字逐字显示，等待不煎熬 |
-| 长任务 / 多步任务 | 实时展示"正在做什么"，用户知道没卡死 |
-| 调试 Agent | 直接观察思考文本 + 工具调用时序，快速定位问题 |
-
-### 注意
-
-- 事件流给到的是 LLM 文本与工具调用的**状态变化**；`ToolCall` 事件描述"调用走到哪一步"，工具执行的结果会回流给 LLM 做下一步决策，但结果正文本身不出现在事件流里。
-- 该 Agent 的流式面聚焦于 LLM 输出 + 工具调用状态；如果只需要工具执行层面的细粒度事件，可另看 `Executor::stream` 的能力面——两者视角不同。
-
-### 并行工具调用（有界并发） ✨ v0.24.0
-
-模型一轮返回多个 tool call 时,执行器**并发**执行它们,但并发度由信号量封顶(`AgentExecutor::with_max_concurrency`,默认 `DEFAULT_MAX_CONCURRENCY = 8`),而不是来多少起多少任务——对外部 API 配额、数据库连接和本机资源都可控:
-
-```rust
-let executor = AgentExecutor::new(agent, tools)
-    .with_max_concurrency(4);   // 单轮最多 4 个工具调用同时在飞
-```
-
-工具观察值按**模型给出的调用顺序**(而非完成先后)zip 回 actions,因此多工具轮次的喂回序列是确定的;`invoke` 与流式两条路径给出同样的顺序保证。
-
----
-
-## Guardrails
-
-输入/输出验证，用于阻止恶意输入和敏感信息泄露。实现 `InputGuardrail` / `OutputGuardrail`，或使用内置验证器，然后用 `GuardedAgent` 包装 Agent。
-
-```rust
-use langchainrust::guardrails::{
-    GuardrailsConfig, MaxLengthGuardrail, SensitiveInfoGuardrail, GuardedAgent,
-};
-use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
-use std::sync::Arc;
-
-let config = GuardrailsConfig::new()
-    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // 限制输入长度
-    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // 阻止敏感输出
-
-let agent = FunctionCallingAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![], None);
-let executor = Arc::new(AgentExecutor::new(
-    Arc::new(agent) as Arc<dyn BaseAgent>,
-    vec![],
-));
-
-let mut guarded = GuardedAgent::new(executor, config);
-let result = guarded.invoke("Summarize this content".to_string()).await?; // 验证输入 -> Agent -> 验证输出
-let violations = guarded.violations();
-```
-
-内置验证器：`MaxLengthGuardrail`（输入长度）、`ForbiddenWordsGuardrail`（禁用词）、`SensitiveInfoGuardrail`（API 密钥 / 邮箱 / 信用卡 / 关键词，可通过 `with_keywords` 扩展）。也可以使用 `GuardrailRunner` 手动驱动验证。
-
-### 类型分离的护栏结果 ✨ v0.15.0
-
-护栏结果按输入/输出分开成两个类型,由类型系统强制安全规则:
-
-- **`InputGuardrailResult`** —— 只有 `Pass` / `Block`(输入侧不存在 `Modify`)
-- **`OutputGuardrailResult`** —— `Pass` / `Block` / `Modify`
-
-「Modify 只适用于输出」由编译器保证,而非运行时约定。`GuardrailError::Blocked` 携带 `reason` / `partial` / `suggestion`,失败时可带部分内容做降级展示。
-
-### Guardable（解耦包装目标） ✨ v0.15.0
-
-`GuardedAgent` 不再只认 `AgentExecutor`。`Guardable` trait(`invoke_str` / `stream_str`)让**任意可执行单元**都能被护栏包裹:
-
-- `AgentExecutor` 直接实现 `Guardable`
-- 任意 `BaseChain` 经 `ChainGuardable` 适配
-- `GuardedAgent::from_chain` 提供链式入口
-
-```rust
-use langchainrust::guardrails::{GuardedAgent, GuardrailsConfig, MaxLengthGuardrail};
-use langchainrust::LLMChain;
-
-let chain = LLMChain::new(llm, "You are a helpful assistant");
-let mut guarded = GuardedAgent::from_chain(
-    Arc::new(chain),
-    GuardrailsConfig::new().with_input(Arc::new(MaxLengthGuardrail::new(1000))),
-);
-let result = guarded.invoke("Summarize this".to_string()).await?;
-```
-
-### 流式护栏 ✨ v0.15.0
-
-`StreamingOutputGuardrail` trait 的 `validate_chunk(&ChunkContext) -> ChunkAction::{Pass, Replace, Block { reason }}`(v0.22.4 起入参收敛为携带分块与上下文的 `ChunkContext`)配合 `GuardedAgent::invoke_stream` 做两阶段检查:增量关键词检查 + 24 字符滑动窗口(防止跨块切断)+ 完整输出复查。有状态护栏(如扣留式脱敏)还可通过流末 flush 钩子吐出缓冲的尾部,避免尾段被丢弃。
-
-**拦截带原因,改写是独立一步。** `ChunkAction::Block { reason }` 里的 `reason` 会进入审计记录,并原样透传到 `GuardrailError::Blocked { reason }`,不再被一句通用的"blocked by a guardrail"盖掉。拦截之后、真正丢弃之前,链上每个护栏都会被问一次 `rewrite(&RewriteRequest { guardrail, reason, token, full })`:谁先返回 `Some(text)` 就用谁的改写继续往下发(审计记 `chunk rewritten after detection: <原检测原因>`),全部返回 `None` 则拦截成立。于是"检测"和"修复"可以由两个不同护栏承担——检测方只报 `Block { reason }`,`rewrite` 默认返回 `None`;专门的修复方按 `req.guardrail` 认领自己处理的那类违规。
-
-```rust
-use futures_util::StreamExt;
-
-let mut stream = guarded.invoke_stream("Write a long summary".to_string()).await?;
-while let Some(chunk) = stream.next().await {
-    let chunk = chunk?;   // GuardableChunk { token, is_final }
-    print!("{}", chunk.token);
-    if chunk.is_final {
-        break;            // 最后一个分块,结束流式输出
-    }
-}
-```
-
-### PII 脱敏护栏:改写而不是掐断 ✨ v0.22.4
-
-`SensitiveInfoGuardrail` 的处置是 **Block**——输出里只要出现疑似 PII,整段回答被拦下。但客服工单摘要、对话转述这类场景要的是"内容照流、PII 消失":v0.22.4 新增的 `PiiRedactionGuardrail` 走输出侧 `Modify` 通道,把命中的标识符替换成固定标记后放行。
-
-| `PiiKind` | 识别内容 | 替换为 | 误报防护 |
-|---|---|---|---|
-| `Email` | 邮箱 | `[REDACTED_EMAIL]` | 词边界 + 域名形态 |
-| `Phone` | 中国大陆手机号 `1[3-9]` 开头 11 位,含 `+86`/`86`/连字符前缀 | `[REDACTED_PHONE]` | 词边界,长数字串中的 11 位子串不命中 |
-| `NationalId` | 18 位身份证号(末位可为 X) | `[REDACTED_NATIONAL_ID]` | **GB 11643 加权校验码**,校验不过原样保留 |
-| `CreditCard` | 15–19 位银行卡/信用卡(允许空格/连字符分隔) | `[REDACTED_CREDIT_CARD]` | **Luhn 校验**,不过校验不动 |
-| `IpV4` | 点分 IPv4 | `[REDACTED_IP]` | 四段每段 ≤255,且排除邻接数字/点(版本号等) |
-
-检测按"最长最特异优先"排序(卡→身份证→手机→邮箱→IP),避免短模式在长标识符内部先命中。这是**纯正则离线识别、零模型调用**,代价是覆盖面就是这五类——姓名、住址等语义 PII 不在其中。
-
-```rust
-use langchainrust::guardrails::{
-    GuardrailsConfig, PiiRedactionGuardrail, PiiKind,
-};
-use std::sync::Arc;
-
-// new() = 五类全开;only([...]) 收窄;disable(PiiKind::IpV4) 关单类
-let pii = Arc::new(
-    PiiRedactionGuardrail::new()
-        .only([PiiKind::Email, PiiKind::Phone, PiiKind::CreditCard])
-        .with_hold_back(48),                 // 流式扣留窗口,默认 48 字符
-);
-
-// 同一个类型同时实现 OutputGuardrail 与 StreamingOutputGuardrail:
-let config = GuardrailsConfig::new()
-    .with_output(pii.clone())              // 整段复查:redact() 后 Modify 放行
-    .with_streaming(pii);                  // 流式增量:扣留式脱敏
-// 也可以不当护栏用,直接拿到改写后的字符串:
-let safe = PiiRedactionGuardrail::new().redact("联系我 a@b.com 或 13812345678");
-```
-
-**流式为什么需要"扣留"(hold-back):** 已经发给用户的字符收不回来,而标识符可能被模型切成两个块吐出(`"138"` + `"12345678"`),逐块正则永远慢半拍。护栏因此始终扣留末尾 48 个字符(覆盖最长的 19 位卡号带分隔符、18 位身份证),等后续文本证明"标识符不在继续写"才释放前面的安全部分;流末由 `flush()` 吐出缓冲区尾部。
-
-- **`ChunkAction::Replace("")`(空串)= "先扣住这个 token"**,每个干净流的早期分块都会发生,所以**不计审计**;非空 Replace(真改写)才立即记一次干预。
-- `flush()` 返回 `FlushOutput` 三态:`Empty`(无缓冲)/ `Release(text)`(原文释放,不记审计)/ `Rewritten(text)`(尾部含脱敏标记,记一次干预)。`GuardedAgent::invoke_stream` 在流末自动调 `flush_stream()` 并把尾部 delta 当普通分块发出,再跑整段输出复查。
-- **一个护栏实例只能服务一条被守护的流**(缓冲状态存在实例内部的 `Mutex` 里);`GuardrailsConfig` 在 `GuardedAgent::new` 时被消费,并发流请各自建实例。上面 output/streaming 共用同一实例是可以的(整段 `validate` 不碰流式状态),但不要跨流共享。
-- `with_hold_back(n)` 可调小以降低输出延迟,代价是标识符异常分散地跨块时可能漏放。
-
-### Schema 输出护栏:边生成边验 JSON ✨ v0.22.4
-
-结构化输出的老问题:模型把 JSON 写坏(类型错、缺必填、多吐字段),要等整段生成完、下游 `serde` 反序列化炸掉才发现——钱已经花了,流式 UI 也已经把坏数据亮给了用户。`SchemaOutputGuardrail` 把输出绑死在一份 JSON Schema 上(和 `StructuredOutput<T>` / `schemars::schema_for!` 同源),**流式期做宽松增量校验提前拦确定性错误,流末做严格终检**。
-
-```rust
-use langchainrust::guardrails::{GuardrailsConfig, SchemaOutputGuardrail};
-use schemars::JsonSchema;
-use serde::Deserialize;
-use std::sync::Arc;
-
-#[derive(Deserialize, JsonSchema)]
-struct Person { name: String, age: u32 }
-
-// 方式一:让 schemars 从类型派生;方式二:SchemaOutputGuardrail::new(schema_value)
-let rail = Arc::new(SchemaOutputGuardrail::for_type::<Person>());
-let config = GuardrailsConfig::new()
-    .with_streaming(rail.clone())   // 无状态、Clone,同一实例注册两次安全
-    .with_output(rail);
-// schemars 默认不输出 additionalProperties:false,护栏默认仍拒绝未声明字段;
-// 想放开:SchemaOutputGuardrail::for_type::<Person>().allow_additional_properties()
-```
-
-**"未声明字段"是按整份组合判断的。** 合成出来的 `additionalProperties:false`(schema 没写这个关键字、`strict_properties` 开着)不会只看当前这一层 `properties`,而是把 `allOf`/`anyOf`/`oneOf` 分支和它们的 `$ref` 目标一起算进来——schemars 给 `#[serde(flatten)]` 生成的形状正是"外层 `properties` + 一个 `allOf` 分支装着被展平的字段",只按当前层判断会把合法字段当成多余字段拒掉。两点边界:`additionalProperties: false` 是显式写下的,按 JSON Schema 语义只对本 schema 对象生效,仍按字面执行;schema 里有 `patternProperties` 时不做这个合成判断(本护栏不求值正则,判不了就闭嘴,不误伤)。
-
-**每次拦截都附"期望形状"。** 阻断原因末尾会拼上一份由 schema 派生的可填充 JSON 骨架(`; expected shape: {...}`,如 `{"name":"","age":0}`),`const`/`enum` 取第一个取值,联合类型取第一个分支,`allOf` 合并各分支的对象字段。只有"哪儿错了"不够用,"该长什么样"才是调用方(或把消息回灌给模型的重试循环)能直接动手的部分。
-
-**两阶段各自拦什么(刻意不同的严格度):**
-
-| 检查项 | 流式增量(`validate_chunk` 看累计原文) | 流末终检(`validate_complete`) |
-|---|---|---|
-| 还不是合法 JSON / 括号没闭合 | 放行(文档还在写) | 阻断 |
-| 已成形值类型错误(`age:"x"`) | **立即 Block** | 阻断 |
-| 未声明属性(`strict_properties` 默认开) | **立即 Block** | 阻断 |
-| 缺必填字段 | 容忍 | 阻断 |
-| `enum`/`const` 不匹配、oneOf 计数 | 基本容忍(oneOf 零匹配会拦) | 阻断 |
-| 长度/范围/条数边界 | 无意义("3"还可能变成"30") | 阻断 |
-| ` ```json ` 围栏与前后散文 | — | 容忍,自动抽取 JSON 切片 |
-
-增量解析走的是结构化输出章同款的 `PartialJsonParser`(容错、可修复半截 JSON);流式 Block 故意不带原因,精确的 `$.age: expected type integer, got string` 这类路径化报错由流末终检给出。终检支持的 Schema 子集覆盖普通 Rust 类型经 schemars 1.x 产出的全部常见结构:type、properties/required/additionalProperties、items、enum/const、oneOf/anyOf/allOf、本地 `$ref`/`$defs`、长度与数值边界。
-
-它和 provider 侧 `response_format` / `with_json_schema_output` 是**两道独立的门**:后者是"请求模型按 schema 写"(不是所有后端支持),前者是"写完之后验证"(任何后端都能挂),两者可叠加;与 `with_structured_output`(工具绑定式结构化)也不冲突——护栏作用于最终文本,不挑生成路径。
-
-### 审计持久化 ✨ v0.15.0
-
-`AuditSink` trait + `FileAuditSink`(JSON Lines 追加式)把违规记录落盘,供事后分析:
-
-```rust
-use langchainrust::guardrails::audit::FileAuditSink;
-
-let config = GuardrailsConfig::new()
-    .with_output(Arc::new(SensitiveInfoGuardrail::new()))
-    .with_audit_sink(Arc::new(FileAuditSink::new("guardrails.log")?));
-```
-
-`violations` 有界(`MAX_VIOLATIONS = 1000`),可 `clear_violations()` 清空。`SensitiveInfoGuardrail` 支持挂 LLM 裁判(`with_judge`,复用 `SensitiveJudge` / `LlmSensitiveJudge`)做上下文敏感检测,并对高误报词(`password`/`密码`/`token`/`secret`)降级为仅告警。
-
-### Retrieval Rail(检索护栏)✨ v0.21.0
-
-**解决什么问题**：输入输出护栏守住了用户消息和模型回复,但 RAG 检索回来的文档也是不可信输入——外部网页/PDF 里可能埋着 "ignore all previous instructions" 这类提示注入。RetrievalRail 对检索结果做**批量注入检测**(模式库与 `PromptInjectionHook` 共享),三种处置模式:
-
-| 模式 | 行为 | 适用 |
-|------|------|------|
-| `Flag`(默认) | 保留文档,metadata 打标记 `retrieval_rail_flagged` | 保守,先观察 |
-| `Redact` | 内容替换为 `[REDACTED by retrieval rail: ...]` | 保留条数、去掉内容 |
-| `Drop` | 直接从结果集移除 | 强隔离 |
-
-```rust
-use std::sync::Arc;
-use langchainrust::guardrails::{GuardedRetriever, RetrievalRail, RailAction};
-use langchainrust::retrieval::{RetrieverTrait, SemanticCacheConfig, CachedRetriever};
-
-// 直接扫描(不改变行为,拿到报告):
-let mut results = /* Vec<SearchResult> */;
-let report = RetrievalRail::default().scan(&mut results);
-println!("flagged={} redacted={} dropped={}", report.flagged, report.redacted, report.dropped);
-
-// 装饰任意 RetrieverTrait:
-let guarded = GuardedRetriever::new(
-    Arc::new(inner_retriever),            // 你的底层 retriever
-    RetrievalRail::new(RailAction::Drop),
-)
-.with_audit_sink(audit_sink);             // 可选:命中写审计
-
-// 与语义缓存叠加:护栏放缓存内侧(先过滤再入缓存,防污染)
-let cached = CachedRetriever::new(
-    Arc::new(guarded),
-    Arc::new(embedder),
-    SemanticCacheConfig::new(),
-);
-// cached 实现了 RetrieverTrait,可直接接入 RAGPipeline
-```
-
-**关键行为**:无命中时零改动;`with_patterns(vec![...])` 可追加自定义模式;词法/语义缓存条目永远是护栏过滤后的干净结果。
-
-### AI 透明披露(disclose)✨ v0.21.0
-
-对齐 **EU AI Act 第 50 条**:与 AI 系统交互时应告知用户。提供的是**能力**而非强制——是否调用由应用决定。
-
-```rust
-use std::sync::Arc;
-use langchainrust::guardrails::{disclose, DisclosureConfig, AuditSink};
-
-let audit: Arc<dyn AuditSink> = /* 你的 AuditSink(如 FileAuditSink) */;
-let config = DisclosureConfig::new()
-    .with_statement("{system} is an AI assistant. Responses may contain errors.") // 支持 {system} 占位符
-    .with_session_disclosed(false);
-
-// 会话开始时调用一次:渲染文案 + 写审计 + 返回渲染后文本
-let text = disclose(&audit, &config, "support-bot", Some("trace-1")).await;
-// text = "support-bot is an AI assistant. Responses may contain errors."
-```
-
-披露失败只记告警不抛错(fire-and-forget),不会阻断业务请求。
-
----
-
-## Token Counter
-
-**解决什么问题**：LLM 按 token 计费，但 token 数不等于字符数——一段中文、一段代码、一段英文的 token 密度各不相同。想回答"这一轮花了多少 token、多少钱"、发请求前估算 token 数（用来截断超长文本）、或自动累计每次调用的用量，都需要专门的工具。Token Counter 相关组件把"计数 → 追踪 → 计价"串成一条链。
-
-```rust
-use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
-use langchainrust::schema::Message;
-
-let tracked = TokenTrackingLLM::for_openai(OpenAIChat::new(OpenAIConfig::default()))?;
-
-let result = tracked.chat(vec![Message::human("hi")], None).await?;
-
-let usage = tracked.get_usage().await;                               // prompt / completion / total tokens
-let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await; // USD
-```
-
-### 四个组件各管什么
-
-| 组件 | 作用 | 什么时候用 |
-|---|---|---|
-| `TiktokenCounter` | 用 OpenAI 同款分词算法精确计数（cl100k_base） | 需要精确 token 数（计费、对齐上下文窗口） |
-| `CharRatioCounter` | 没有 tiktoken 时的粗略估算——按字符数量比例推算（中文场景常用） | 快速估算、拿不到精确分词器时兜底 |
-| `TokenTrackingLLM` | 包装任意模型，自动记录每次调用的 token 用量并累计 | 想自动追踪累计用量，不想手动算 |
-| `ModelPricing` | 给每个模型配定价（每千 token 价格），按累计用量算费用 | 估算成本 / 按用量算钱 |
-
-> 导入路径：`TiktokenCounter` / `TokenTrackingLLM` / `ModelPricing` 在根级；`CharRatioCounter` 需从 `langchainrust::core::token_counter::CharRatioCounter` 导入。
-
-### 精确计数 vs 估算
-
-| 场景 | 选哪个 |
-|---|---|
-| 计费、限额、对齐窗口 | `TiktokenCounter` 精确计数 |
-| 快速估算、中文长文本裁剪 | `CharRatioCounter` 粗略估算 |
-| 自动记录每次调用用量 | `TokenTrackingLLM`（包装模型） |
-| 按用量算 USD 成本 | `ModelPricing` + `estimate_cost` |
-
-### 关键行为
-
-- **真实用量优先**：`TokenTrackingLLM` 优先使用模型 API 返回的真实 usage 统计；模型没返回时才用估算。
-- **不侵入原模型**：统计对象是包装器自己，原模型行为不变——包一层就能自动累计用量。
-- **内置定价**：`ModelPricing::gpt4o()` / `gpt4o_mini()` 为内置定价；用 `ModelPricing::new(prompt_per_1k, completion_per_1k)` 可自定义其它模型的定价。
-- **算钱**：`get_usage().await` 拿累计的 prompt / completion / total tokens，`estimate_cost(&pricing).await` 按定价换算成 USD(这两个方法是 async)。
-
-### 怎么选（人话）
-
-- 只是想"每次调用记个数、最后报个总价"，直接用 `TokenTrackingLLM::for_openai(...)` 包装模型 + `estimate_cost`，一条链搞定。
-- 要在发请求**前**估算一段文本的 token 数（比如判断要不要截断），用 `TiktokenCounter`（精确）或 `CharRatioCounter`（估算）。
-- 中文内容占比高、且不追求精确时，`CharRatioCounter` 够用；正式计费请用精确分词。
-
-### 成本台账:PricingTable + CostTracker + 美元硬闸门 ✨ v0.22.4
-
-上面的 `ModelPricing` + `estimate_cost` 只能事后给**单个包装器**算一笔钱。生产场景缺三样东西:多个模型/多次运行的**累计与分模型汇总**、对接监控系统的**事件导出**、以及超预算时**真正停下来**的强制手段。v0.22.4 在 `lc-core::cost` 补齐(facade 根级直接导出)。
-
-**三层分工,刻意把"测量"和"执法"分开:**
-
-1. **`ModelPrice`——单价**。单位统一是 **USD / 1000 token**,输入输出分开报:
-   ```rust
-   use langchainrust::{ModelPrice, PricingTable, CostTracker};
-
-   let p = ModelPrice::new(2.5, 10.0);          // $2.5/1K in, $10/1K out
-   p.cost_of(1000, 500);                         // 2.5 + 5.0 = 7.5(纯函数)
-   ModelPrice::free();                           // 本地/开源模型,0 也是合法价格
-   p.blended_per_1k();                           // 路由比价用的单一数字:按 3:1 典型
-                                                 // 输入输出比混合(0.75·in + 0.25·out)
-   ```
-2. **`PricingTable`——按 (provider, model) 查价的表**。provider 限定条目优先;查不到时回落到只按 model 注册的兜底条目(同名模型走不同网关时有用):
-   ```rust
-   let table = PricingTable::new()
-       .with("openai", "gpt-4o", ModelPrice::new(2.5, 10.0))
-       .with_model_only("some-self-hosted-model", ModelPrice::free());
-   table.get(Some("openai"), "gpt-4o");  // 限定条目遮蔽同名兜底
-   ```
-   - `PricingTable::builtin()` 自带 12 条常见模型的价格快照(截至 2026-09:gpt-4o/gpt-4o-mini/gpt-4.1 系列/o4-mini、claude-3-5-sonnet/haiku-latest、gemini-1.5-pro/flash、groq llama 两款、deepseek-chat)。**这是方便起步的种子,不是持续维护的真相源**——厂商调价频繁,正式计费请走下面的注册表。
-   - 生产路径:`ModelRegistry::fetch(url).await?` 从远端拉最新目录(`fetch_with_client` 可传自定义 reqwest client,也可 `from_json` 读本地 JSON、手工 `register`/`merge`),再 `PricingTable::from_registry(&registry)` 转成表;加载失败报 `CostError::Fetch/Payload`。
-3. **`CostTracker`——线程安全的累计台账**。一个 run 建一个,或一个会话共享同一个 `Arc`;每次 LLM 调用记一笔:
-   ```rust
-   let tracker = Arc::new(
-       CostTracker::with_builtin_prices()        // 或 CostTracker::new(Arc::new(table))
-           .with_scope("session-user-42")         // 报表/事件里带的标签
-           .with_metrics_sink(sink),              // 可选:每笔再导出一个 ObsEvent::Cost
-   );
-
-   let usd = tracker.record(Some("openai"), "gpt-4o", 1000, 500).await; // 返回本次费用
-   tracker.record_usage(Some("openai"), "gpt-4o", &token_usage).await;  // 或直接吃 TokenUsage
-
-   let total = tracker.total_cost_usd().await;   // 预算门读的就是这个数
-   let report = tracker.report().await;          // CostReport:总调用/token/费用 +
-                                                 // by_model 按 "openai/gpt-4o" 分模型汇总
-   let each = tracker.records().await;           // 每笔明细 CostRecord(最旧在前)
-   tracker.reset().await;                        // 同会话开启新 run 时清零
-   ```
-
-**两条关键的降级语义(接追踪器永远不会搞坏 agent 主循环):**
-
-- 表里**查不到的模型照样计调用数和 token 数,只是价格按 0**——缺价格数据降级为"只计量",不报错;
-- sink 导出失败只 `warn`,不传播给调用方。
-
-**自动记账:把 tracker 挂到包装 LLM 上。** `TokenTrackingLLM` 提供 `.with_cost_tracker(arc)` 和 `.with_provider("openai")`:包装器自己也是 `BaseChatModel`(v0.20.1 起),直接塞进 agent,循环里每次 `chat`/流式/`bind_tools` 调用都自动计价累计;`with_temperature` / `with_max_tokens` / `bind_tools` 重建出的新包装器共享同一组 `Arc`,记账不断。模型 id 优先取响应里回传的 model,空了才退回 `model_name()`。
-
-> 流式的已知边界:流式路径没有完整文本可估算,**只计 provider 在末块真实回报的 usage**;从不回报 usage 的 provider,流式下记账可能为 0。非流式 `chat` 在模型不报 usage 时会回退到 tiktoken 估算。
-
-**美元硬闸门:测量之外的执法放在执行器。** tracker 本身只测量;真正的硬停止复用 §4.2 预算门:
-
-```rust
-use langchainrust::{AgentExecutor, CostTracker, BudgetConfig};
-
-let tracker = Arc::new(CostTracker::with_builtin_prices());
-let tracked_llm = TokenTrackingLLM::for_openai(llm)?
-    .with_provider("openai")
-    .with_cost_tracker(tracker.clone());   // 同一个 Arc:LLM 记账
-let executor = AgentExecutor::new(agent, tools)
-    .with_cost_tracker(tracker.clone())    // 同一个 Arc:执行器读表
-    .with_budget(BudgetConfig {
-        max_cost_usd: Some(1.0),           // 累计花满 $1 硬停
-        max_tool_calls: Some(20),          // 预算门其余四项照旧可同用
-        ..Default::default()
-    });
-```
-
-执行器在**每次规划 LLM 调用之后**读 `total_cost_usd()`,达到/超过限额即返回 `AgentError::BudgetExceeded(BudgetExceeded::Cost { limit, actual })`——调用方能把"预算主动停止"和"模型没收敛"区分开;流式路径同样在每轮 LLM 后检查。两个不对称是有意为之:**只挂 tracker 不设限额 = 只测量不拦截;只设限额不挂 tracker = 永不触发**(读不到花费,读数恒为 0);记账必须靠 tracker 另一端连着 `TokenTrackingLLM`(或你自己在每次调用后 `record`)。
-
----
-
-## Sessions
-
-> **⚠️ v0.22.0 起推荐事件溯源路径**：本节前半部分介绍的 `SessionManager` 已标 `#[deprecated]`（原计划 0.23.0 移除；截至 0.24.0 仍随 crate 保留、可编译运行，仅发出 deprecation 警告）。新代码请直接用 [`EventSessionManager`](#事件溯源重写--v0220推荐路径)（见下方"事件溯源重写"节）；存量代码升级后仍可编译运行，只会出现 deprecation 警告。
-
-**解决什么问题**：多轮对话必须记住上下文——用户上一轮说了什么、助手怎么回的。但"记在哪、怎么存、怎么取"是每个应用都要重复实现的样板。`SessionManager` 把会话抽象成生命周期管理：创建会话 → 往里写对话 → 随时取历史 → 归档/清理。同时天然支持**多会话隔离**：每个会话有独立 id 和归属用户，不同用户、不同话题的对话互不串扰。
-
-**核心三件套**：`Session`（会话本身）← `SessionStore`（怎么存）← `SessionManager`（怎么用）。
-
-```rust
-use langchainrust::sessions::{SessionManager, MemorySessionStore};
-use langchainrust::{OpenAIChat, OpenAIConfig};
-use std::sync::Arc;
-
-let manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
-let id = manager.create_session_for("user_1").await?;
-
-let llm = OpenAIChat::new(OpenAIConfig::default());
-let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
-let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?; // 记住上一轮对话
-
-let history = manager.history(&id).await?;  // Vec<Message>
-manager.clear(&id).await?;                   // 清除历史（保留会话）
-manager.archive(&id).await?;                 // 归档
-let sessions = manager.list_by_user("user_1").await?;
-```
-
-### 会话模型
-
-| 字段 | 作用 |
-|---|---|
-| `id` | 会话唯一标识 |
-| `user_id` | 归属用户（可空，支持匿名） |
-| `messages` | 对话消息列表（`Vec<Message>`），追加式增长 |
-| `status` | 生命周期状态（`Active` / `Archived` / `Deleted`） |
-| `metadata` | 自由键值扩展属性 |
-
-### SessionManager 方法
-
-| 方法 | 作用 |
-|---|---|
-| `create_session_for(user)` | 建新会话，返回会话 id |
-| `chat(&id, &llm, msg)` | 核心：追加用户消息 → 拿历史喂 LLM → 把回复追加回会话（自动维护历史） |
-| `history(&id)` | 取完整对话历史（`Vec<Message>`） |
-| `clear(&id)` | 清除历史（保留会话） |
-| `archive(&id)` | 归档（不再活跃，但保留） |
-| `list_by_user(user)` | 列出某用户的全部会话 |
-
-`chat()` 是核心——调用方只传"会话 id + LLM + 用户消息"，历史读写都由 `SessionManager` 包办，不需要手动维护 `Vec<Message>`。
-
-### 会话级历史管理
-
-- 每个会话的历史独立维护；`chat()` 每次基于该会话已有历史喂给 LLM，所以同一会话第二句才能"记住上一轮"。
-- 默认用内部缓冲直接维护完整历史，简单直接；长会话 token 会随轮数线性增长，需要控制成本时挂记忆组件（见下）。
-- `SessionStore` trait 包含 `create/get/update/delete/list_by_user`；`MemorySessionStore` 为内置实现（进程内存 + tokio 锁），适用于测试和单进程使用；可实现自己的后端（Redis / 数据库）。
-
-### 会话生命周期 ✨ v0.15.0
-
-`SessionStatus` 状态机闭环：`Active` → `Archived` → `Deleted`。删除为**软删除**：记录保留（可审计/恢复），但不再出现在用户会话列表中。
-
-### 接入记忆系统 ✨ v0.15.0
-
-`SessionManager` 默认用内部缓冲维护历史；`with_memory` 可挂接任意 `BaseMemory`（如 `ConversationSummaryBufferMemory` / `MongoPersistentMemory`），让会话历史走摘要压缩或跨进程持久化：
-
-```rust
-let mut manager = SessionManager::new(Arc::new(MemorySessionStore::new()));
-manager = manager.with_memory(Arc::new(Mutex::new(
-    ConversationSummaryBufferMemory::new(llm, 2000),
-)));
-let r = manager.chat(&id, &llm, "问题".to_string()).await?;
-```
-
-**怎么选记忆（人话）**：不挂，保持全量历史，语义最简单但长会话会膨胀；挂 `ConversationSummaryBufferMemory`，长会话被压成"摘要 + 近期窗口"，控制 token 成本；挂持久化记忆，历史能跨进程存活、多实例共享。挂上后对话历史由记忆组件处理，而不是全量透传。
-
-### 注意
-
-- **并发写同一会话**：`chat()` 内部是"读取 → 追加 → 写回"三步，同一会话的并发写入需要自行串行化（如按会话加锁），否则可能丢消息。
-- **会话 vs 长期记忆**：lc-sessions 管"一次对话的过程记录"，跨会话的长期记忆（人设、偏好）交给 lc-memory；会话是按时间组织的对话上下文。
-- **会话 vs 检查点**：会话存"聊了什么"；检查点（Checkpointer）存"图执行到哪一步"（lc-langgraph）。两者都涉及持久化，但语义不同。
-- **存储选型**：测试、单进程场景用 `MemorySessionStore` 足够；多实例 / 需要跨进程共享历史时，换数据库或 Redis 后端实现 `SessionStore`。
-
-### 事件溯源重写 ✨ v0.22.0（推荐路径）
-
-**解决什么问题**：旧 `SessionManager` 是"改写式"——每次对话把整个 `Session` 读出来、改完写回去。三个硬伤：① 进程崩溃在"读-改-写"中间会**丢消息或丢整轮**；② 无法分叉——想试验一个分支对话只能复制整个会话；③ 没有"时间旅行"——无法回答"第 5 轮时的历史长什么样"。
-
-0.22.0 起 lc-sessions 重写为**事件溯源（Event Sourcing）**：会话不再是可变对象，而是一条**只追加（append-only）的事件日志**。每次对话只追加事件，历史 = 从头投影（replay），崩溃安全、可分叉、可回放。
-
-**核心四件套**：`SessionEvent`（事件）← `EventStore`（怎么存）← `EventSessionManager`（怎么用）← `project()`（怎么投影）。
-
-```rust
-use langchainrust::sessions::{EventSessionManager, MemoryEventStore, AutoCompaction};
-use langchainrust::{OpenAIChat, OpenAIConfig};
-use std::sync::Arc;
-
-let manager = EventSessionManager::new(Arc::new(MemoryEventStore::new()))
-    .with_max_context_turns(10)                                  // 轮窗（默认全量）
-    .with_auto_compaction(AutoCompaction::new(20)?);             // 超 20 轮自动压快照
-
-let id = manager.create_session().await?;                        // uuid v7
-
-let llm = OpenAIChat::new(OpenAIConfig::default());
-let r1 = manager.chat(&id, &llm, "My name is Tom".to_string()).await?;
-let r2 = manager.chat(&id, &llm, "What is my name?".to_string()).await?;
-
-let history = manager.history(&id).await?;   // 投影后的 Vec<Message>
-// 清理/归档/删除:向 EventStore 追加 Metadata 事件(日志不可变,见下文"事件类型")
-```
-
-**旧 API → 新 API 对照**（旧 `SessionManager` / `SessionManagerRunnable` 自 0.22.0 起标 `#[deprecated]`，原计划 0.23.0 移除；截至 0.24.0 仍保留可用，`#[allow(deprecated)]` 可静默警告）：
-
-| 旧（0.21.x） | 新（0.22.0） | 语义变化 |
-|---|---|---|
-| `SessionManager::new(Arc<dyn SessionStore>)` | `EventSessionManager::new(Arc<dyn EventStore>)` | 存储换为 append-only 事件日志；`MemoryEventStore` 对应 `MemorySessionStore` |
-| `create_session() / create_session_for(user)` | `create_session()`（uuid v7） | 会话存在性 = 日志非空；用户归属走 `Metadata` 事件 |
-| `chat(&id, &llm, msg)` | `chat(&id, &llm, msg)` | 同签名同语义，持久化从"改写"变为"追加"——崩溃安全 |
-| `history(&id)` | `history(&id)` / `replay_session(&id)` | history = 投影后的消息；`replay_session` 给出旧式可变 `Session` 视图 |
-| （无） | `fork_session(&id, branch, until)` | **新**：从主干复制前缀到新分支，主干不受影响 |
-| `max_context_messages(n)`（消息计数窗） | `with_max_context_turns(n)`（轮窗） | n=1 含完整上一轮 + 当前消息；保证 user/ai 成对、无孤儿工具结果 |
-| （无） | `with_auto_compaction(AutoCompaction)` | **新**：超 N 轮自动追加确定性 Snapshot 事件（无 LLM 调用） |
-| `clear / archive / delete_session` | 直接向 `EventStore` 追加 `Metadata` 事件（截至 0.24.0 仍由调用方直接追加，封装方法尚未落地） | 事件日志不可变,"清理"变为追加状态事件 |
-| `SessionStore`（自定义存储 trait） | `EventStore` | 四方法：`append / append_batch / read / fork`；append 幂等键 `(session, branch, id)` |
-
-### 会话分叉（fork）
-
-```rust
-// 从主干复制"到某事件序号为止"的前缀到新分支,主干不受影响
-// 返回的是一个绑定到新分支的 manager(同一 session_id,事件序号独立)
-let mut experiment = manager.fork_session(&id, "experiment", None).await?;
-// 继续在分支上 chat:写进 "experiment" 分支,主干看不到
-experiment.chat(&id, &llm, "分支消息".to_string()).await?;
-// 对同一 (session, branch) 重复 fork 是幂等的——前缀一致,不重复
-```
-
-`until_id: Option<u64>` 是事件序号(从 0 起):只复制到该序号为止——"回到第 5 轮再试另一种回答"就是 `fork_session(&id, "retry", Some(5))`。
-
-### 崩溃安全与回放
-
-- **幂等追加**：`append` 以 `(session_id, branch, id)` 为幂等键，同一事件重放不会重复写入——进程在"追加到一半"崩溃后，重启重放残缺批次是安全的。
-- **投影（project）**：`project(&events)` / `to_session(&events)` 从事件流重建会话状态；孤儿工具结果（有 tool result 无对应 tool call）在投影时被检测并报错，保证喂给 LLM 的历史永远成对合法。
-- **检查点占位**：`SessionCheckpoint` trait + `NoopCheckpoint` 已就位；持久化检查点（把投影落库）原计划 0.23.0 接入，截至 0.24.0 仍只有 no-op 实现，恢复时需全量重放事件日志。
-
-### 事件类型
-
-| `EventPayload` 变体 | 含义 |
-|---|---|
-| `SessionCreated` | 会话建立（uuid v7 时间有序） |
-| `UserMessage` | 用户消息 |
-| `AssistantMessage` | 助手回复（一轮一个 Turn） |
-| `ToolCall` / `ToolResult` | 工具调用与结果（成对追加） |
-| `Snapshot` | 确定性压缩快照（投影时用它替代重放前缀） |
-| `Metadata` | 生命周期/归属等键值状态（clear / archive / delete / user） |
-
-### 事件存储选型
-
-测试、单进程用 `MemoryEventStore` 足够；多实例 / 跨进程 / 需要审计历史时，实现 `EventStore`（数据库 / Redis / Kafka 均可）——append-only + 幂等键的契约对后端非常友好，不存在"读改写竞态"。
-
----
-
-## MCP
-
-[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。0.22.4 的 lc-mcp 同时提供**三条客户端轨道**，按对端形态选用：
-
-- **无状态轨道 `StatelessMcpClient`（v0.22.0 起）**：框架自研的 2026-07-28 单请求协议，每个请求都是自包含的 JSON-RPC HTTP POST（带 `Mcp-Method` / `Mcp-Name` 路由头与 `_meta`），**无握手、无会话**，直连 `MCPServer::serve_http` 起的服务；
-- **官方 stdio 轨道 `StdioMcpClient`（v0.22.4 起）**：spawn 本地子进程，走完整 `initialize` 握手——对接 Claude Desktop / Cursor 等宿主生态的本地 stdio server；
-- **官方 Streamable HTTP 轨道 `StreamableMcpClient`（v0.22.4 起）**：对接按官方 TS/Python SDK 部署的远端 Streamable HTTP server，走完整握手、由服务端分配 `Mcp-Session-Id`，JSON/SSE 内容协商，可挂 OAuth 2.1 令牌提供器。
-
-三条轨道拿到的工具定义都走同一个 `MCPToolAdapter` 适配为 `BaseTool`。
-
-> **历史脉络**：0.22.0 曾按"单轨"要求移除旧的握手式 `MCPClient`（SSE 传输 + 旧 stdio 客户端、事件流/partial-content 推送面）；0.22.4 以**官方协议兼容**的名义把 stdio 与 Streamable HTTP 两条官方轨道加了回来（与无状态轨道并存，不是 feature 门控的二选一）。已对官方 **TypeScript SDK 1.30.0** 与 **Python SDK** 做 4/4 互操作验证。
-
-```rust
-use langchainrust::mcp::{MCPToolAdapter, StatelessMcpClient};
-use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
-use std::sync::Arc;
-
-// 无状态连接：无握手，connect 只构造客户端（不会失败）
-let client = StatelessMcpClient::connect("http://localhost:3001/mcp");
-
-let tools = client.list_tools().await?;           // tools/list
-println!("MCP tool count: {}", tools.len());
-
-// 适配为 BaseTool 列表并交给 Agent
-// 注意:适配器默认 fail-closed(RequireApproval)——不挂审批门/沙箱时每次调用
-// 都在发出前被拒(ToolError::PermissionDenied)。完全信任的内网 server 显式
-// allow_unattended_execution();生产场景见下方"工具执行审批与沙箱"。
-let mcp_tools: Vec<Arc<dyn BaseTool>> = tools
-    .into_iter()
-    .map(|def| {
-        Arc::new(
-            MCPToolAdapter::new(client.clone(), def)
-                .allow_unattended_execution(),
-        ) as Arc<dyn BaseTool>
-    })
-    .collect();
-let agent = FunctionCallingAgent::new(
-    OpenAIChat::new(OpenAIConfig::default()),
-    mcp_tools,
-    None,
-);
-let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, vec![]);
-let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
-
-client.close().await?;
-```
-
-`client.call_tool(name, arguments)` 直接调用工具；`MCPToolAdapter::new(client, def)` 将工具包装为实现 `BaseTool` 的适配器（`namespaced` 变体带 `server:tool` 前缀）；`.with_mrtr(...)` / `.with_answer_provider(...)` 处理 `input_required` 多轮请求；`.with_method_rate_limiter(...)` 做方法级限流。
-
-**失败语义（按传输区分）**：无状态轨道没有连接生命周期——`connect()` 只构造客户端、不发请求，网络/服务端错误在**首个实际请求**处立刻暴露，没有"等待自动重连约 30s"的挂起；方法级限流命中时本地直接返回 `-32002`，不发网络请求；MRTR（多轮请求）未提供答案提供器时返回 `-32003`。
-
-### 工具执行审批与沙箱（fail-closed）✨ v0.22.4（A16）
-
-`MCPToolAdapter` 默认策略是 `ToolExecutionPolicy::RequireApproval`：没有任何放行配置时，工具调用在**发往 server 之前**就被拒绝（`ToolError::PermissionDenied`），远程工具永远不能在应用不知情的情况下执行。三种放行方式，按信任度递增/递减自选：
-
-```rust
-use langchainrust::mcp::{MCPToolAdapter, ServerSandbox, ToolCallApprover};
-
-// 1) 完全信任(内网自建 server / 测试):显式接受无人值守执行
-let trusted = MCPToolAdapter::new(client.clone(), def.clone())
-    .allow_unattended_execution();
-
-// 2) 沙箱:参数级白名单,由 ServerSandbox 的 ParamRule/EgressPolicy 判定
-let sandboxed = MCPToolAdapter::from_client(std::sync::Arc::new(client_stdio.clone()), def.clone())
-    .with_sandbox(std::sync::Arc::new(sandbox));
-
-// 3) 运行时审批门:每次 run 都问 approver,人拒绝则 PermissionDenied、请求不外发
-let guarded = MCPToolAdapter::new(client.clone(), def)
-    .with_approver(std::sync::Arc::new(my_human_approver));
-```
-
-### 官方 stdio 轨道：`StdioMcpClient` ✨ v0.22.4
-
-对接本地子进程形态的官方 MCP server（Claude Desktop、Cursor 生态里的 `npx`/`uvx` server）。构造时 spawn 子进程并完成标准 `initialize` 握手，拿到 server 声明的 capabilities/serverInfo：
-
-```rust
-use langchainrust::mcp::{StdioMcpClient, StdioCommand, MCPToolAdapter};
-use std::sync::Arc;
-use langchainrust::BaseTool;
-
-// 等价于在命令行起: npx -y @modelcontextprotocol/server-everything
-let command = StdioCommand::new("npx")
-    .arg("-y")
-    .arg("@modelcontextprotocol/server-everything");
-
-// connect 是 Result:握手失败(子进程起不来/协议版本不支持)在此暴露
-let client = StdioMcpClient::connect(command).await?;
-
-// 也可显式指定版本协商策略与每请求超时(默认 Degrade + 60s)
-// let client = StdioMcpClient::connect_with(
-//     command, VersionPolicy::Reject, Duration::from_secs(30)).await?;
-
-let tools = client.list_tools().await?;
-let _ = client.ping().await?; // 官方 keep-alive 探活
-
-// stdio 客户端同样实现 McpToolClient,走 from_client 适配(fail-closed 同上)
-let adapter = MCPToolAdapter::from_client(
-    Arc::new(client.clone()), tools.remove(0),
-).allow_unattended_execution();
-
-client.close().await?; // 关闭子进程;连接中途死亡不会自动重连(connection_lost)
-```
-
-### 官方 Streamable HTTP 轨道：`StreamableMcpClient` ✨ v0.22.4
-
-对接按官方 SDK 部署的远端 Streamable HTTP server：`initialize` 握手后由服务端分配 `Mcp-Session-Id`，之后每个请求/通知都带会话 id；传输层同时支持 JSON 与 SSE 两种响应内容协商，服务端可通过 HTTP 202 异步推通知。断线可 `reconnect()` 重建会话。
-
-```rust
-use langchainrust::mcp::{StreamableMcpClient, StaticBearerToken};
-use std::sync::Arc;
-
-// 无鉴权端点:握手 + 版本协商(默认 Degrade,每请求 60s 超时)
-let client = StreamableMcpClient::connect("http://127.0.0.1:8765/mcp").await?;
-
-// 显式策略/超时:
-// let client = StreamableMcpClient::connect_with(
-//     url, VersionPolicy::Degrade, Duration::from_secs(60)).await?;
-
-// 固定令牌(PAT/开发侧车):401 时自动失效重试一次
-let client = StreamableMcpClient::connect_with_token_provider(
-    "https://mcp.example.com/mcp",
-    Arc::new(StaticBearerToken("pat-xxx".to_string())),
-).await?;
-
-// 完整 OAuth 2.1 刷新语义:自己实现 BearerTokenProvider(见下节)
-let client = StreamableMcpClient::connect_token(
-    url, Arc::new(oauth_provider), VersionPolicy::Degrade, Duration::from_secs(60),
-).await?;
-
-client.reconnect().await?; // 会话失效后重新握手,拿新的 Mcp-Session-Id
-client.close().await?;
-```
-
-协议版本协商两条轨道共用 `VersionPolicy`：`Degrade`（默认，对端声明版本超出支持列表时降级到本库实现版本继续跑）与 `Reject`（严格模式，版本不符直接握手失败，错误码 `-32005`，stdio 下子进程一并关闭）。
-
-### OAuth 2.1 受保护远端 server ✨ v0.22.4
-
-官方 Streamable HTTP server 普遍以 OAuth 2.1 **资源服务器**（RFC 9728）形态鉴权。完整流程的机器部分由 lc-mcp 提供，需要人参与的部分（打开授权页、接收重定向回调）留给嵌入应用：
-
-1. 未带令牌的请求收到 `401` + `WWW-Authenticate: Bearer resource_metadata="…"` 质询——`OAuthChallenge::parse(header, ..)` 解析出资源元数据地址、realm、scopes；
-2. `discover_protected_resource(url)` / `discover_authorization_server(metadata_url)` 按 RFC 9728 / RFC 8414 发现授权服务器（元数据发现与令牌端点调用超时均为 10s）；
-3. 应用在浏览器里跑 **授权码 + PKCE（常伴随 DCR 动态客户端注册）** 流程：`code_challenge` 由调用方自己持有 verifier 计算，库不引入新加密依赖；
-4. `OAuthTokenClient::new(token_endpoint, client_id)` 做令牌交换：`exchange_authorization_code(code, redirect_uri, code_verifier)`、`refresh(..)`、`client_credentials(..)`；
-5. 实现 `BearerTokenProvider`（`token()` 取当前访问令牌；401 时传输层调用 `invalidate(token)` **恰好一次**后用新令牌重试，再 401 才上抛），挂到 `connect_with_token_provider`。固定令牌用内置的 `StaticBearerToken` 即可。
-
-### 互操作与服务端官方传输
-
-- 0.22.4 补齐了官方 SDK keep-alive 依赖的 `ping` 处理，并实现完整 HTTP 状态矩阵（`400/404/405/406/415/401`）与 JSON/SSE 内容协商；对官方 **TypeScript SDK 1.30.0** 与 **Python SDK** 客户端/服务端四个方向互操作验证 4/4 通过。
-- 服务端除无状态的 `serve_http` 外，新增**官方 Streamable HTTP** 出口 `MCPServer::serve_streamable_http(listener)`（`Arc<MCPServer>` 上调用，立即返回端点 URL，后台任务 accept）：握手、`Mcp-Session-Id` 分配、202 通知、Bearer 质询齐全，官方 SDK 客户端可直连。可运行的最小例程见 `crates/lc-mcp/examples/streamable_echo_server.rs`（`cargo run -p lc-mcp --example streamable_echo_server`，支持 `--port` / `--bearer`），stdio 侧对应 `stdio_echo_server.rs`。
-
----
-
-### MCPServer
-
-与 `StatelessMcpClient` 对称：将本地 `BaseTool` 暴露为 MCP Server。支持 `initialize` / `tools/list` / `tools/call`。
-
-```rust
-use langchainrust::{MCPServer, Calculator, BaseTool};
-use std::sync::Arc;
-
-let tool: Arc<dyn BaseTool> = Arc::new(Calculator::new());
-let server = MCPServer::new()
-    .with_tool(tool)
-    .with_server_info("my-tools", "0.1.0");
-
-server.serve_stdio().await?;
-```
-
-`server.handle_request(req)` 用于自定义传输层的单步 JSON-RPC 处理；`server.serve_http(listener)`（在 `Arc<MCPServer>` 上调用）把服务起成框架自研的无状态 HTTP 服务（`StatelessMcpClient::connect(url)` 直连，立即返回端点 URL），示例见 `crates/lc/examples/mcp_http_server.rs`；`server.serve_streamable_http(listener)` 起的是**官方 Streamable HTTP** 服务（官方 TS/Python SDK 可直连，见上方"互操作与服务端官方传输"），示例见 `crates/lc-mcp/examples/streamable_echo_server.rs`。
-
-### ConnectionManager（连接池） ✨ v0.15.0
-
-管理多个 `StatelessMcpClient` 的托管注册表，惰性构建、统一回收：
-
-```rust
-use langchainrust::mcp::{ConnectionManager, ServerSpec};
-
-let manager = ConnectionManager::new();
-manager.register(ServerSpec::new("files", "http://localhost:3001/mcp")).await?;
-manager.register(ServerSpec::new("tools", "http://localhost:3002/mcp").keep_alive()).await?;
-
-let client = manager.client("files").await?;  // 取某个 server 的客户端（惰性构建）
-manager.reap_idle().await;                     // 回收空闲句柄
-// manager.shutdown().await;                     // 统一关闭
-```
-
-### 工具命名空间 / 发现 / 超时 ✨ v0.15.0
-
-- **`ToolNamespace`**:工具名自动加 `server:tool` 前缀,多 server 同名工具不冲突;`register(server, tools, conflict)` 返回命名空间化结果,可据此构造 `MCPToolAdapter::namespaced(...)`
-- **`ToolDiscovery`**:批量发现 + 健康检查,过滤掉不可用 server 的工具
-- **`ToolSpec`**:`timeout`(单次工具调用超时)、`max_retries` 等执行策略,超时命中熔断
-
-### ServerHealth / CircuitBreaker（健康与熔断） ✨ v0.15.0
-
-每个 server 有健康状态(`HealthStatus`)与熔断器:
-
-```rust
-use langchainrust::mcp::{CircuitBreaker, HealthStatus};
-
-let breaker = CircuitBreaker::new(5); // 连续 5 次失败 -> 熔断
-if !breaker.allow_request() {
-    // 熔断打开:直接短路,不再打后端
-} else {
-    match call_tool().await {
-        Ok(v) => breaker.record_success(), // 成功,自动重置计数
-        Err(_) => breaker.record_failure(),
-    }
-}
-```
-
-`ServerHealth` 记录延迟、错误率、最近一次探测时间,供上层做路由决策。
-
-### SamplingGuard（采样保护） ✨ v0.15.0
-
-对服务端采样请求(resources/sampling/createMessage)的递归防护:限制嵌套深度、整条采样链的 token 预算与总时长,防模型自行递归采样耗尽资源:
-
-```rust
-use langchainrust::mcp::SamplingGuard;
-
-let guard = SamplingGuard::new(5, 100_000) // 最大嵌套深度 5,整条链 token 预算 100k
-    .with_timeout(std::time::Duration::from_secs(60)); // 整条链总时长上限
-let lease = guard.enter(4000)?; // 进入一次采样,返回 SamplingLease,drop 时自动释放深度
-```
-
-### MCPGateway（网关） ✨ v0.15.0
-
-把多个 MCP server 聚合为一个统一入口,按 `server` 参数路由:
-
-```rust
-use langchainrust::mcp::{MCPGateway, GatewayServerSpec};
-
-let gateway = MCPGateway::new();
-gateway.register(GatewayServerSpec::new("files", "http://localhost:9001/mcp")).await?;
-gateway.register(GatewayServerSpec::new("db", "http://localhost:9002/mcp")).await?;
-gateway.sync_all().await?; // 拉取全部 server 的工具
-
-let tools = gateway.as_base_tools().await?; // 自动加 server 前缀,互不冲突
-```
-
-配套能力:
-- **`ServerSandbox`**:`ParamRule`(参数白名单/黑名单/类型校验)、`EgressPolicy`(出站策略,限制工具调用的网络/文件范围)
-- **`TenantGateway`**:多租户隔离,每租户独立的工具命名空间 + 配额 + 访问控制
-- **`ToolOrchestrator`**:工具 DAG 编排,声明依赖关系后自动排序/并行执行
-- **`MethodRateLimiter`**:client 侧方法级限流(命中即返回 -32002,不发网络请求)
-- **`VersionPolicy`**:协议版本协商策略,三条握手轨道共用——`Degrade`(默认,对端版本超出支持列表时降级到本库版本继续跑)/ `Reject`(严格,版本不符握手失败 `-32005`)
-
-### MCP Server 原语接线 ✨ v0.18.0
-
-client→server 原语(`resources/*` / `prompts/*` / `completion/complete`)为**注册制**:给 `MCPServer` 注册数据源后,对应方法返回真实数据;未注册仍返回 `method_not_found`(-32601,诚实边界)。`initialize` 握手时 `capabilities` 按实际注册项补齐(`tools` 恒声明)。
-
-```rust
-use langchainrust::mcp::{
-    MCPError, MCPServer, Resource, ResourceContent, ResourceProvider,
-};
-use std::sync::Arc;
-
-struct StaticResources;
-
-#[async_trait::async_trait]
-impl ResourceProvider for StaticResources {
-    async fn list_resources(&self) -> Result<Vec<Resource>, MCPError> {
-        Ok(vec![Resource {
-            uri: "file:///README.md".into(),
-            name: "README".into(),
-            description: None,
-            mime_type: Some("text/markdown".into()),
-        }])
-    }
-    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError> {
-        let text = format!("content of {uri}");
-        Ok(vec![ResourceContent {
-            uri: uri.into(),
-            mime_type: Some("text/plain".into()),
-            text: Some(text),
-            blob: None,
-        }])
-    }
-}
-
-let server = MCPServer::new()
-    .with_tool(Arc::new(Calculator))
-    .with_resource_provider(Arc::new(StaticResources))
-    .with_prompt_provider(Arc::new(my_prompts))      // prompts/list + prompts/get
-    .with_completion_provider(Arc::new(my_completions)); // completion/complete
-```
-
-server→host 方向的 `sampling::create_message` / `elicitation::create` 由 Server 发起、Host 执行: `MCPServer` 提供发起方法(`create_message` / `create_elicitation`),需注入回调(`with_sampling_handler` / `with_elicitation_handler`);未注入回调时返回明确错误,不静默。真实交互依赖宿主 UI/模型环境,由使用者经回调接入(测试用注入 mock 覆盖)。
-
-## Tools
+### 5.5 Tools
 
 工具是 Agent 的"手"——让 LLM 能执行计算、搜索、读写文件等操作。每个工具实现 `BaseTool` trait，定义名称、描述、参数 schema 和执行逻辑。
 
-### 内置工具
+#### 5.5.1 内置工具
 
 | 工具 | 描述 | 参数 |
 |------|------|------|
@@ -3547,7 +3365,7 @@ server→host 方向的 `sampling::create_message` / `elicitation::create` 由 S
 | CdpBrowserTool ✨ v0.22.4 | CDP 驱动 Chrome 抓 JS 渲染页（`browser-cdp` feature） | `operation`, `url`, `wait_ms` |
 | PythonREPLTool | 执行 Python 代码 | `code` |
 
-### 自定义工具
+#### 5.5.2 自定义工具
 
 当内置工具不够用时，实现 `BaseTool` trait 创建自己的工具。需要定义输入结构体（`JsonSchema` + `Deserialize`）和 `run` 方法。
 
@@ -3580,7 +3398,7 @@ impl BaseTool for EchoTool {
 }
 ```
 
-### `#[tool]` 过程宏 ✨ v0.10.0
+#### 5.5.3 `#[tool]` 过程宏 ✨ v0.10.0
 
 用 `#[tool]` 宏自动生成 `BaseTool` + `Tool` 实现，无需手写样板代码：
 
@@ -3620,7 +3438,7 @@ fn greet(
 }
 ```
 
-### ToolRegistry（工具注册表） ✨ v0.15.0
+#### 5.5.4 ToolRegistry（工具注册表） ✨ v0.15.0
 
 按名称管理一组工具的注册表：注册、查找、移除、批量描述，可直接喂给 LLM 展示可用工具。
 
@@ -3639,7 +3457,7 @@ let description = registry.describe_tools(); // 供 LLM 阅读的工具清单
 registry.remove("calculator");
 ```
 
-### StructuredTool（结构化包装） ✨ v0.15.0
+#### 5.5.5 StructuredTool（结构化包装） ✨ v0.15.0
 
 把实现 `Tool` trait 的通用工具包装成 `BaseTool`，自动完成 JSON 输入解析与输出序列化：
 
@@ -3650,7 +3468,7 @@ let tool = StructuredTool::new(my_tool, Some("my_tool"), Some("描述"));
 let result = tool.run(r#"{"k": "v"}"#.to_string()).await?; // 内部自动解析/序列化
 ```
 
-### SSRF 防护（网络工具） ✨ v0.15.0
+#### 5.5.6 SSRF 防护（网络工具） ✨ v0.15.0
 
 `URLFetchTool` / `HTTPTool` **默认开启 SSRF 防护**：请求前与重定向的每一跳都检查目标是否为内网/回环地址，命中即拒绝并提示 `.with_allow_private_ips(true)` 显式放行。
 
@@ -3663,7 +3481,7 @@ let tool = URLFetchTool::new().with_allow_private_ips(true); // 显式放行
 
 > **v0.22.4 加固（DNS 重绑定窗口闭合）**：旧实现在"检查时解析一次、真正建连时再解析一次"，两次解析之间存在 TOCTOU 窗口（检查看到公网 IP、建连被 rebinding 到内网）。现在**每一跳只解析一次**：取到 DNS 返回的**全部**地址（混合应答里只要有一个内网地址就拒绝），校验通过后用 reqwest 的 `resolve_to_addrs` 把本次连接**钉死在已校验的地址**上（URL 主机名不变，Host 头/TLS SNI 不受影响）；重定向在传输层禁用、手动逐跳跟随，每一跳重新解析/校验/钉 IP。JSON POST（`guarded_post_json`）同样钉 IP。网段表按 RFC 6890/5735/7913 补全（CGNAT `100.64.0.0/10`、基准测试 `198.18.0.0/15`、TEST-NET 等）。sitemap / web-scraper / HTML 三个 loader 与 provider 的消息媒体 URL、Whisper 音频抓取也统一走这条守卫路径；loader 响应体有 **1 MiB 硬上限**（逐 chunk 检查，超限报错而非截断）。
 
-### WikipediaTool
+#### 5.5.7 WikipediaTool
 
 搜索 Wikipedia 文章摘要。适合 Agent 需要查询百科知识的场景。
 
@@ -3674,7 +3492,7 @@ let tool = WikipediaTool::new();
 let result = tool.run(r#"{"query": "Rust programming"}"#).await?;
 ```
 
-### DuckDuckGoSearchTool
+#### 5.5.8 DuckDuckGoSearchTool
 
 使用 DuckDuckGo 搜索网页。无需 API Key，适合 Agent 需要实时网络信息的场景。
 
@@ -3685,7 +3503,7 @@ let tool = DuckDuckGoSearchTool::new();
 let result = tool.run(r#"{"query": "langchain rust"}"#).await?;
 ```
 
-### PythonREPLTool
+#### 5.5.9 PythonREPLTool
 
 在子进程中执行 Python 代码并返回输出。适合需要动态计算、数据处理、科学计算的场景。注意：代码在本地执行，确保运行环境安全。
 
@@ -3696,9 +3514,9 @@ let tool = PythonREPLTool::new();
 let result = tool.run(r#"{"code": "print(sum(range(10)))"}"#).await?;
 ```
 
-> **安全边界**：内置的"危险 import 黑名单"（`os` / `sys` / `subprocess` / `__import__` / `eval` / `exec` 等）只是**噪音过滤，不是安全边界**——`__import__`、`"o"+"s"` 拼接、`().__class__` 反射、unicode 混淆等编码绕过挡不住，还会误伤字符串字面量。真正的隔离必须走 [代码解释器沙箱](#v050-new-features)（`LocalSandbox` 子进程 + 超时）；黑名单只用于减少误入沙箱的噪音。不要在不可信输入上依赖 `PythonREPLTool` 做隔离。
+> **安全边界**：内置的"危险 import 黑名单"（`os` / `sys` / `subprocess` / `__import__` / `eval` / `exec` 等）只是**噪音过滤，不是安全边界**——`__import__`、`"o"+"s"` 拼接、`().__class__` 反射、unicode 混淆等编码绕过挡不住，还会误伤字符串字面量。真正的隔离必须走 [代码解释器沙箱](#附录1-v050-新特性--v050)（`LocalSandbox` 子进程 + 超时）；黑名单只用于减少误入沙箱的噪音。不要在不可信输入上依赖 `PythonREPLTool` 做隔离。
 
-### 托管搜索与 CDP 浏览器 ✨ v0.22.4
+#### 5.5.10 托管搜索与 CDP 浏览器 ✨ v0.22.4
 
 **`HostedSearchTool`——三家托管搜索后端，无 feature 门控**：内置免费的 DuckDuckGo 抓页在生产环境不稳定、结果质量也有限；0.22.4 把三家商业搜索 API 做成同一个工具，参数化 `SearchBackend`，**不需要开 feature**：
 
@@ -3737,7 +3555,7 @@ let browser = CdpBrowserTool::connect("http://127.0.0.1:9222").await?;
 let browser = browser.with_allow_private_urls(true);
 ```
 
-### 扩展工具 (HTTPTool / FileTool / SQLTool)
+#### 5.5.11 扩展工具 (HTTPTool / FileTool / SQLTool)
 
 v0.3.0 新增的三个面向生产环境的工具，均实现 `BaseTool`。
 
@@ -3786,11 +3604,205 @@ let rows = sql.execute_parameterized("SELECT * FROM users WHERE name = ?", &["Al
 
 ---
 
-## Embeddings
+
+### 5.6 ComputerUseTool ✨ v0.4.1
+
+#### 5.6.1 概念引入：对齐 Anthropic Computer Use beta
+
+普通工具让 Agent "调用 API、查数据"；Anthropic 的 computer use 让模型通过"截图 → 坐标点击 → 键盘输入"的循环操作 GUI。`ComputerUseTool` 是这一协议的**客户端封装**：把六个标准动作翻译成 `computer_20250124` 工具请求，POST 到 Anthropic `/v1/messages`（beta 头 `computer-use-2025-01-24`），再把响应原样返回。
+
+> **边界（先读再用）**：这个工具**不操控运行程序的这台机器**——它不调用任何系统鼠标/键盘 API、不自带虚拟机/浏览器，真实的 GUI 自动化发生在 Anthropic beta API 背后的托管环境里。它更像一个"动作 → computer-use 请求"的转发器：`ComputerUseOutput.result` 是 Anthropic 的原始响应文本；仅 `screenshot` 动作会额外从响应里抽出 base64 截图。请求体里模型固定 `claude-sonnet-4-20250514`、`max_tokens=4096`（当前版本不可配置）。
+
+六个动作（与 Anthropic 协议同名）：
+
+| 动作 | 必需参数 | 说明 |
+|---|---|---|
+| `screenshot` | — | 截一张当前屏幕，响应中抽 base64 图像 |
+| `click` | `coordinate:[x,y]`（必填） | 鼠标点击；`text:"right"` 表示右键，默认左键 |
+| `type` | `text`（必填） | 输入文本 |
+| `scroll` | `coordinate` + `direction`（up/down/left/right，均必填） | 滚动，`amount` 默认 3 |
+| `key_press` | `keys:["ctrl","a"]`（必填） | 组合键，内部拼成 `"ctrl+a"` |
+| `wait` | — | `duration_ms` 默认 1000ms |
+
+坐标会做构造时给定的宽高边界校验；动作名/必需参数缺失都在发请求前返回 `ToolError::InvalidInput`。
+
+#### 5.6.2 构造与接入
+
+```rust
+use langchainrust::ComputerUseTool;
+use std::sync::Arc;
+
+// 没有 new()；唯一真实构造器是 new_anthropic(key, 宽, 高)
+let tool = ComputerUseTool::new_anthropic("sk-ant-...", 1024, 768)
+    .with_base_url("https://api.anthropic.com")  // 可选：默认官方地址
+    .with_timeout(Duration::from_secs(60));      // 可选：HTTP 超时，默认 60s
+
+// 作为 BaseTool 使用
+let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
+```
+
+#### 5.6.3 使用注意
+
+- `Default::default()` 虽然存在，但用的是**空 API key、1024×768**，第一次调用就会报 "API key is required"——没有 `new()`，请走 `new_anthropic`
+- 目前只有 `AnthropicApi` 一种 `ComputerMode`（枚举里唯一的变体），没有本地 OS 自动化后端
+- 副作用发生在 Anthropic 侧环境，费用与安全策略以 Anthropic beta 条款为准；请求失败、非 2xx 都会带响应体转成 `ToolError::ExecutionFailed`
+
+---
+
+<a id="v050-new-features"></a>
+
+### 5.7 Deep Research（深度研究智能体）
+`DeepResearchAgent` 面向长周期、多来源的主题调研:接受一个主题,自主规划 → 并发搜索 / 检索 → 收集带引用的证据 → 产出结构化报告。
+
+- `Citation` 逐条引用溯源
+- `FanOutFanIn` 并发扇出-汇聚编排
+- `ResearchReport` 结构化产出、`ResearchError` 显式错误面
+- 可挂任意工具 / 检索后端
+
+> 完整 API、约束与代码示例见 [**附录.1.5 Deep Research 智能体**](#附录15-deep-research-智能体)
+
+
+> **相关能力延伸:** [代码解释器沙箱（见附录）](#附录17-代码解释器沙箱)
+
+## 第六章 · 检索与知识
+
+### 6.1 文档加载器
+
+从各种文件格式加载文档，统一转为 `Document` 结构（`content` + `metadata`），供后续分割和检索使用。
+
+#### 6.1.1 Document 家族 ✨ v0.15.0
+
+统一的数据结构贯穿加载 → 分割 → 存储 → 检索全链路：
+
+| 类型 | 用途 |
+|------|------|
+| `Document` | 原始文档：`content` + `metadata`（`with_id` / `with_metadata` 链式构建） |
+| `VectorDocument` | 带向量的文档（向量库内部存储） |
+| `SearchResult` | 检索结果：`document` + `score` |
+| `ChunkDocument` | 父子结构的叶子块，持有父文档引用 |
+
+`RecursiveCharacterSplitter` 按优先级选择分隔符：**段落 → 行 → 句子 → 字符**，在前一级分割后仍超限时才降级到下一级，尽量保持语义完整。
+
+#### 6.1.2 支持的格式
+
+| 加载器 | 格式 | 特性 |
+|--------|--------|----------|
+| **TextLoader** | .txt | 按行分割 |
+| **JSONLoader** | .json | 指定 content_key |
+| **MarkdownLoader** | .md | 按标题级别分割 |
+| **PDFLoader** | .pdf | 提取 PDF 文本 |
+| **CSVLoader** | .csv | 每行作为一个文档 |
+
+#### 6.1.3 TextLoader
+
+加载纯文本文件。支持整文件加载和按行分割加载。
+
+```rust
+use langchainrust::{TextLoader, DocumentLoader};
+
+let loader = TextLoader::new("document.txt");
+let docs = loader.load().await?;
+
+// 按行分割
+let loader = TextLoader::new_with_line_split("document.txt");
+let docs = loader.load().await?;
+```
+
+#### 6.1.4 JSONLoader
+
+加载 JSON 文件。默认提取整个 JSON 字符串作为内容；指定 `content_key` 后只提取特定字段的值。
+
+```rust
+use langchainrust::{JSONLoader, DocumentLoader};
+
+let loader = JSONLoader::new("data.json");
+let docs = loader.load().await?;
+
+// 指定内容字段
+let loader = JSONLoader::new_with_content_key("data.json", "content");
+let docs = loader.load().await?;
+```
+
+#### 6.1.5 MarkdownLoader
+
+加载 Markdown 文件。支持按标题级别分割——每个标题下的内容作为一个独立文档，保持章节的语义完整性。
+
+```rust
+use langchainrust::{MarkdownLoader, DocumentLoader};
+
+// 按标题级别分割
+let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
+let docs = loader.load().await?;
+```
+
+#### 6.1.6 HTMLLoader
+
+去除 `<script>`/`<style>`，移除标签，解码常见 HTML 实体，折叠空白，从 HTML 字符串或 URL 中提取纯文本。
+
+```rust
+use langchainrust::retrieval::HTMLLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+// 从 HTML 字符串
+let loader = HTMLLoader::new("<p>Hello <b>world</b></p>");
+let docs = loader.load().await?; // content: "Hello world"
+
+// 从 URL（异步获取后解析）
+let loader = HTMLLoader::from_url("https://example.com");
+let docs = loader.load().await?;
+
+// 纯函数：直接提取文本
+let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
+// -> "a & b"
+```
+
+#### 6.1.7 DocxLoader ✨ v0.4.1
+
+解析 Word `.docx` 文件：ZIP 解压 + XML `<w:t>` 文本节点解析。
+
+```rust
+use langchainrust::retrieval::loaders::DocxLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = DocxLoader::new("document.docx");
+let docs = loader.load().await?;
+```
+
+#### 6.1.8 WebScraperLoader ✨ v0.4.1
+
+网页抓取：提取页面文本，支持递归同域链接跟踪。
+
+```rust
+use langchainrust::retrieval::loaders::WebScraperLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = WebScraperLoader::new("https://example.com")
+    .with_max_depth(2)
+    .with_max_pages(10);
+let docs = loader.load().await?;
+```
+
+#### 6.1.9 SitemapLoader ✨ v0.4.1
+
+解析 `sitemap.xml` 并批量抓取页面。
+
+```rust
+use langchainrust::retrieval::loaders::SitemapLoader;
+use langchainrust::retrieval::loaders::DocumentLoader;
+
+let loader = SitemapLoader::new("https://example.com/sitemap.xml")
+    .with_max_pages(50);
+let docs = loader.load().await?;
+```
+
+---
+
+
+### 6.2 Embeddings
 
 **Embeddings** 将文本转换为固定维度的浮点向量，使语义相近的文本在向量空间中距离更近。是语义检索、相似度计算、RAG 的基础。
 
-### 支持的 Embeddings
+#### 6.2.1 支持的 Embeddings
 
 | 提供商 | 类 | 维度 | 特性 |
 |----------|-------|-----------|----------|
@@ -3806,7 +3818,7 @@ let rows = sql.execute_parameterized("SELECT * FROM users WHERE name = ?", &["Al
 | **Cohere 视觉** ✨ v0.22.4 | `CohereVisionEmbeddings` | 1536 | 图文同一向量空间(Embed v4.0),无 feature 门控 |
 | **Qwen 视觉** ✨ v0.22.4 | `QwenVisionEmbeddings` | 1024 | 图文同一向量空间(DashScope `multimodal-embedding-v1`),无 feature 门控 |
 
-### OpenAI 嵌入
+#### 6.2.2 OpenAI 嵌入
 
 使用 OpenAI 的 text-embedding-ada-002 模型，1536 维，质量最高但需要 API 调用。
 
@@ -3830,7 +3842,7 @@ let texts = vec![
 let vectors = embeddings.embed_batch(texts).await?;
 ```
 
-### DeepSeek 嵌入
+#### 6.2.3 DeepSeek 嵌入
 
 DeepSeek 的嵌入模型，1536 维，价格比 OpenAI 低。
 
@@ -3843,7 +3855,7 @@ let embeddings = Arc::new(DeepSeekEmbeddings::from_env_result()?);
 let vector = embeddings.embed("Deep learning fundamentals").await?;
 ```
 
-### Qwen 嵌入
+#### 6.2.4 Qwen 嵌入
 
 阿里云 Qwen 的嵌入模型，1536 维，中文效果更好。
 
@@ -3856,7 +3868,7 @@ let embeddings = Arc::new(QwenEmbeddings::from_env_result()?);
 let vector = embeddings.embed("Qwen vector generation").await?;
 ```
 
-### Qwen3-Embedding 与 matryoshka 维度 ✨ v0.21.0
+#### 6.2.5 Qwen3-Embedding 与 matryoshka 维度 ✨ v0.21.0
 
 Qwen3 系列嵌入模型(`qwen3-embedding-0.6b` / `4b` / `8b`)已在 `QwenEmbeddingsConfig` 中注册维度映射,并支持 **matryoshka 输出**:通过 `with_dimensions` 指定 32~4096 之间的任意输出维度,DashScope 会按需截断向量——存储成本与检索精度可以按需权衡。
 
@@ -3883,7 +3895,7 @@ assert_eq!(e8b.dimension(), 4096);
 - `dimensions` 范围校验 32~4096,越界报错;只有 Qwen3 系列支持 matryoshka 截断
 - 请求体快照测试保证 `dimensions` 只在设置时透传,不影响 DeepSeek 等其他 provider
 
-### Mock 嵌入（测试用）
+#### 6.2.6 Mock 嵌入（测试用）
 
 生成固定维度的随机向量，不调用任何 API。仅用于测试和开发，不用于生产。
 
@@ -3900,7 +3912,7 @@ println!("Dimension: {}", vector.len());  // 128
 
 ---
 
-### LocalEmbeddings
+#### 6.2.7 LocalEmbeddings
 
 纯 Rust 实现的轻量级本地嵌入（词频哈希 + L2 归一化），无需 API 调用。适用于离线/隐私/零成本的粗粒度检索。
 
@@ -3913,7 +3925,7 @@ let vec = emb.embed_query("hello world").await?;
 
 **限制**：基于词袋哈希，语义质量有限。如需高质量嵌入，请使用 `OpenAIEmbeddings` 等。
 
-### 统一 Embeddings trait ✨ v0.15.0
+#### 6.2.8 统一 Embeddings trait ✨ v0.15.0
 
 所有嵌入 Provider 统一实现 `Embeddings` trait（`embed` / `embed_batch` / `embed_query`），可直接替换、组合成 `EmbeddingMatcher` 做相似度检索。统一错误语义：
 
@@ -3923,7 +3935,7 @@ let vec = emb.embed_query("hello world").await?;
 
 错误不静默吞掉:任一条嵌入失败即返回明确错误,不做静默降级。
 
-### 重试与并发 ✨ v0.15.0
+#### 6.2.9 重试与并发 ✨ v0.15.0
 
 内建请求韧性:对 429 / 5xx 自动重试(默认 3 次),带 **jitter 抖动**(避免重试风暴)并优先遵循服务端 `Retry-After` 响应头 ✨ v0.21.0;批量嵌入并发度 8、批次上限 2048;向量统一 L2 归一化,便于余弦相似度比对。
 
@@ -3936,7 +3948,7 @@ let matcher = EmbeddingMatcher::new(emb, docs);
 let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近的 2 篇
 ```
 
-### CandleEmbeddings(纯 Rust 本地推理)✨ v0.21.0
+#### 6.2.10 CandleEmbeddings(纯 Rust 本地推理)✨ v0.21.0
 
 基于 [Candle](https://github.com/huggingface/candle) 的 CPU-only 本地嵌入后端,无需 ONNX Runtime。启用 `local-candle` feature 后可用,支持 BERT 家族模型(mask 加权 mean-pooling,L2 归一化,批大小 16)。
 
@@ -3961,7 +3973,7 @@ println!("dim = {}", embedder.dimension()); // 384(config.hidden_size)
 
 **适用场景**:已有 safetensors 权重、想完全离线运行;与 fastembed(ONNX)互为替代后端。
 
-### Token 级嵌入(TokenLevelEmbeddings)✨ v0.21.0
+#### 6.2.11 Token 级嵌入(TokenLevelEmbeddings)✨ v0.21.0
 
 可选能力 trait:实现方为每个 token 返回 `(字节偏移 span, L2 归一化向量)`。它**不在** `Embeddings` 主 trait 里——实现了才有(能力探测),避免给不支持 token 输出的 provider 强加契约。
 
@@ -3980,7 +3992,7 @@ pub trait TokenLevelEmbeddings {
 
 本地 fastembed(ONNX)路径已实现该能力(与常规 embed 共享推理管线,span 与 [CLS]/[SEP]/padding 对齐)。
 
-### Late Chunking(后分块)✨ v0.21.0
+#### 6.2.12 Late Chunking(后分块)✨ v0.21.0
 
 传统做法"先切块、再逐块嵌入"会让每块丢失全文上下文。late chunking 反过来:**整篇文本先过一次 token 级嵌入,再按块边界对 token 向量做 mean-pooling**,每块都携带全文上下文。长文档检索质量通常更好。
 
@@ -4001,7 +4013,7 @@ for c in &chunks {
 
 **注意**:late chunking 不是银弹——块内自洽的短文档收益为零;需要模型支持 token 级输出,否则用不了。
 
-### 视觉嵌入(图文同一向量空间)✨ v0.22.4
+#### 6.2.13 视觉嵌入(图文同一向量空间)✨ v0.22.4
 
 普通 `Embeddings` 只把文本映射成向量;**多模态嵌入**把**图片和文本映射进同一个向量空间**——这才让"以文搜图/以图搜文"成为可能:把商品照片入库建索引,直接用一句"红色运动鞋"检索。0.22.4 新增(均**无 feature 门控**):
 
@@ -4028,9 +4040,10 @@ let _ = vision.embed_images(&[img1, img2]).await?; // 批量,HTTP 后端走单�
 assert_eq!(vision.dimension(), 1024);
 ```
 
-关键约定:文本查询必须用**同一个视觉模型**的 `embed_text`,不能拿纯文本 `Embeddings` 的向量去查图片库(两个模型家族的向量空间不一致);后端保证返回向量 L2 归一化、批量请求条数对齐(不一致直接报错,不静默)。多模态 RAG 的切块/检索封装见 [Multimodal RAG](#多模态-rag-视觉)。
+关键约定:文本查询必须用**同一个视觉模型**的 `embed_text`,不能拿纯文本 `Embeddings` 的向量去查图片库(两个模型家族的向量空间不一致);后端保证返回向量 L2 归一化、批量请求条数对齐(不一致直接报错,不静默)。多模态 RAG 的切块/检索封装见 [Multimodal RAG](#6310-多模态-rag图文混合检索-v0224)。
 
-## RAG
+
+### 6.3 RAG
 
 RAG（Retrieval-Augmented Generation）让 LLM 基于你的私有数据回答问题，而不是只靠训练时的知识。流程：文档 → 分割 → 嵌入 → 存入向量库 → 检索相关文档 → 连同问题发给 LLM。
 
@@ -4042,10 +4055,10 @@ RAG（Retrieval-Augmented Generation）让 LLM 基于你的私有数据回答问
 | LCEL 手动链 | 检索器 + `prompt \| llm` 自己 pipe | 想精细控制提示词与中间步骤 |
 | RAG 智能体 | `CorrectiveRAGAgent` / `AdaptiveRAG` | 检索质量不确定、要自我纠错 |
 
-**检索方式怎么选：** 关键词精确匹配用 BM25，语义相似用向量检索，两者都要用混合检索——对比见[检索模式对比](#检索模式对比)。
+**检索方式怎么选：** 关键词精确匹配用 BM25，语义相似用向量检索，两者都要用混合检索——对比见[检索模式对比](#655-检索模式对比)。
 
 <a id="end-to-end-ragpipeline"></a>
-### 端到端 RAGPipeline ✨ v0.15.0
+#### 6.3.1 端到端 RAGPipeline ✨ v0.15.0
 
 `RAGPipeline` 把「检索 + 生成」封装成开箱即用的完整管道。`RAGPipelineBuilder` 提供链式构造:LLM、检索器(或 嵌入+向量库 组合)、召回数 `retrieve_k`、System 提示词 `system`。
 
@@ -4097,7 +4110,7 @@ let answer = rag_chain.invoke("Rust 有哪些核心特性?".to_string(), None).a
 
 > **设计要点**:`RetrieverTrait` 统一了 Similarity / BM25 / UnifiedHybrid 三类检索器,`RAGPipeline` 只依赖 trait 而非具体实现——换检索策略不改业务代码。
 
-### 文档分割
+#### 6.3.2 文档分割
 
 长文档需要先分割成小块，才能有效检索。`RecursiveCharacterSplitter` 按字符数分割，在段落/句子边界处优先断开，保持语义完整性。
 
@@ -4111,7 +4124,7 @@ let chunks = splitter.split_document(&Document::new(
 ))?;
 ```
 
-### SemanticSplitter
+#### 6.3.3 SemanticSplitter
 
 按语义相关性分割：句子分词 + 嵌入，在相邻相似度急剧下降处断开。比字符级分割具有更好的语义完整性。支持中英文句子边界（`。!?;` / `.!?\n`）。
 
@@ -4127,7 +4140,7 @@ let chunks = splitter.split_text(long_text).await;  // Vec<String>
 
 **注意**：嵌入是异步的，而 `TextSplitter` 是同步的；为避免破坏同步 trait，此分割器暴露异步的 `split_text` / `split_document`，不实现同步的 `TextSplitter`。
 
-### 向量存储
+#### 6.3.4 向量存储
 
 将文档嵌入后存入向量存储，支持相似度检索。`InMemoryVectorStore` 适合开发和测试；生产环境使用 ChromaDB、Qdrant、PGVector 等持久化存储。
 
@@ -4148,7 +4161,7 @@ retriever.add_documents(vec![
 let docs = retriever.retrieve("systems programming", 3).await?;
 ```
 
-### ChromaDB
+#### 6.3.5 ChromaDB
 
 使用 Chroma 的持久化向量存储。需要运行 Chroma 服务（默认端口 8000），适合需要持久化和生产级检索的场景。
 
@@ -4174,7 +4187,7 @@ retriever.add_documents(vec![
 let docs = retriever.retrieve("systems programming", 3).await?;
 ```
 
-### PGVectorStore
+#### 6.3.6 PGVectorStore
 
 PostgreSQL + pgvector 扩展向量存储。适合已有 PostgreSQL 基础设施、需要关系型数据库 + 向量检索合一的场景。需要 `pgvector-storage` feature（框架在 feature 内已内置 `sqlx` + `pgvector` 依赖，无需自行添加）。建库前需由管理员执行 `CREATE EXTENSION vector;`。
 
@@ -4195,9 +4208,9 @@ let found = store.similarity_search(&query_embedding, 5).await?;
 store.delete_document("doc-id").await?;
 ```
 
-`connect` 只建连接池不建表；`initialize()` 建表（幂等）；`build_table_sql(table, dim)` 是用于表 DDL 的纯函数。检索支持 [`MetadataFilter`](#metadatafilter) 过滤（`similarity_search_with_filter`）。
+`connect` 只建连接池不建表；`initialize()` 建表（幂等）；`build_table_sql(table, dim)` 是用于表 DDL 的纯函数。检索支持 [`MetadataFilter`](#639-metadatafilter-元数据过滤--v0180) 过滤（`similarity_search_with_filter`）。
 
-### PineconeStore
+#### 6.3.7 PineconeStore
 
 Pinecone 云向量存储（reqwest HTTP API，无需 feature，默认可用）。适合需要托管向量服务、不想自建数据库的场景。
 
@@ -4217,7 +4230,7 @@ store.delete(&["id1".to_string()]).await?;
 
 `upsert` 自动调用 `embed_documents`；`query` 接受已嵌入的向量（`embed_query` 的结果）。
 
-### 统一 VectorStore trait ✨ v0.15.0
+#### 6.3.8 统一 VectorStore trait ✨ v0.15.0
 
 所有后端统一实现 10 方法的 `VectorStore` trait，接口一致、可即插即用：
 
@@ -4246,7 +4259,7 @@ let store = VectorStoreBuilder::qdrant("http://localhost:6334", "kb").build().aw
 > **诚实报错，拒绝静默降级**：Qdrant 等需要 feature 的后端在未启用 feature 时返回显式错误（提示开启 `qdrant-integration`），**不会**悄悄回退到内存存储——否则生产代码以为在写持久化，进程重启数据即丢。
 
 <a id="metadatafilter"></a>
-### MetadataFilter 元数据过滤 ✨ v0.18.0
+#### 6.3.9 MetadataFilter 元数据过滤 ✨ v0.18.0
 
 `VectorStore` 从 0.18 起支持**跨后端一致的元数据过滤**：`similarity_search_with_filter(&query_embedding, k, Some(&filter))`。`filter: None` 等价旧 `similarity_search`；后端未覆写过滤时返回明确 `VectorStoreError::UnsupportedFilter`，**不静默吞掉过滤返回全量**。
 
@@ -4274,9 +4287,9 @@ let found = store
 
 支持过滤的后端：内存 / 文件 / Qdrant / Pinecone / Chroma / LanceDB / Neo4j / PGVector（`pgvector-storage` feature）。第三方 `VectorStore` 实现想支持过滤，覆写 `similarity_search_with_filter` 把 `MetadataFilter` 翻译成原生查询即可；不需要的后端依赖默认实现（有过滤请求时报 `UnsupportedFilter`）。`SelfQueryRetriever` 就是建立在这层过滤之上的（见下节）。
 
-### 多模态 RAG(图文混合检索)✨ v0.22.4
+#### 6.3.10 多模态 RAG(图文混合检索)✨ v0.22.4
 
-纯文本 RAG 里图片是"二等公民"——最多靠 alt 文本被搜到,图片本身的视觉内容进不了索引。多模态 RAG 用 [`VisionEmbeddings`](#视觉嵌入图文同一向量空间-v0224) 把**图文都嵌入同一个向量空间**,让"图片里的内容"可被问答。两个封装(在 `lc-rag`,无 feature 门控):
+纯文本 RAG 里图片是"二等公民"——最多靠 alt 文本被搜到,图片本身的视觉内容进不了索引。多模态 RAG 用 [`VisionEmbeddings`](#6213-视觉嵌入图文同一向量空间-v0224) 把**图文都嵌入同一个向量空间**,让"图片里的内容"可被问答。两个封装(在 `lc-rag`,无 feature 门控):
 
 **`MultimodalChunker`——把有序的混排内容切成带模态标记的 `Document`**:
 
@@ -4333,11 +4346,12 @@ let more = retriever
 
 ---
 
-## BM25
+
+### 6.4 BM25
 
 BM25 是经典的关键词检索算法，根据词频和文档长度计算相关性分数。与向量检索（语义相似）不同，BM25 擅长精确关键词匹配，如搜索"Rust ownership"会优先返回包含这些词的文档。不需要嵌入模型，零成本，速度快。
 
-### BM25Retriever（关键词搜索）
+#### 6.4.1 BM25Retriever（关键词搜索）
 
 ```rust
 use langchainrust::{BM25Retriever, Document};
@@ -4358,7 +4372,7 @@ for result in results {
 }
 ```
 
-### BM25 参数
+#### 6.4.2 BM25 参数
 
 k1 控制词频饱和度（越大，高频词权重越高），b 控制文档长度归一化（越大，长文档惩罚越重）。默认值 k1=1.5, b=0.75 适合大多数场景。
 
@@ -4371,7 +4385,7 @@ k1 控制词频饱和度（越大，高频词权重越高），b 控制文档长
 let retriever = BM25Retriever::with_params(2.0, 0.5);
 ```
 
-### ChunkedBM25Retriever（父子结构）
+#### 6.4.3 ChunkedBM25Retriever（父子结构）
 
 解决"小块匹配但丢失上下文"的问题：文档先分割为叶子块建立 BM25 索引，检索时如果同一父文档的多个叶子块都匹配，就自动合并为完整的父文档返回。
 
@@ -4398,7 +4412,7 @@ for result in results {
 }
 ```
 
-### 小到大检索：句子窗口 / 父文档 ✨ v0.24.0
+#### 6.4.4 小到大检索：句子窗口 / 父文档 ✨ v0.24.0
 
 `ChunkedBM25Retriever` 的父文档合并是**阈值门控**的(同一父文档命中比例过线才合并)。v0.24.0 补了两个"无条件小到大"的检索器,思路同 LlamaIndex 的 sentence-window / parent-document:**用最小的语义单元保证命中精度,喂给 LLM 的却是它周围的完整上下文**。
 
@@ -4440,11 +4454,12 @@ let parents = retriever.retrieve("查询", 4).await?;
 ---
 
 <a id="hybrid-retrieval"></a>
-## 混合检索
+
+### 6.5 混合检索
 
 向量检索擅长语义相似，BM25 擅长关键词匹配——两者互补。混合检索同时使用两种方式，用 RRF（Reciprocal Rank Fusion）算法合并结果，比单一检索方式召回率更高。
 
-### RRF 融合算法
+#### 6.5.1 RRF 融合算法
 
 ```
 RRF_score(d) = Σ 1/(k + rank(d))
@@ -4452,7 +4467,7 @@ RRF_score(d) = Σ 1/(k + rank(d))
 
 其中 k=60，rank(d) 是文档在各结果列表中的排名。
 
-### UnifiedHybridIndex
+#### 6.5.2 UnifiedHybridIndex
 
 一站式混合检索：内部同时维护 BM25 索引和向量索引，添加文档时自动双索引，查询时自动双检索 + RRF 合并。无需手动管理两个索引。
 
@@ -4482,7 +4497,7 @@ for result in results {
 }
 ```
 
-### Weighted 加权融合与 MMR 多样性 ✨ v0.23.0
+#### 6.5.3 Weighted 加权融合与 MMR 多样性 ✨ v0.23.0
 
 RRF 只看排名,两路权重不可调,而且同一个窄主题可能占满 top-k。v0.23.0 给 `UnifiedHybridIndex` 补齐两种正式旋钮:
 
@@ -4510,9 +4525,9 @@ let ids: Vec<String> = mmr(&candidates, 0.6_f32, 5);
 
 池内归一化保证 λ 的权衡在 RRF 与 Weighted 两种融合下含义一致。
 
-### Late Chunking 双腿注入 ✨ v0.24.0
+#### 6.5.4 Late Chunking 双腿注入 ✨ v0.24.0
 
-[Late Chunking（后分块）](#late-chunking后分块-v0210)解决了"分块嵌入丢全文上下文",但 v0.21 的 `late_chunk` 只产出 `LateChunk`,落库要自己接。v0.24.0 把它接进混合索引的**两条腿**:池化向量进向量索引,同文本同步进 BM25/父文档 store——一次调用完成双索引注册:
+[Late Chunking（后分块）](#6212-late-chunking后分块-v0210)解决了"分块嵌入丢全文上下文",但 v0.21 的 `late_chunk` 只产出 `LateChunk`,落库要自己接。v0.24.0 把它接进混合索引的**两条腿**:池化向量进向量索引,同文本同步进 BM25/父文档 store——一次调用完成双索引注册:
 
 ```rust
 use langchainrust::{late_chunk, LateChunkConfig, UnifiedHybridIndex};
@@ -4527,7 +4542,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 
 只需要纯向量单腿时,可用 v0.23.0 起的自由函数 `late_index_in(&vector_store, &embedder, parent_key, text, &config)` 一次完成"token 级嵌入 → 池化 → 入库"(后端无关,id 形如 `{parent_key}:{i}`)。
 
-### 检索模式对比
+#### 6.5.5 检索模式对比
 
 | 模式 | 内容存储 | 查找 | 使用场景 |
 |------|------------------|--------|----------|
@@ -4535,7 +4550,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 | BM25 Only | ChunkedDocumentStore | 查找 | 纯关键词 |
 | Hybrid | ChunkedDocumentStore（共享） | 查找 | 组合检索（推荐） |
 
-### 原生混合搜索（Qdrant Query API）✨ v0.21.0
+#### 6.5.6 原生混合搜索（Qdrant Query API）✨ v0.21.0
 
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
@@ -4568,394 +4583,14 @@ let results = store.native_hybrid_search(&query).await?; // 服务端融合
 
 ---
 
-## LangGraph
 
-LangGraph 用有向图定义复杂工作流：每个节点是一个处理步骤，边定义执行顺序。比 Chain 更灵活——支持条件分支、循环、人工介入、子图。适合需要精细控制执行流程的场景。
-
-### StateGraph
-
-最基础的图——定义节点和边，状态在节点间传递。`AgentState` 是内置的状态结构，包含 `messages`、`steps` 等字段。
-
-```rust
-use langchainrust::langgraph::{StateGraph, AgentState, START, END};
-
-let mut graph = StateGraph::new();
-
-graph.add_node_fn("analyze", |state: AgentState| {
-    let mut new_state = state.clone();
-    new_state.steps.push("analyzed".to_string());
-    new_state
-});
-
-graph.add_node_fn("process", |state: AgentState| {
-    state
-});
-
-graph.add_edge(START, "analyze");
-graph.add_edge("analyze", "process");
-graph.add_edge("process", END);
-
-let compiled = graph.compile();
-
-let result = compiled.invoke(AgentState::new("用户问题".to_string())).await?;
-```
-
-### 条件边
-
-根据当前状态动态选择下一个节点。`FunctionRouter` 接收一个闭包，返回目标节点名称。适合"消息多就总结，少就继续"这类分支逻辑。
-
-```rust
-use std::collections::HashMap;
-use langchainrust::langgraph::FunctionRouter;
-
-let router = FunctionRouter::new(|state: &AgentState| {
-    if state.messages.len() > 5 { "summarize" } else { "continue" }
-});
-graph.set_conditional_router("route", router);
-
-graph.add_conditional_edges(
-    "analyze",
-    "route",
-    HashMap::from([
-        ("summarize".to_string(), "summarize".to_string()),
-        ("continue".to_string(), "continue".to_string()),
-    ]),
-    None, // 默认目标;路由返回值不在 targets 时使用
-);
-```
-
-### 人工介入 / 中断与恢复
-
-在关键节点前暂停执行，等待人工确认后继续。`with_interrupt_before` 指定哪些节点前中断；`MemoryCheckpointer` 保存执行状态，支持跨会话恢复。
-
-```rust
-use langchainrust::langgraph::{GraphError, MemoryCheckpointer};
-
-let compiled = graph.compile()
-    .map_err(|e| ...)?
-    .with_checkpointer(MemoryCheckpointer::new())
-    .with_interrupt_before(vec!["output", "analyze"]);
-
-match compiled.invoke(state).await {
-    Ok(result) => { /* 完成 */ }
-    Err(GraphError::ExecutionInterrupted(node)) => {
-        println!("暂停于: {}", node);
-        if let Some(exec) = compiled.create_resume_execution(&node).await {
-            let result = compiled.resume(exec).await?;
-        }
-    }
-    Err(e) => { /* 错误 */ }
-}
-```
-
-上面的静态中断只能停在**节点边界**(节点前/后),中断点必须在编译期声明。v0.24.0 新增**节点内动态中断**:节点函数自己决定"在什么数据条件下暂停、把什么问题抛给外部",恢复时**重新进入同一个节点**并拿到人工答复,副作用不必重放。
-
-### 节点内动态中断 / 恢复（interrupt + resume） ✨ v0.24.0
-
-```rust
-use langchainrust::langgraph::{
-    GraphError, InterruptibleNode, StateUpdate, ThreadSafeMemoryCheckpointer,
-};
-use serde_json::json;
-
-// 闭包签名:(&S, Option<&serde_json::Value>) -> boxed future
-// resume=None 表示首次进入;Some(value) 表示带着人工决策重新进入。
-let charge = InterruptibleNode::new("charge", |state, resume| {
-    let command = state.output.clone().unwrap_or_default();
-    Box::pin(async move {
-        match resume {
-            None => Err(GraphError::InterruptRequest {
-                // 抛给外部世界的暂停载荷(要问的问题、上下文……)
-                payload: json!({ "kind": "tool_approval", "command": command }),
-            }),
-            Some(decision) => {
-                // 恢复路径:副作用在这里只发生一次
-                let mut next = state.clone();
-                next.set_output(format!("decision={decision}, charged"));
-                Ok(StateUpdate::full(next))
-            }
-        }
-    })
-});
-
-let compiled = graph.compile()?
-    // 动态中断必须挂 checkpointer——暂停当下先落检查点,进程重启也能恢复
-    .with_checkpointer(ThreadSafeMemoryCheckpointer::new());
-
-// 首次执行:节点内挂起,调用方拿到 DynamicInterrupt { node, payload }
-let err = compiled.invoke(AgentState::new("charge $99")).await.unwrap_err();
-match err {
-    GraphError::DynamicInterrupt { node, payload } => {
-        assert_eq!(node, "charge");
-        // 把 payload 发给审批 UI / 另一进程 / 邮件工单……
-        // 人工决策以任意 JSON 回灌,节点带着它重新进入:
-        let invocation = compiled.resume_with_value(&node, json!({"approved": true})).await?;
-        assert!(invocation.final_state.output.unwrap().contains("charged"));
-    }
-    other => return Err(other),
-}
-```
-
-语义要点:
-
-- **一套持久化**:暂停时检查点已写入 checkpointer(内存 / 文件 / SQLite / Postgres / Redis),恢复值放在 `NodeConfig.metadata` 的 `INTERRUPT_RESUME_KEY`(常量 `"__lc_interrupt_resume"`)里注入,不再有第二套 resume 存储;
-- **副作用只发生一次**:节点重新进入,闭包自己按 `resume` 分支把副作用放在恢复路径——首次进入在挂起前不应落副作用;
-- **可级联**:恢复后另一个节点再次挂起会得到新的 `DynamicInterrupt`,可多轮中断→恢复;递归预算沿用挂起前已消耗的部分,重复中断不能绕过 `recursion_limit`;
-- **流式可见**:`StreamEvent::NodeInterrupt(node, payload)` / `Resumed(node, value)` 在流式执行中实时上报暂停与恢复。
-
-### 审批 / 恢复收敛（ApprovalGate） ✨ v0.24.0
-
-工具审批不再需要独立的审批存储:`lc_agents::graph_approval::ApprovalGate` 就是一个图节点,把"高风险工具调用"直接表达为一次节点内中断。
-
-```rust,ignore
-use langchainrust::{ApprovalDecision, ApprovalGate};
-
-let gate = ApprovalGate::new("charge_card", |command: &str| {
-    // 真正的副作用只在 Allow / Modify 的恢复路径执行
-    charge_payment(command); "receipt-123".to_string()
-});
-graph.add_node(gate);
-```
-
-首次进入中断载荷固定为 `{"kind":"tool_approval","tool":<name>,"command":<state.output>}`;恢复时回灌序列化后的 `ApprovalDecision`:`Allow`(执行一次工具并继续)、`Deny { reason }`(工具整体跳过、零副作用、图继续走到 END)、`Modify { arguments, note }`(携带改写参数与备注)。图路径上**唯一**持久化是 checkpointer(跨进程审批用 `FileCheckpointer` 等);旧执行器的 `ResumeStore` / `FileResumeStore` 只在非图的 executor 路径(`with_resume_store` / `pending_approval()` / `executor.resume(decision)`)继续服役。
-
-### 状态历史与时间旅行（fork_from） ✨ v0.24.0
-
-挂上 checkpointer 后,每个检查点都是可回访的状态快照:
-
-```rust
-use langchainrust::langgraph::CheckpointInfo;
-
-// 按时间顺序读出全部快照:id / timestamp / seq / recursion_count / state
-let history: Vec<CheckpointInfo<AgentState>> = compiled.get_state_history()?;
-
-// 从任意旧快照"开一条新时间线":以该快照状态为基底,从指定节点开始只向前跑
-let forked = compiled
-    .fork_from(&history[2].id, "analyze", Some(corrected_state))
-    .await?;
-```
-
-- fork 是**新血统**:从旧快照另存一份新检查点,原时间线不动;
-- **只向前、不回放**:从 `continue_at_node` 开始执行,fork 点之前的副作用不会重跑——"换个分支再试一遍"是安全的;
-- `override_state: None` 用快照原状态;`Some(s)` 可人工修正状态后再继续;
-- fork 与中断可组合:fork 出的执行同样可以在节点内挂起、再 `resume_with_value`。
-
-### Reducer（状态合并规则） ✨ v0.15.0
-
-子节点返回的状态如何合并进共享状态，由 Reducer 决定：
-
-- `ReplaceReducer` —— 直接覆盖字段（默认）
-- `AppendReducer` —— 追加（`messages` 数组用它在每步累积）
-
-```rust
-use langchainrust::langgraph::{StateGraph, AppendMessagesReducer};
-
-let mut graph = StateGraph::new();
-graph.set_reducer("messages", std::sync::Arc::new(AppendMessagesReducer));
-```
-
-### 边类型 ✨ v0.15.0
-
-`GraphEdge` 四种边：
-
-| 边 | 语义 |
-|----|------|
-| `Fixed` | 固定跳转 `source → target` |
-| `Conditional` | 按路由函数动态选择 |
-| `FanOut` | 一个节点并行分发到多个目标 |
-| `FanIn` | 多个节点汇入一个汇聚点 |
-
-```rust
-graph.add_fan_out("query", vec!["crag".to_string(), "graph".to_string(), "vector".to_string()]);
-graph.add_fan_in(vec!["crag".to_string(), "graph".to_string(), "vector".to_string()], "merge");
-```
-
-### Checkpointer 家族 ✨ v0.15.0
-
-**内存 / 文件后端**:
-
-- `MemoryCheckpointer` —— 进程内（单线程）
-- `ThreadSafeMemoryCheckpointer` —— 并发安全
-- `FileCheckpointer::new(path)` —— 落盘持久化（不实现 `Default`，必须显式给路径，失败可传播；原子写：先写临时文件再 rename，崩溃不会留下半截检查点）
-
-配合 `with_checkpointer` + `with_interrupt_before` 实现「暂停 → 恢复」工作流。
-
-### 持久化 Checkpointer(SQLite / Postgres / Redis)✨ v0.22.4
-
-内存/文件检查点随进程消失,多实例部署也无法共享。0.22.4 新增三个生产级后端,挂法与内存版完全一致(`.with_checkpointer(...)`),各走独立 feature:`checkpoint-sqlite` / `checkpoint-postgres` / `checkpoint-redis`。
-
-```rust
-// SQLite —— rusqlite bundled(从源码编译 SQLite amalgamation,不依赖系统 libsqlite3),
-// WAL 日志 + busy timeout,文件可被另一个进程重新打开(写者瞬时交接)
-let cp = SqliteCheckpointer::<MyState>::new("./data/graph.db", "thread-42")?;
-
-// Postgres —— tokio-postgres;条件 UPDATE 做存储侧 OCC
-let cp = PostgresCheckpointer::<MyState>::connect(
-    "host=127.0.0.1 user=app dbname=lg password=…", "thread-42").await?;
-// 或复用已有连接:PostgresCheckpointer::with_client(client, "thread-42").await
-
-// Redis —— Lua 脚本 CAS,单条脚本内完成版本比较与写入
-let cp = RedisCheckpointer::<MyState>::connect("redis://127.0.0.1/", "thread-42").await?;
-// 或复用已有 MultiplexedConnection:RedisCheckpointer::with_connection(conn, "thread-42").await
-
-let compiled = graph.compile()?.with_checkpointer(std::sync::Arc::new(cp));
-```
-
-**乐观并发控制(OCC)**:每个检查点带版本号,`update_state` 要求"我基于版本 N 修改";存储侧发现当前版本已被别的写者推进时,本次写入**整体失败**而不是覆盖对方的编辑,错误为 `GraphError::CheckpointVersionConflict { checkpoint_id, expected, actual }`——调用方据此重读最新状态、合并后重试(后写胜出由调用方决定怎么合并,库不静默丢更新)。Postgres 的版本判定在单条条件 UPDATE 内完成(跨进程串行化),Redis 用 Lua 脚本原子 CAS,SQLite 靠文件写锁 + 版本复查。
-
-**怎么选**:单进程/边缘部署用 SQLite(零运维);已有 Postgres 基础设施、要多实例共享 + 连接池生态选 Postgres;超低延迟、检查点可接受 Redis 持久化语义、已有 Redis 运维选 Redis。三个后端都实现同一个 Checkpointer trait,换后端不动图代码。
-
-### 图定义持久化 ✨ v0.15.0
-
-`GraphPersistence` trait 把图定义（节点/边/reducer）存下来复用：`MemoryPersistence` / `FilePersistence` / `MongoPersistence`。
-
-### 子图 / 动态规划 / 流式 ✨ v0.15.0
-
-- `SubgraphNode` —— 图嵌图，把子流程封装成节点复用
-- `DynamicPlanner` / `DynamicInjection` / `DynamicTask` —— 运行时动态构造任务、注入并行分支
-- `compiled.stream_collected(input)` —— 返回 `Vec<StreamEvent<S>>`，逐步观测节点执行进度
-
----
-
-<a id="document-loaders"></a>
-## 文档加载器
-
-从各种文件格式加载文档，统一转为 `Document` 结构（`content` + `metadata`），供后续分割和检索使用。
-
-### Document 家族 ✨ v0.15.0
-
-统一的数据结构贯穿加载 → 分割 → 存储 → 检索全链路：
-
-| 类型 | 用途 |
-|------|------|
-| `Document` | 原始文档：`content` + `metadata`（`with_id` / `with_metadata` 链式构建） |
-| `VectorDocument` | 带向量的文档（向量库内部存储） |
-| `SearchResult` | 检索结果：`document` + `score` |
-| `ChunkDocument` | 父子结构的叶子块，持有父文档引用 |
-
-`RecursiveCharacterSplitter` 按优先级选择分隔符：**段落 → 行 → 句子 → 字符**，在前一级分割后仍超限时才降级到下一级，尽量保持语义完整。
-
-### 支持的格式
-
-| 加载器 | 格式 | 特性 |
-|--------|--------|----------|
-| **TextLoader** | .txt | 按行分割 |
-| **JSONLoader** | .json | 指定 content_key |
-| **MarkdownLoader** | .md | 按标题级别分割 |
-| **PDFLoader** | .pdf | 提取 PDF 文本 |
-| **CSVLoader** | .csv | 每行作为一个文档 |
-
-### TextLoader
-
-加载纯文本文件。支持整文件加载和按行分割加载。
-
-```rust
-use langchainrust::{TextLoader, DocumentLoader};
-
-let loader = TextLoader::new("document.txt");
-let docs = loader.load().await?;
-
-// 按行分割
-let loader = TextLoader::new_with_line_split("document.txt");
-let docs = loader.load().await?;
-```
-
-### JSONLoader
-
-加载 JSON 文件。默认提取整个 JSON 字符串作为内容；指定 `content_key` 后只提取特定字段的值。
-
-```rust
-use langchainrust::{JSONLoader, DocumentLoader};
-
-let loader = JSONLoader::new("data.json");
-let docs = loader.load().await?;
-
-// 指定内容字段
-let loader = JSONLoader::new_with_content_key("data.json", "content");
-let docs = loader.load().await?;
-```
-
-### MarkdownLoader
-
-加载 Markdown 文件。支持按标题级别分割——每个标题下的内容作为一个独立文档，保持章节的语义完整性。
-
-```rust
-use langchainrust::{MarkdownLoader, DocumentLoader};
-
-// 按标题级别分割
-let loader = MarkdownLoader::new_with_heading_split("guide.md", 1);
-let docs = loader.load().await?;
-```
-
-### HTMLLoader
-
-去除 `<script>`/`<style>`，移除标签，解码常见 HTML 实体，折叠空白，从 HTML 字符串或 URL 中提取纯文本。
-
-```rust
-use langchainrust::retrieval::HTMLLoader;
-use langchainrust::retrieval::loaders::DocumentLoader;
-
-// 从 HTML 字符串
-let loader = HTMLLoader::new("<p>Hello <b>world</b></p>");
-let docs = loader.load().await?; // content: "Hello world"
-
-// 从 URL（异步获取后解析）
-let loader = HTMLLoader::from_url("https://example.com");
-let docs = loader.load().await?;
-
-// 纯函数：直接提取文本
-let text = HTMLLoader::extract_text("<script>x</script><p>a &amp; b</p>");
-// -> "a & b"
-```
-
-### DocxLoader ✨ v0.4.1
-
-解析 Word `.docx` 文件：ZIP 解压 + XML `<w:t>` 文本节点解析。
-
-```rust
-use langchainrust::retrieval::loaders::DocxLoader;
-use langchainrust::retrieval::loaders::DocumentLoader;
-
-let loader = DocxLoader::new("document.docx");
-let docs = loader.load().await?;
-```
-
-### WebScraperLoader ✨ v0.4.1
-
-网页抓取：提取页面文本，支持递归同域链接跟踪。
-
-```rust
-use langchainrust::retrieval::loaders::WebScraperLoader;
-use langchainrust::retrieval::loaders::DocumentLoader;
-
-let loader = WebScraperLoader::new("https://example.com")
-    .with_max_depth(2)
-    .with_max_pages(10);
-let docs = loader.load().await?;
-```
-
-### SitemapLoader ✨ v0.4.1
-
-解析 `sitemap.xml` 并批量抓取页面。
-
-```rust
-use langchainrust::retrieval::loaders::SitemapLoader;
-use langchainrust::retrieval::loaders::DocumentLoader;
-
-let loader = SitemapLoader::new("https://example.com/sitemap.xml")
-    .with_max_pages(50);
-let docs = loader.load().await?;
-```
-
----
-
-## MultiQueryRetriever
+### 6.6 MultiQueryRetriever
 
 用户的查询可能措辞与文档不一致，导致检索不到。MultiQueryRetriever 用 LLM 将一个查询改写为多个变体，分别检索后合并去重，提高召回率。
 
 它的定位是"查询扩展"型的增强检索器：把一次检索变成多次检索，用不同问法去"捞"同一份语料，专门应对**召回率不足**的问题。典型场景是用户提问自由、文档术语不统一——文档写"DB 连接超时"，用户问"database timeout"，单路检索关键词对不上，Top-K 里就找不到相关段落。多路变体并行检索，相当于同时用多种问法开卷，漏掉的可能性就小很多。适合对召回率敏感、宁可多返回再交给下游精排的场景。
 
-### 使用场景
+#### 6.6.1 使用场景
 
 | 场景 | 现象 | 建议 |
 |---|---|---|
@@ -4965,7 +4600,7 @@ let docs = loader.load().await?;
 | 不想额外调用 LLM、预算有限 | 检索够用，不想多花一次生成 | 用 StaticQueryGenerator 或普通检索器 |
 | 检索要求精确、返回量要小 | 更看重精确度而非召回 | 多路召回后接重排序精排 |
 
-### 工作方式
+#### 6.6.2 工作方式
 
 ```
 用户查询 → LLM 生成 N 个变体 → 分别检索 → 合并去重 → 返回结果
@@ -4978,7 +4613,7 @@ let docs = loader.load().await?;
 - **合并去重**：把 N 路结果汇总，同一文档被多路查到只保留一份。
 - **截断返回**：合并后的结果按 `final_k` 截断，返回最终 Top-K。多路召回会放大返回量，`final_k` 是最终出口，控制喂给下游的结果数。
 
-### 使用方法
+#### 6.6.3 使用方法
 
 ```rust
 use langchainrust::{MultiQueryRetriever, SimilarityRetriever, OpenAIChat};
@@ -5009,7 +4644,7 @@ let docs = multi_query.retrieve_multi("database timeout").await?;
 - **LLM 输出的解析是脆弱点**：查询变体来自 LLM 的自由文本输出，按行切分解析。如果模型输出带编号（"1. xxx"）、引号或多余解释，脏文本可能被当成查询，导致某一路召回奇怪的结果。生产环境建议给模型明确的输出格式要求。
 - **增强器不是检索器**：MultiQueryRetriever 消费 `Arc<dyn RetrieverTrait>` 但自身不实现该 trait，所以它不能再被另一层增强检索器包装。
 
-### StaticQueryGenerator（无需 LLM）
+#### 6.6.4 StaticQueryGenerator（无需 LLM）
 
 不需要 LLM 的查询生成器——通过同义词表扩展查询。适合不想额外调用 LLM、或查询模式可预测的场景。
 
@@ -5036,13 +4671,14 @@ let queries = generator.generate("database connection failed");
 ---
 
 <a id="hyde-retriever"></a>
-## HyDE 检索器
+
+### 6.7 HyDE 检索器
 
 **HyDE（Hypothetical Document Embeddings）** 解决"查询太短、与文档不匹配"的问题：先用 LLM 生成一个假设性答案（可能不准确），再用这个假设答案的嵌入去检索真实文档。假设答案的措辞更接近真实文档，所以检索效果更好。
 
 它的思路是"先把答案写出来再找"：查询太短是向量检索的老问题，像 "Rust concurrency" 这种短语，嵌入只刻画了几个关键词的语义，与文档里"async/await、线程安全、数据竞争"这种展开的表述距离很远，相似度打分就低。HyDE 让 LLM 就查询生成一段假设性的回答文档，这段文本的措辞、句长、信息密度都和真实文档更接近，再用它的嵌入去检索，命中率自然更高。注意假设答案本身可以是错的——它只是用来"对齐措辞"，真正返回的还是检索到的真实文档。适合查询过短、过于口语、与文档长文风格差距大的场景。
 
-### 使用场景
+#### 6.7.1 使用场景
 
 | 场景 | 现象 | 建议 |
 |---|---|---|
@@ -5052,7 +4688,7 @@ let queries = generator.generate("database connection failed");
 | 担心假设答案带偏检索 | 生成内容质量不稳定 | 打开 `with_include_original_query`，把原始查询一起并入检索 |
 | 召回已够、只求精确 | 检索结果足够相关 | 不需要 HyDE，直接检索 + 重排序 |
 
-### 工作方式
+#### 6.7.2 工作方式
 
 ```
 用户查询 → LLM 生成假设文档 → 使用假设文档检索 → 返回真实文档
@@ -5064,7 +4700,7 @@ let queries = generator.generate("database connection failed");
 - **用假设文档检索**：把假设文档交给底层检索器。示例中底层是 `SimilarityRetriever`，检索器内部会先对假设文档做嵌入，再与库里文档算相似度。因此 HyDE 本身不再需要单独的嵌入模型参数，假设文档的向量化由底层检索器处理。
 - **返回真实文档**：检索命中、排序都发生在"假设文档 ↔ 真实文档"之间，最终返回的是真实文档而不是假设文档。假设文档只在检索那一刻出现，用完即弃。
 
-### 使用方法
+#### 6.7.3 使用方法
 
 ```rust
 use langchainrust::{HyDERetriever, SimilarityRetriever, OpenAIChat, OpenAIEmbeddings};
@@ -5097,7 +4733,8 @@ let docs = hyde.retrieve("Rust concurrency").await?;
 ---
 
 <a id="selfqueryretriever"></a>
-## SelfQueryRetriever ✨ v0.18.0
+
+### 6.8 SelfQueryRetriever ✨ v0.18.0
 
 用户问的是自然语言，但文档里的字段是结构化元数据——"去年的科技新闻"其实隐含了 `year >= 2024 AND category = tech` 的过滤条件。SelfQueryRetriever 让 LLM 把查询拆成 `{query, filter}`：清洗后的 query 走向量检索，解析出的 `MetadataFilter` 交给 `similarity_search_with_filter` 做元数据过滤（建立在统一过滤之上）。
 
@@ -5126,7 +4763,8 @@ let docs = retriever.retrieve("去年的科技新闻", 5).await?;
 ---
 
 <a id="contextual-retrieval"></a>
-## Contextual Retrieval ✨ v0.21.0
+
+### 6.9 Contextual Retrieval ✨ v0.21.0
 
 Anthropic 提出的索引期增强：每个 chunk 前面只有自己，缺少"它在整篇文档里处于什么位置"的上下文，导致很多语义相关但措辞不同的内容检索不到。`ContextualEnhancer` 在**索引期**用一个小 LLM 为每块生成 1-2 句上下文说明，拼在原文前面入库——检索命中率显著提升。
 
@@ -5154,7 +4792,8 @@ let enhanced = enhancer.enhance_documents(&docs).await;
 ---
 
 <a id="semantic-cache"></a>
-## 语义缓存（SemanticCache）✨ v0.21.0
+
+### 6.10 语义缓存（SemanticCache）✨ v0.21.0
 
 相同/相似的问题每次都重新检索一遍向量库，纯浪费。`CachedRetriever` 包装任意 `RetrieverTrait`：**词法命中**（查询字符串完全相同）直接返回缓存且跳过 embedding；否则对缓存条目算**余弦相似度**，超阈值即视为同义查询命中。
 
@@ -5183,13 +4822,14 @@ cached.cache().invalidate();                      // 语料更新后手动失效
 ---
 
 <a id="reranking"></a>
-## 重排序
+
+### 6.11 重排序
 
 初次检索可能返回不太相关的结果。重排序器对检索结果重新评分，把最相关的排到前面，提高精确度。
 
 它的定位是"召回之后、喂给模型之前"的一道精排工序。第一次检索（召回）追求"别漏掉"，宁可多返回一些；重排序在召回结果上再做一次更严格的打分，把不相关的压下去、最相关的提到最前，再保留 `top_n` 条交给下游。它解决的问题是**精确度不足**——召回结果里混着不相关段落，直接全量喂给 LLM 会稀释注意力、浪费上下文。适合与 MultiQueryRetriever、HyDE 这类"扩大召回"的增强器搭配使用：增强器负责多捞，重排序负责精选。
 
-### 使用场景
+#### 6.11.1 使用场景
 
 | 场景 | 现象 | 建议 |
 |---|---|---|
@@ -5198,7 +4838,7 @@ cached.cache().invalidate();                      // 语料更新后手动失效
 | 只做一次检索、结果已够精准 | 前几条就是想要的 | 不需要重排序，省一次打分 |
 | 想要可控的返回数量 | 每路召回返回量不可控 | 用 `with_top_n` 固定最终数量 |
 
-### 支持的重排序器
+#### 6.11.2 支持的重排序器
 
 | 重排序器 | 说明 |
 |----------|-------------|
@@ -5215,7 +4855,7 @@ cached.cache().invalidate();                      // 语料更新后手动失效
 | 可调参数 | 无 | `with_params(k1, b)`，控制词频饱和与长度惩罚强度 |
 | 适合场景 | 快速、粗略、结果集小 | 结果集大、需要更细的区分度 |
 
-### KeywordReranker
+#### 6.11.3 KeywordReranker
 
 基于关键词匹配重排序——查询中的关键词在文档中出现越多、越靠前，分数越高。简单快速，不需要嵌入模型。
 
@@ -5238,7 +4878,7 @@ let reranked = executor.rerank("Rust programming", search_results)?;
 - **最小分数过滤**：`with_min_score(0.5)` 设置分数下界，低于该分数的结果会被过滤掉，用于剔除明显不相关的结果；不设则不过滤。
 - **与检索解耦**：`rerank` 接收传入的 `search_results` 列表，不关心结果来自哪个检索器，所以可以接在 `SimilarityRetriever`、MultiQueryRetriever、HyDE 等任意检索结果之后。
 
-### BM25Reranker
+#### 6.11.4 BM25Reranker
 
 使用 BM25 公式重排序——比 KeywordReranker 更精确，考虑了词频饱和度和文档长度归一化。可调 k1/b 参数。
 
@@ -5260,7 +4900,7 @@ let reranked = executor.rerank("Rust programming", results)?;
 - **保留 top_n**：`with_top_n(5)` 决定最终保留条数，重排后只返回前 5 条。示例里没设 `with_min_score`，即默认不按分数过滤。
 - **同为无模型重排**：和 KeywordReranker 一样不需要嵌入模型，直接在已检索结果上打分，成本可控。
 
-### 神经重排序：Cohere / Jina 交叉编码器 ✨ v0.24.0
+#### 6.11.5 神经重排序：Cohere / Jina 交叉编码器 ✨ v0.24.0
 
 词法重排器零成本、可离线;召回质量优先时改用托管**交叉编码器**:查询与每个候选拼接后联合打分,精度显著高于向量点积。v0.24.0 把两家服务收敛在同一个异步 trait 后面,换厂商不改调用点。
 
@@ -5283,628 +4923,394 @@ let top: Vec<SearchResult> = rerank_async(&cohere, "查询", pool, 5).await?;
 - `rerank_async` 把 API 返回的 `results[].index` **重映射回输入位置**(服务端不保证按序返回),按分数降序后截断到 `top_n`;空候选直接返回空 `Vec`;
 - 响应体畸形是**显式错误**,不会静默地把未排序输入当结果返回。
 
-> 多样性重排（MMR）与 Weighted 加权融合见上文[混合检索](#hybrid-retrieval)一节的 `retrieve_mmr` / `mmr`。
+> 多样性重排（MMR）与 Weighted 加权融合见上文[混合检索](#65-混合检索)一节的 `retrieve_mmr` / `mmr`。
 
 ---
 
 <a id="callbacks"></a>
-## 回调
 
-回调系统让你在 LLM 调用的关键节点（开始、结束、出错、流式 token）插入自定义逻辑，用于日志、追踪、监控。`CallbackManager` 管理多个处理器，按顺序触发。
+### 6.12 FileVectorStore ✨ v0.4.1
 
-### CallbackManager
+基于 JSON 持久化的向量存储。填补了 InMemory（不持久化）与外部数据库（过于重量级）之间的空白。
 
-管理多个回调处理器，支持组合使用（如同时输出到控制台和 LangSmith）：
+它把**向量 + 文档**序列化成 JSON 落到磁盘文件：进程退出数据不丢，重启后用同一个 `new(path, dim)` 就能把上次的数据加载回来；不需要装任何数据库，也没有网络依赖。适合演示、离线、小规模本地知识库这类「要持久化、但不想上服务」的场景。
 
-```rust
-use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
-use std::sync::Arc;
+工作流：`FileVectorStore::new(path, 4).await` 指定落盘路径和向量维度（**创建是 async，需 `.await`**）→ `add_documents(docs, embeddings)` 存一批「文档 + 向量」→ `similarity_search(&query, k)` 给查询向量取 top-k。写操作自动落盘，不用手动保存。
 
-let manager = CallbackManager::new()
-    .add_handler(Arc::new(StdOutHandler::new()))
-    .add_handler(Arc::new(LangSmithHandler::from_env()?));
-```
+#### 6.12.1 创建与加载
 
-### StdOutHandler
-
-输出到标准输出（用于调试）。最简单的回调，直接打印 LLM 的输入输出。
-
-```rust
-use langchainrust::StdOutHandler;
-
-let handler = StdOutHandler::new();
-```
-
-### FileCallbackHandler
-
-输出到文件。支持 JSON 格式（便于程序解析）和文本格式（便于人阅读）。
-
-```rust
-use langchainrust::{FileCallbackHandler, LogFormat};
-
-// JSON 格式
-let handler = FileCallbackHandler::new("trace.json", LogFormat::Json);
-
-// 文本格式
-let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
-```
-
-### CallbackHandler 生命周期 ✨ v0.15.0
-
-实现 `CallbackHandler` 即可接入回调系统。每个 Run 有三段生命周期回调：`on_run_start` → `on_run_end` / `on_run_error`；组件级钩子（`on_llm_start/end/new_token/thinking/error`、`on_chain_*`、`on_tool_*`、`on_retriever_*`）可选覆盖，默认空实现。`StdOutHandler` 的 `verbose` 开关控制是否打印组件级细节。
-
-> **v0.22.4**：Agent 执行器在**规划阶段**（`BaseAgent::plan` / `plan_stream`，含 ReAct 与 Function-Calling 每一轮规划）也会带上当前 Run 的回调配置——此前规划 LLM 调用对回调/追踪不可见，现在 `on_llm_*` 钩子、LangSmith 与 OTel 都能收到这些调用。注意这是 `BaseAgent::plan`/`plan_stream` trait 方法签名的破坏性变更：末尾新增 `config: Option<&RunnableConfig>` 参数，自定义实现需同步更新（执行器内部已自动传入，直接使用内置 Agent 不受影响）。
-
-### LangSmith 追踪
-
-LangSmith 是 LangChain 的官方追踪平台，用于监控和调试 LLM 应用。
-
-#### 环境变量
-
-```bash
-export LANGSMITH_API_KEY="ls_xxxxx"       # 必填
-export LANGSMITH_PROJECT="my-project"      # 项目名称
-export LANGSMITH_TRACING="true"            # 启用追踪
-export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
-```
-
-#### 使用 LangSmithHandler
-
-```rust
-use langchainrust::{CallbackManager, LangSmithHandler, StdOutHandler};
-use std::sync::Arc;
-
-// 从环境变量自动配置
-let langsmith = LangSmithHandler::from_env()?;
-
-let manager = CallbackManager::new()
-    .add_handler(Arc::new(StdOutHandler::new()))
-    .add_handler(Arc::new(langsmith));
-```
-
-#### 手动配置
-
-```rust
-use langchainrust::{LangSmithHandler, LangSmithConfig};
-
-let config = LangSmithConfig {
-    api_key: "ls_xxxxx".to_string(),
-    project: "my-project".to_string(),
-    endpoint: "https://api.smith.langchain.com".to_string(),
-    tracing: true,
-    workspace_id: None,
-};
-
-let handler = LangSmithHandler::new(config);
-```
-
-#### LangSmith 功能
-
-| 功能 | 说明 |
-|---------|-------------|
-| **追踪** | 记录每次 LLM 调用 |
-| **监控** | 查看 token 用量、延迟 |
-| **调试** | 比较不同版本输出 |
-| **评估** | 测试集评估 |
-| **分享** | 分享追踪链接 |
-
----
-
-### OtelHandler
-
-将 LLM / Chain / Tool / Retriever 的开始/结束/错误事件转换为 OpenTelemetry span。需要 `opentelemetry` feature 和已配置的全局 tracer provider。
-
-```toml
-[dependencies]
-langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
-```
-
-```rust
-use langchainrust::{CallbackManager, OtelHandler};
-use std::sync::Arc;
-
-// set tracer provider first: opentelemetry::global::set_tracer_provider(...)
-let manager = CallbackManager::new()
-    .add_handler(Arc::new(OtelHandler::from_global("langchainrust")));
-// llm.with_callbacks(Arc::new(manager));
-```
-
-嵌套 span；导出到 Jaeger / Tempo / Grafana。
-
-**OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
-
-```toml
-langchainrust = { version = "0.28.0", features = ["otlp"] }
-```
-
-```rust
-// 读环境变量自建 tracer provider,返回的 guard 活到进程结束(drop 时 flush)
-let _otlp = langchainrust::callbacks::otlp::install_otlp_pipeline()?;
-// 环境变量:OTEL_EXPORTER_OTLP_ENDPOINT(默认 http://localhost:4318,自动拼 /v1/traces)
-// OTEL_EXPORTER_OTLP_HEADERS(k1=v1,k2=v2)、OTEL_EXPORTER_OTLP_TIMEOUT(默认 10s)
-// OTEL_SERVICE_NAME(默认 langchainrust);自定义参数用 install_otlp_pipeline_with(OtlpConfig)
-```
-
-最小可运行例程:`crates/lc/examples/otel/otlp_tracing.rs`(`--features otlp`)。
-
-**gen_ai 语义约定对齐 ✨ v0.21.0**：span 属性对齐 OpenTelemetry GenAI 语义约定（development 状态）——`gen_ai.system`、`gen_ai.request.model`、`gen_ai.request.max_tokens` / `gen_ai.request.temperature`、`gen_ai.response.finish_reason`、`gen_ai.response.model`、token 用量 `gen_ai.client.token.usage.prompt_tokens` / `completion_tokens`，以及扩展属性 `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.reasoning.output_tokens`（provider 有上报才填）。LLM 调用 span 的 `gen_ai.operation.name = "chat"`，检索 span 为 `"retrieve"`，工具 span 携带 `gen_ai.tool.name`（`gen_ai.tool.*` 为扩展命名空间，标准稳定后迁移）。Langfuse / Grafana 等消费方可直接按 `gen_ai.*` 属性过滤聚合。
-
----
-
-<a id="evaluation"></a>
-## 评估
-
-量化 LLM 输出质量：在更改提示词 / 模型 / 添加 RAG 之后，运行评估集并查看分数是否提升。5 个类别共 13 个评估器，覆盖从字面匹配到 RAG 幻觉检测：
-
-| 类别 | 评估器 | 描述 |
-|----------|-----------|-------------|
-| 字面匹配 | `ExactMatch` / `StringDistance` | 精确相等 / 归一化 Levenshtein 距离 |
-| 语义 | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | 余弦相似度 / LLM 评判 / 成对比较（交换 A/B 以消除位置偏差） |
-| 规则 | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | 关键词 / 正则 / 长度 |
-| 经典 NLP | `Bleu` | n-gram 精确率（字符级 + 平滑 + 有效阶） |
-| RAG | `Faithfulness` | 拆分声明，逐一验证，检测幻觉 |
-| RAG（RAGAS 三指标）✨ v0.22.4 | `ContextPrecision` / `ContextRecall` / `AnswerRelevancy` | 上下文精确率 / 上下文召回率 / 答案相关性,见下方专节 |
-
-### EvalRunner
-
-对 `Dataset` 运行一组评估器，生成 `Report`（每个示例的分数 + 每个评估器的平均值）。支持从 JSONL 文件加载评估集。
-
-```rust
-use langchainrust::evaluation::*;
-use async_trait::async_trait;
-
-let dataset = Dataset::new(vec![
-    Example::new("2+2=?", "4"),
-    Example::new("capital of China?", "Beijing"),
-]);
-// or: Dataset::from_jsonl("eval.jsonl")?
-
-struct MyLLM;
-#[async_trait]
-impl Predictor for MyLLM {
-    async fn predict(&self, input: &str) -> Result<String, EvalError> {
-        Ok("4".to_string())
-    }
-}
-
-let runner = EvalRunner::new(vec![
-    Box::new(ExactMatch),
-    Box::new(StringDistance),
-]);
-let report = runner.run(&dataset, &MyLLM).await?;
-println!("{:?}", report.summary);
-// {"ExactMatch": 1.0, "StringDistance": 1.0}
-```
-
-### Faithfulness
-
-将预测拆分为原子声明，并逐一对照参考（上下文）进行验证，检测捏造内容。对 RAG 最为有用。
-
-```rust
-use langchainrust::evaluation::{Faithfulness, Evaluator};
-use langchainrust::OpenAIChat;
-
-let judge = Faithfulness::new(OpenAIChat::new(config));
-// reference is context: "annual leave 15 days"
-let ok = judge.eval("", "annual leave 15 days, accruable", "annual leave 15 days").await?;
-assert_eq!(ok.value, 1.0); // faithful
-
-let halluc = judge.eval("", "annual leave 20 days", "annual leave 15 days").await?;
-assert_eq!(halluc.value, 0.0); // fabricated, caught
-```
-
-`with_llm_split(true)` 使用 LLM 拆分声明（默认：按句号拆分）；`with_empty_score(x)` 设置无声明时的分数。验证并发执行（`join_all`）。
-
-### LLMAsJudge（LLM 裁判） ✨ v0.15.0
-
-用 LLM 按 0-10 打分，可自定义评分标准（`with_rubric`）和满分（`with_max_score`）。
-
-```rust
-use langchainrust::evaluation::LLMAsJudge;
-
-let judge = LLMAsJudge::new(OpenAIChat::new(config))
-    .with_rubric("从正确性、完整性、清晰性三方面评分")
-    .with_max_score(10);
-let score = judge.eval(input, output, reference).await?; // 0.0 ~ 10.0
-```
-
-### PairwiseJudge（成对比较） ✨ v0.15.0
-
-竞技场模式：让 LLM 裁判在两个回答中二选一，返回 `Verdict::{AWins, BWins, Tie}`。
-
-```rust
-use langchainrust::evaluation::{PairwiseJudge, Verdict};
-
-let judge = PairwiseJudge::new(OpenAIChat::new(config));
-match judge.compare("问题是?", &answer_a, &answer_b).await? {
-    Verdict::AWins => { /* A 更好 */ }
-    Verdict::BWins => { /* B 更好 */ }
-    Verdict::Tie    => { /* 平局 */ }
-}
-```
-
-> **位置偏差缓解**：自动交换 A/B 顺序跑两次，两次都选同一个才算真赢，否则判平局；两次调用并发发起，不增加串行往返。
-
-### Report 容错 ✨ v0.15.0
-
-`EvalRunner.run` 逐条容错：单条 `predict` 失败或某个评估器打分失败，只记入 `Report::failures`（含 `index` 与 `stage`），其余样例照常出分——一条坏数据不会拖垮整次评估。
-
-```rust
-let report = runner.run(&dataset, &MyLLM).await?;
-if !report.failures.is_empty() {
-    eprintln!("{} 条失败", report.failures.len());
-}
-```
-
-### RAGAS 三指标（RAG 专用评估器）✨ v0.22.4
-
-RAG 系统的错误形态和普通问答不同:答得"像模像样"但检索没喂对料、召回的料里根本没有答案所需的信息、答案跑题。RAGAS 把这三种情况拆成三个独立指标,全部由 LLM 裁判驱动(与 Faithfulness 同源:优先 `bind_tools` 结构化调用、文本回落,单次评估内裁判并发上限 4,避免触发限流):
-
-| 评估器 | 衡量什么 | 算法要点 | 输入 |
-|--------|---------|---------|------|
-| `ContextPrecision` | 召回的上下文**排序质量**——有用的块是否排在前面 | 裁判逐块判定与问题是否相关,按排名加权精确率 | 问题 + 有序 contexts |
-| `ContextRecall` | 标准答案的信息有多少能在召回上下文里找到 | 拆参考答案为声明,逐句归因到上下文,算可归因比例 | 参考答案 + contexts |
-| `AnswerRelevancy` | 答案是否切题(不看参考回答,防答非所问) | LLM 从答案反生成 N 个问题(默认 3),与真实问题算嵌入余弦相似度后取均值 | 问题 + 答案(+ 嵌入模型) |
-
-`ContextPrecision` / `ContextRecall` 只实现 `RagEvaluator`(普通 `Evaluator` 没有 contexts 槽位);`AnswerRelevancy` 两个 trait 都实现,也能在非 RAG runner 里打分。
-
-```rust
-use langchainrust::evaluation::{
-    AnswerRelevancy, ContextPrecision, ContextRecall, Dataset, EvalRunner, Example,
-};
-
-let dataset = Dataset::new(vec![
-    // RAG 样例用 with_contexts,contexts 按检索排名顺序传入
-    Example::with_contexts(
-        "年假多少天?",
-        "15 天",
-        vec!["员工年假为 15 个工作日……".to_string(), "报销需附发票".to_string()],
-    ),
-]);
-
-let judge = OpenAIChat::new(config);                 // 任意 BaseChatModel
-let runner = EvalRunner::new(vec![])
-    .with_rag_evaluators(vec![
-        Box::new(ContextPrecision::new(judge.clone())),       // 排名第 1 的块无关 → 低分
-        Box::new(ContextRecall::new(judge.clone())),
-        Box::new(AnswerRelevancy::new(judge, embeddings)),    // 额外需要 Embeddings
-    ]);
-
-let report = runner.run(&dataset, &predictor).await?;
-// 上下文超长时:with_max_context_chars(默认每块/拼接上限 2000 字符)
-// 空 contexts 等无分可打的情况:with_empty_score(x) 显式指定默认分
-// AnswerRelevancy::with_n_questions(5) 调整反生成问题数
-```
-
-旧 JSONL 数据集没有 contexts 列时反序列化为空 vec(`#[serde(default)]`),普通评估器照跑、RAG 评估器按 `with_empty_score` 处理。
-
-> 底层复用 `core::judge::structured_call` 的结构化判定路径（强制 LLM 输出 JSON 后解析，错误统一为 `StructuredJudgeError`），保证裁判结果可机读。
-
-### trace → golden → 回归门禁 ✨ v0.24.0
-
-离线手写数据集会过时。v0.24.0 把"**线上 trace → 入库 golden 集 → CI 回归门禁**"闭环补齐:生产录播经 lc-testkit 转成 golden JSONL(转换规则见[测试章"录播 → golden 数据集"](#录播--golden-数据集评分桥--v0240)),新 prompt / 新模型在同一份 JSONL 上跑分,报告与基线报告逐指标对比,退步超阈值就让 CI 红。
-
-```rust
-use langchainrust::evaluation::{compare_reports, Dataset, EvalRunner, Report};
-
-// 基线报告来自已知良好版本(Report 支持 JSON round-trip,可落盘 / 传 CI artifact)
-let baseline: Report = serde_json::from_str(&std::fs::read_to_string("eval/baseline.json")?)?;
-
-// 候选跑:加载入库 JSONL,predictor 包住新 prompt / 新模型
-let dataset = Dataset::from_jsonl("eval/golden.jsonl")?;
-let candidate: Report = EvalRunner::new(evaluators).run(&dataset, &new_predictor).await?;
-
-// tolerance = 可接受的均值波动;delta 严格小于 -tolerance 才算退步(边界 -0.02 仍通过)
-let cmp = compare_reports(&baseline, &candidate, 0.02);
-assert!(!cmp.is_regressed(), "检测到指标回归:\n{}", cmp.to_table());
-```
-
-`ReportComparison` 给出:
-
-| 字段 | 内容 |
+| 参数 | 含义 |
 |---|---|
-| `metrics: HashMap<String, MetricDelta>` | 每个共有评估器的 `baseline_mean` / `candidate_mean` / `delta` / 双方计分数 |
-| `regressions: Vec<Regression>` | 仅含 `delta < -tolerance`(严格不等式,边界值不算回归)的指标 |
-| `added: Vec<String>` / `dropped: Vec<String>` | 候选比基线**新增 / 丢失**的评估器名——候选偷偷少跑了一个评估器在同一张表里可见 |
-| `count_mismatches: Vec<String>` | 共有评估器在两次运行的样本数不一致(跑分集漂移),默认也拦门禁 |
-| `significance: HashMap<String, PairedSignificance>` | 每个共有评估器的配对符号检验(候选逐例胜/负/平 + p 值) |
-| `gate_on_dropped: bool` | 是否把「候选丢了评估器」当作门禁失败(默认开启) |
+| `path` | JSON 文件路径（如 `./vectors.json`） |
+| `dim` | 向量维度（如 4），建库时固定 |
 
-`cmp.to_table()` 输出可直接贴进 CI 日志的对比表,并带一列 `p`(配对符号检验 p 值,显著处标 `*`)。基线怎么来:首次在已知良好版本上跑一遍,把 `Report` 序列化入库即可。
+加载方式：用相同的 `path` + `dim` 再调一次 `FileVectorStore::new(path, dim).await`，即可把上次落盘的数据读回来。维度在建库时固定，之后 `add_documents` 塞入维度不一致的向量会直接报错，防止污染同一份索引。
 
-**「丢评估器/跑分集漂移也红」的分层门禁**:`is_gate_failing()` 在四类情况红:①任一指标回归;②`count_mismatches` 非空(跑分集漂移);③`dropped` 非空——候选**悄悄少跑了一个评估器**(默认 `gate_on_dropped: true`,fail-closed,且对无该字段的旧 artifact 也默认关);④没有任何共有评估器可比(跑分集为空/跑歪了)。若候选确实可以合法去掉某个评估器,用 `compare_reports_with(&base, &cand, CompareOptions { gate_on_dropped: false, ..Default::default() })` 显式放行。
-
-**均值之外,还有配对符号检验**:均值会被个别样本带偏。`paired_significance(&base, &cand, "evaluator")`(或 `ReportComparison.significance`)对两次运行的**逐例得分**做符号检验,给出 `wins`(候选逐例更高)/ `losses` / `ties` / `n` / `p_value`(以 `n = wins+losses` 为口径的双侧精确二项检验)。p 值大 = 均值波动很可能是逐例噪声;`is_significant("evaluator")` 判断是否 `< significance_level`(默认 0.05,可用 `CompareOptions.significance_level` 调整)。回归只在显著时才有意义——波动 vs 真变化,判决交给 CI。
-
-**尾部指标**:`report.percentile("evaluator", 0.05)` 是某评估器逐例得分的 P5(最差一端的质量尾,拖低均值的就是它),`0.95` / `0.99` 是最佳尾;对延迟类指标 `0.95` 即延迟尾。底层 `percentile` 是 nearest-rank 实现,处理 `NaN` 不 panic(见 `runner::percentile`)。
-
----
-
-<a id="mongodb-storage"></a>
-## MongoDB 存储
-
-MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长文档的「父文档 + 子块」关系**跨进程共享、跨重启保留**；二是把**对话记忆**落到 MongoDB，让多轮记忆**多实例共享**。默认的内存存储（如 `InMemoryChunkedDocumentStore`）进程一退出就没了，专用向量库又太重；当应用要起多个实例、或需要真持久化时，MongoDB 是生产级的中间选项。
-
-本节会出现两类对象，用途不同，别混淆：
-
-| 对象 | 归属 | 存什么 | 一句话 |
-|---|---|---|---|
-| `MongoChunkedDocumentStore` | 文档库（DocumentStore 家族） | 文档正文 + 父子分块关系 | 长文档切块后，正文落 MongoDB |
-| `MongoPersistentMemory` | 持久化记忆（记忆家族） | 对话历史 / 压缩摘要 | 多实例共享同一份对话记忆 |
-
-工作流程（以文档库为例）：先 `create_indexes()` 建好查询索引 → `add_parent_document(doc, 500)` 把长文档按分块大小切成子块入库 → 按父文档 ID 用 `get_chunks_for_parent` 取回全部子块。检索命中小块后，再用子块 ID 回文档库取父块正文，这是分块检索的标准回源路径。
-
-### 适用场景（什么时候选 MongoDB）
-
-| 场景 | 是否推荐 | 原因 |
-|---|---|---|
-| 多实例部署，要共享同一份文档/记忆 | ✅ 推荐 | 所有实例连同一个 MongoDB，读到同一份数据 |
-| 服务重启后数据要保留 | ✅ 推荐 | 数据落库，不依赖进程内存 |
-| 单机演示、数据量小、想零依赖 | ⚠️ 可换轻量后端 | 本地可用 SQLite / 文件存储替代 |
-| 可接受进程重启丢数据 | ❌ 不必要 | 内存实现更简单，不用引入服务 |
-
-### 启用 Feature
-
-```toml
-[dependencies]
-langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
-```
-
-### 用法
+#### 6.12.2 用法
 
 ```rust
-use langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
+use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
+use std::path::PathBuf;
 
-let config = MongoStoreConfig::new(
-    "mongodb://localhost:27017",
-    "langchainrust_db"
-);
+let path = PathBuf::from("./vectors.json");
+let store = FileVectorStore::new(path, 4).await?;  // 4 维(async 创建)
 
-let store = MongoChunkedDocumentStore::new(config).await?;
-store.create_indexes().await?;
+let docs = vec![
+    Document::new("Rust focuses on safety and performance").with_id("rust"),
+    Document::new("Python is great for rapid development").with_id("python"),
+];
+let embeddings = vec![
+    vec![1.0, 0.0, 0.0, 0.0],
+    vec![0.0, 1.0, 0.0, 0.0],
+];
+let ids = store.add_documents(docs, embeddings).await?;
 
-// 与 InMemory 相同的接口
-let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
-let chunks = store.get_chunks_for_parent(&parent_id).await?;
+let query = vec![0.9, 0.1, 0.0, 0.0];
+let results = store.similarity_search(&query, 2).await?;
+
+// 持久化：文件自动写入；重启时使用 new(path, dim) 加载
+store.clear().await?;
 ```
 
-`MongoStoreConfig::new` 的两个参数：
+**特性**：原子写入（tmp+rename）、维度验证、跨实例持久化。
 
-| 参数 | 含义 | 例子 |
-|---|---|---|
-| 第一个参数 | MongoDB 连接串 | `mongodb://localhost:27017` |
-| 第二个参数 | 数据库名 | `langchainrust_db` |
-
-### MongoPersistentMemory（对话记忆持久化）
-
-`MongoChunkedDocumentStore` 管「文档正文」，`MongoPersistentMemory` 管「对话记忆」，两者是不同层的持久化。`MongoPersistentMemory`（详见 [MongoPersistentMemory](#mongopersistentmemory)）内部组合 `ConversationSummaryBufferMemory`、自带 token 预算，把「历史 + 摘要」写进 MongoDB，多个实例连同一个库就能共享同一份记忆。
+#### 6.12.3 关键行为
 
 | 行为 | 说明 |
 |---|---|
-| 持久化 | 记忆存 MongoDB，服务重启不丢 |
-| 多实例共享 | 同一库同一集合，多实例读写同一份记忆 |
-| token 预算 | 内部是摘要缓冲，超出预算自动压缩 |
-| 乐观锁 | 并发写不互相覆盖，防「后写覆盖先写」 |
-| 会话绑定 | `set_session_id_async` 绑定当前会话 |
+| JSON 落盘 | 向量 + 文档写入 JSON 文件，跨重启保留 |
+| 原子写入 | 先写临时文件再 rename，断电/崩溃不损坏已有文件 |
+| 维度验证 | 建库时固定维度，塞错维度的向量直接报错 |
+| 删除诚实 | 删不存在的文档返回 `DocumentNotFound`，不假装成功 |
+| 跨实例持久化 | 同一路径的文件，多个实例都能读（共享磁盘 / 演示场景） |
+| 纯存储 | 向量由调用方生成后传入，`similarity_search` 也直接收查询向量 |
 
-### 关键行为
+#### 6.12.4 适用场景
 
-- `create_indexes()` 建索引：首次建库建议先调用，为后续按父 ID / 子块 ID 查询做准备。
-- 父子分块关系持久化：删父文档会连带删掉它的全部子块。
-- 接口与 InMemory 实现一致：同一 `ChunkedDocumentStoreTrait`，换后端只换构造一行。
-- 存正文不存向量：向量由配套的向量库（如 `ChunkedVectorStore`）索引，`MongoChunkedDocumentStore` 只负责「正文 + 分块关系」。
-- 提供 `_blocking` 同步方法，供 BM25 这类同步检索路径使用。
+- 演示 / 原型：不想为演示装一个数据库服务。
+- 离线小规模知识库：本地数据量小，JSON 文件足够。
+- 免外部服务：没有任何网络依赖，开箱即用。
+- 数据量小但重启要保留：内存会丢，文件不会。
 
-### 怎么选
-
-什么时候用 MongoDB 文档库？一句话：需要**多进程/多实例共享同一份文档正文**，或需要**真持久化**时。如果只是单机、数据量小，SQLite 文档库更轻（见下节）；如果数据量大、要专业向量检索，就再配一个向量库——向量放 vector store，正文放这里。
-
----
-
-<a id="redis--sqlite-storage"></a>
-## Redis / SQLite 存储
-
-这两个都是 `ChunkedDocumentStoreTrait` 的轻量实现，管「文档正文 + 父子分块」，和 MongoDB 文档库干同一件事，但取舍相反：**Redis 走分布式共享，SQLite 走本地零依赖**。选谁，取决于你手里已有什么基础设施、数据要不要多实例共享。
-
-工作流程和 MongoDB 文档库完全一样：`add_parent_document(doc, 500)` 切块入库 → `get_chunks_for_parent` 按父 ID 取回子块。接口统一，换后端只换构造这一行。
-
-### 适用场景与取舍
-
-| 后端 | 数据存哪 | 需要外部服务 | 数据生命周期 | 适用场景 |
-|---|---|---|---|---|
-| `RedisDocumentStore` | Redis 服务器内存 | 是，先起 Redis | 常驻 Redis；是否落盘取决于 Redis 服务自身的持久化配置（RDB/AOF），不归本库管 | 多实例共享、已有 Redis 基础设施、要跨进程一致 |
-| `SQLiteDocumentStore` | 本地 `.db` 文件 | 否，零依赖 | 直接写本地文件，进程退出数据保留 | 单机、本地开发、免服务 |
-
-一句话记法：Redis 是「多人共用的共享仓库」，SQLite 是「这台机器自己的抽屉」。
-
-### 启用 Feature
-
-```toml
-[dependencies]
-langchainrust = { version = "0.28.0", features = ["redis-storage"] }
-```
-
-或
-
-```toml
-[dependencies]
-langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
-```
-
-### RedisDocumentStore
-
-```rust
-use langchainrust::{RedisDocumentStore, ChunkedDocumentStoreTrait};
-
-let store = RedisDocumentStore::new("redis://127.0.0.1:6379").await?;
-
-let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
-let chunks = store.get_chunks_for_parent(&parent_id).await?;
-```
-
-### SQLiteDocumentStore
-
-```rust
-use langchainrust::{SQLiteDocumentStore, ChunkedDocumentStoreTrait};
-
-let store = SQLiteDocumentStore::new("langchain.db").await?;
-
-let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
-let chunks = store.get_chunks_for_parent(&parent_id).await?;
-```
-
-注意两者构造参数的不同语义：
-
-| 后端 | 构造参数 | 含义 |
-|---|---|---|
-| `RedisDocumentStore::new(uri)` | `redis://127.0.0.1:6379` | Redis 连接串，指向一个已在运行的服务 |
-| `SQLiteDocumentStore::new(path)` | `langchain.db` | 本地文件路径，文件不存在会自动创建 |
-
-### 关键行为
-
-- 两者都实现 `ChunkedDocumentStoreTrait`，都是**文档库**——存文档正文和父子分块关系，**不存向量**；向量另放向量库。
-- `add_parent_document` 自动切块，返回 `(parent_id, chunk_ids)`；`get_chunks_for_parent` 按父 ID 取回全部子块。
-- 删父文档会连带删掉它的全部子块。
-- 提供 `_blocking` 同步方法，供 BM25 这类同步检索路径使用。
-- 接口与 InMemory 实现一致，换后端只换构造一行。
-- `RedisDocumentStore` 的数据可见性取决于所有实例是否连同一个 Redis；`SQLiteDocumentStore` 的数据就在本地文件里，单机使用最自然。
-
-### 怎么选
+#### 6.12.5 怎么选
 
 | 你的情况 | 推荐 |
 |---|---|
-| 单机 / 本地开发 / 不想装任何服务 | `SQLiteDocumentStore` |
-| 多实例部署 / 团队已用 Redis 基础设施 | `RedisDocumentStore` |
-| 数据量大、要生产级可靠与更复杂查询 | `MongoChunkedDocumentStore`（上一节） |
-
-### Feature 门控
-
-| Feature 标志 | 存储后端 | 依赖 |
-|-------------|-----------------|--------------|
-| `redis-storage` | Redis | redis crate |
-| `sqlite-storage` | SQLite | rusqlite crate |
-| `mongodb-persistence` | MongoDB | mongodb crate |
+| 数据可丢、进程内即可 | `InMemoryVectorStore` |
+| 要持久化、数据量小、免服务 | `FileVectorStore` |
+| 长文档要切块检索 | `ChunkedVectorStore` + 文档库 |
+| 数据量大 / 高并发 / 上生产 | 专业向量库（如 Chroma / Qdrant / Pinecone） |
 
 ---
 
-<a id="testing"></a>
-## 测试
+<a id="computerusetool"></a>
 
-### 概念引入：为什么要测试
+### 6.13 GraphRAG（知识图谱检索）
+`GraphRAG` 用「实体—关系」知识图谱组织文档:抽取实体与关系入库,查询时沿图谱检索,适合多跳关系问答——比向量相似度更能回答「谁与谁、经由什么、如何关联」。
 
-在 23 个 crate 组成的 workspace 里，测试是保证每个模块行为正确的最后防线——解析器、缓存、状态机这类纯逻辑一旦写错，会悄悄影响所有上层功能。用 `cargo test` 从 workspace 根目录跑一遍，能把各 crate 的单元测试、集成测试与文档测试一起执行，尽早发现问题。
+- 实体 / 关系抽取器 `extractor` + 图存储 `GraphStore`
+- Leiden 社区发现(聚类分层)
+- 图查询 `query`(子图检索 + 证据回源)
 
-```bash
-cargo test
-```
+> 完整 API、约束与代码示例见 [**附录.1.4 GraphRAG（知识图谱 RAG）**](#附录14-graphrag知识图谱-rag)
 
-### 测试覆盖范围
 
-| 层级 | 位置 | 覆盖对象 |
-|---|---|---|
-| 单元测试 | 各 crate 内部 | 解析器、缓存、淘汰策略、状态流转等纯逻辑 |
-| 集成测试 | facade crate（`langchainrust`）的 tests 目录 | 跨模块组装、对外行为 |
-| 文档测试（doctest） | 公开 API 的文档注释示例 | 示例代码可运行、API 真实存在 |
+> **相关能力延伸:** [CorrectiveRAG / AdaptiveRAG 检索增强（见附录）](#附录12-correctiverag)
 
-### 如何运行
+## 第七章 · 协议与互联
 
-- 根目录 `cargo test`：跑遍全部 crate
-- `cargo test --workspace`：显式指定 workspace 全量
-- 单独跑某个 crate：`cargo test -p langchainrust`（facade crate 的包名），或进入对应 crate 目录再跑
+### 7.1 MCP
 
-### 如何为 lib 写测试
+[MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。0.22.4 的 lc-mcp 同时提供**三条客户端轨道**，按对端形态选用：
 
-**单元测试**：在实现文件里用 `#[cfg(test)]` 模块把测试代码圈起来，只测本模块内部逻辑，不依赖网络与真实模型。判键、解析、LRU 淘汰这类行为适合在这里逐条覆盖正反例。
+- **无状态轨道 `StatelessMcpClient`（v0.22.0 起）**：框架自研的 2026-07-28 单请求协议，每个请求都是自包含的 JSON-RPC HTTP POST（带 `Mcp-Method` / `Mcp-Name` 路由头与 `_meta`），**无握手、无会话**，直连 `MCPServer::serve_http` 起的服务；
+- **官方 stdio 轨道 `StdioMcpClient`（v0.22.4 起）**：spawn 本地子进程，走完整 `initialize` 握手——对接 Claude Desktop / Cursor 等宿主生态的本地 stdio server；
+- **官方 Streamable HTTP 轨道 `StreamableMcpClient`（v0.22.4 起）**：对接按官方 TS/Python SDK 部署的远端 Streamable HTTP server，走完整握手、由服务端分配 `Mcp-Session-Id`，JSON/SSE 内容协商，可挂 OAuth 2.1 令牌提供器。
 
-**集成测试**：把 lib 当作外部使用者调用公开 API，验证跨模块的组装是否正确。涉及真实 API 的用例建议用 **mock 实现替换**，既快又不花预算，还能稳定断言结果——比如"敏感输出确实被拦截"这类行为，应该用明确的断言验证，而不是只"跑通不 panic"。
+三条轨道拿到的工具定义都走同一个 `MCPToolAdapter` 适配为 `BaseTool`。
 
-### 要点
-
-- 纯逻辑优先用单元测试覆盖，快且好定位；覆盖正反例，别只测正常路径。
-- 对外组合行为用集成测试覆盖；集成测试要有明确断言，不能只验证不 panic。
-- 写文档示例时让它能作为 doctest 运行——示例即测试，示例里示范的 API 必须真实存在。
-
-### 离线录播测试（lc-testkit） ✨ v0.16.0
-
-`lc-testkit` 是独立的录播测试 harness crate（不走 facade，作为 dev-dependency 引入）：`RecordingProvider` 包住任意 `BaseChatModel` 真调一次、把请求/响应逐行录成 JSONL；`ReplayProvider` 零网络、确定性地回放——没 key 的 CI 也能测链。
-
-```toml
-[dev-dependencies]
-lc-testkit = "0.24.0"
-```
+> **历史脉络**：0.22.0 曾按"单轨"要求移除旧的握手式 `MCPClient`（SSE 传输 + 旧 stdio 客户端、事件流/partial-content 推送面）；0.22.4 以**官方协议兼容**的名义把 stdio 与 Streamable HTTP 两条官方轨道加了回来（与无状态轨道并存，不是 feature 门控的二选一）。已对官方 **TypeScript SDK 1.30.0** 与 **Python SDK** 做 4/4 互操作验证。
 
 ```rust
-// 录：真调一次，成功后写入 fixture 文件
-let recorded = RecordingProvider::new(real_llm, "fixtures/llm_chain_f01.jsonl")?;
+use langchainrust::mcp::{MCPToolAdapter, StatelessMcpClient};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
 
-// 回放：零网络、FIFO、逐字节稳定
-let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?;
-let chain = LLMChain::new(llm, "用一句话回答:{question}");
-let result = chain.invoke(inputs).await?;
+// 无状态连接：无握手，connect 只构造客户端（不会失败）
+let client = StatelessMcpClient::connect("http://localhost:3001/mcp");
+
+let tools = client.list_tools().await?;           // tools/list
+println!("MCP tool count: {}", tools.len());
+
+// 适配为 BaseTool 列表并交给 Agent
+// 注意:适配器默认 fail-closed(RequireApproval)——不挂审批门/沙箱时每次调用
+// 都在发出前被拒(ToolError::PermissionDenied)。完全信任的内网 server 显式
+// allow_unattended_execution();生产场景见下方"工具执行审批与沙箱"。
+let mcp_tools: Vec<Arc<dyn BaseTool>> = tools
+    .into_iter()
+    .map(|def| {
+        Arc::new(
+            MCPToolAdapter::new(client.clone(), def)
+                .allow_unattended_execution(),
+        ) as Arc<dyn BaseTool>
+    })
+    .collect();
+let agent = FunctionCallingAgent::new(
+    OpenAIChat::new(OpenAIConfig::default()),
+    mcp_tools,
+    None,
+);
+let executor = AgentExecutor::new(Arc::new(agent) as Arc<dyn BaseAgent>, vec![]);
+let result = executor.invoke("Read /tmp/notes.txt".to_string()).await?;
+
+client.close().await?;
 ```
 
-录制是旁路不是拦截：真调失败不写录播；写盘失败仅告警不阻断真实结果。内置 round-trip（录→回放逐字节一致）与真链回放测试。
+`client.call_tool(name, arguments)` 直接调用工具；`MCPToolAdapter::new(client, def)` 将工具包装为实现 `BaseTool` 的适配器（`namespaced` 变体带 `server:tool` 前缀）；`.with_mrtr(...)` / `.with_answer_provider(...)` 处理 `input_required` 多轮请求；`.with_method_rate_limiter(...)` 做方法级限流。
 
-**三档回放策略（v0.18.0 起）**：
+**失败语义（按传输区分）**：无状态轨道没有连接生命周期——`connect()` 只构造客户端、不发请求，网络/服务端错误在**首个实际请求**处立刻暴露，没有"等待自动重连约 30s"的挂起；方法级限流命中时本地直接返回 `-32002`，不发网络请求；MRTR（多轮请求）未提供答案提供器时返回 `-32003`。
 
-| 策略 | 匹配方式 | 何时用 |
-|------|----------|--------|
-| `Fifo`（默认） | 按录制顺序逐个出队 | 单请求顺序回放、简单场景 |
-| `ByToolName` | 请求侧工具名命中即取 | 多工具并行、按工具路由 |
-| `Exact` ✨ v0.18.0 | 请求 `messages` 完整签名逐条严格匹配 | 并行乱序下精确对应；无匹配返回 `TestkitError::ReplayNoMatch`（不做静默 FIFO 兜底） |
+#### 7.1.1 工具执行审批与沙箱（fail-closed）✨ v0.22.4（A16）
+
+`MCPToolAdapter` 默认策略是 `ToolExecutionPolicy::RequireApproval`：没有任何放行配置时，工具调用在**发往 server 之前**就被拒绝（`ToolError::PermissionDenied`），远程工具永远不能在应用不知情的情况下执行。三种放行方式，按信任度递增/递减自选：
 
 ```rust
-use lc_testkit::{ReplayProvider, ReplayStrategy};
+use langchainrust::mcp::{MCPToolAdapter, ServerSandbox, ToolCallApprover};
 
-let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
-    .with_strategy(ReplayStrategy::Exact);
+// 1) 完全信任(内网自建 server / 测试):显式接受无人值守执行
+let trusted = MCPToolAdapter::new(client.clone(), def.clone())
+    .allow_unattended_execution();
+
+// 2) 沙箱:参数级白名单,由 ServerSandbox 的 ParamRule/EgressPolicy 判定
+let sandboxed = MCPToolAdapter::from_client(std::sync::Arc::new(client_stdio.clone()), def.clone())
+    .with_sandbox(std::sync::Arc::new(sandbox));
+
+// 3) 运行时审批门:每次 run 都问 approver,人拒绝则 PermissionDenied、请求不外发
+let guarded = MCPToolAdapter::new(client.clone(), def)
+    .with_approver(std::sync::Arc::new(my_human_approver));
 ```
 
-### 录播 → golden 数据集（评分桥） ✨ v0.24.0
+#### 7.1.2 官方 stdio 轨道：`StdioMcpClient` ✨ v0.22.4
 
-v0.24.0 起 lc-testkit 依赖 lc-evaluation,录播文件可以直接转成**评测数据集**:一条 `RecordedExchange` 映射成一条 `Example`,规则固定——请求历史里**最后一条 human 消息** → `input`,录到的 assistant 文本 → `reference`,非空工具结果按排名顺序 → `contexts`(让 RAGAS 类评估器也能给检索质量打分)。Agent 一轮用户提问会产生多条 exchange(包括纯工具调用、文本为空的),`is_scoring_candidate` 先过滤;`golden_dataset` 对漏网的坏行显式报错:
+对接本地子进程形态的官方 MCP server（Claude Desktop、Cursor 生态里的 `npx`/`uvx` server）。构造时 spawn 子进程并完成标准 `initialize` 握手，拿到 server 声明的 capabilities/serverInfo：
 
-| 错误 | 含义 |
-|---|---|
-| `GoldenError::NoUserMessage(i)` | 第 i 条交换里没有 human 消息 |
-| `GoldenError::EmptyReference(i)` | assistant 文本为空(纯工具轮次) |
+```rust
+use langchainrust::mcp::{StdioMcpClient, StdioCommand, MCPToolAdapter};
+use std::sync::Arc;
+use langchainrust::BaseTool;
 
-```rust,ignore
-use lc_testkit::{
-    golden_dataset, is_scoring_candidate, read_exchanges, write_golden_jsonl,
+// 等价于在命令行起: npx -y @modelcontextprotocol/server-everything
+let command = StdioCommand::new("npx")
+    .arg("-y")
+    .arg("@modelcontextprotocol/server-everything");
+
+// connect 是 Result:握手失败(子进程起不来/协议版本不支持)在此暴露
+let client = StdioMcpClient::connect(command).await?;
+
+// 也可显式指定版本协商策略与每请求超时(默认 Degrade + 60s)
+// let client = StdioMcpClient::connect_with(
+//     command, VersionPolicy::Reject, Duration::from_secs(30)).await?;
+
+let tools = client.list_tools().await?;
+let _ = client.ping().await?; // 官方 keep-alive 探活
+
+// stdio 客户端同样实现 McpToolClient,走 from_client 适配(fail-closed 同上)
+let adapter = MCPToolAdapter::from_client(
+    Arc::new(client.clone()), tools.remove(0),
+).allow_unattended_execution();
+
+client.close().await?; // 关闭子进程;连接中途死亡不会自动重连(connection_lost)
+```
+
+#### 7.1.3 官方 Streamable HTTP 轨道：`StreamableMcpClient` ✨ v0.22.4
+
+对接按官方 SDK 部署的远端 Streamable HTTP server：`initialize` 握手后由服务端分配 `Mcp-Session-Id`，之后每个请求/通知都带会话 id；传输层同时支持 JSON 与 SSE 两种响应内容协商，服务端可通过 HTTP 202 异步推通知。断线可 `reconnect()` 重建会话。
+
+```rust
+use langchainrust::mcp::{StreamableMcpClient, StaticBearerToken};
+use std::sync::Arc;
+
+// 无鉴权端点:握手 + 版本协商(默认 Degrade,每请求 60s 超时)
+let client = StreamableMcpClient::connect("http://127.0.0.1:8765/mcp").await?;
+
+// 显式策略/超时:
+// let client = StreamableMcpClient::connect_with(
+//     url, VersionPolicy::Degrade, Duration::from_secs(60)).await?;
+
+// 固定令牌(PAT/开发侧车):401 时自动失效重试一次
+let client = StreamableMcpClient::connect_with_token_provider(
+    "https://mcp.example.com/mcp",
+    Arc::new(StaticBearerToken("pat-xxx".to_string())),
+).await?;
+
+// 完整 OAuth 2.1 刷新语义:自己实现 BearerTokenProvider(见下节)
+let client = StreamableMcpClient::connect_token(
+    url, Arc::new(oauth_provider), VersionPolicy::Degrade, Duration::from_secs(60),
+).await?;
+
+client.reconnect().await?; // 会话失效后重新握手,拿新的 Mcp-Session-Id
+client.close().await?;
+```
+
+协议版本协商两条轨道共用 `VersionPolicy`：`Degrade`（默认，对端声明版本超出支持列表时降级到本库实现版本继续跑）与 `Reject`（严格模式，版本不符直接握手失败，错误码 `-32005`，stdio 下子进程一并关闭）。
+
+#### 7.1.4 OAuth 2.1 受保护远端 server ✨ v0.22.4
+
+官方 Streamable HTTP server 普遍以 OAuth 2.1 **资源服务器**（RFC 9728）形态鉴权。完整流程的机器部分由 lc-mcp 提供，需要人参与的部分（打开授权页、接收重定向回调）留给嵌入应用：
+
+1. 未带令牌的请求收到 `401` + `WWW-Authenticate: Bearer resource_metadata="…"` 质询——`OAuthChallenge::parse(header, ..)` 解析出资源元数据地址、realm、scopes；
+2. `discover_protected_resource(url)` / `discover_authorization_server(metadata_url)` 按 RFC 9728 / RFC 8414 发现授权服务器（元数据发现与令牌端点调用超时均为 10s）；
+3. 应用在浏览器里跑 **授权码 + PKCE（常伴随 DCR 动态客户端注册）** 流程：`code_challenge` 由调用方自己持有 verifier 计算，库不引入新加密依赖；
+4. `OAuthTokenClient::new(token_endpoint, client_id)` 做令牌交换：`exchange_authorization_code(code, redirect_uri, code_verifier)`、`refresh(..)`、`client_credentials(..)`；
+5. 实现 `BearerTokenProvider`（`token()` 取当前访问令牌；401 时传输层调用 `invalidate(token)` **恰好一次**后用新令牌重试，再 401 才上抛），挂到 `connect_with_token_provider`。固定令牌用内置的 `StaticBearerToken` 即可。
+
+#### 7.1.5 互操作与服务端官方传输
+
+- 0.22.4 补齐了官方 SDK keep-alive 依赖的 `ping` 处理，并实现完整 HTTP 状态矩阵（`400/404/405/406/415/401`）与 JSON/SSE 内容协商；对官方 **TypeScript SDK 1.30.0** 与 **Python SDK** 客户端/服务端四个方向互操作验证 4/4 通过。
+- 服务端除无状态的 `serve_http` 外，新增**官方 Streamable HTTP** 出口 `MCPServer::serve_streamable_http(listener)`（`Arc<MCPServer>` 上调用，立即返回端点 URL，后台任务 accept）：握手、`Mcp-Session-Id` 分配、202 通知、Bearer 质询齐全，官方 SDK 客户端可直连。可运行的最小例程见 `crates/lc-mcp/examples/streamable_echo_server.rs`（`cargo run -p lc-mcp --example streamable_echo_server`，支持 `--port` / `--bearer`），stdio 侧对应 `stdio_echo_server.rs`。
+
+---
+
+#### 7.1.6 MCPServer
+
+与 `StatelessMcpClient` 对称：将本地 `BaseTool` 暴露为 MCP Server。支持 `initialize` / `tools/list` / `tools/call`。
+
+```rust
+use langchainrust::{MCPServer, Calculator, BaseTool};
+use std::sync::Arc;
+
+let tool: Arc<dyn BaseTool> = Arc::new(Calculator::new());
+let server = MCPServer::new()
+    .with_tool(tool)
+    .with_server_info("my-tools", "0.1.0");
+
+server.serve_stdio().await?;
+```
+
+`server.handle_request(req)` 用于自定义传输层的单步 JSON-RPC 处理；`server.serve_http(listener)`（在 `Arc<MCPServer>` 上调用）把服务起成框架自研的无状态 HTTP 服务（`StatelessMcpClient::connect(url)` 直连，立即返回端点 URL），示例见 `crates/lc/examples/mcp_http_server.rs`；`server.serve_streamable_http(listener)` 起的是**官方 Streamable HTTP** 服务（官方 TS/Python SDK 可直连，见上方"互操作与服务端官方传输"），示例见 `crates/lc-mcp/examples/streamable_echo_server.rs`。
+
+#### 7.1.7 ConnectionManager（连接池） ✨ v0.15.0
+
+管理多个 `StatelessMcpClient` 的托管注册表，惰性构建、统一回收：
+
+```rust
+use langchainrust::mcp::{ConnectionManager, ServerSpec};
+
+let manager = ConnectionManager::new();
+manager.register(ServerSpec::new("files", "http://localhost:3001/mcp")).await?;
+manager.register(ServerSpec::new("tools", "http://localhost:3002/mcp").keep_alive()).await?;
+
+let client = manager.client("files").await?;  // 取某个 server 的客户端（惰性构建）
+manager.reap_idle().await;                     // 回收空闲句柄
+// manager.shutdown().await;                     // 统一关闭
+```
+
+#### 7.1.8 工具命名空间 / 发现 / 超时 ✨ v0.15.0
+
+- **`ToolNamespace`**:工具名自动加 `server:tool` 前缀,多 server 同名工具不冲突;`register(server, tools, conflict)` 返回命名空间化结果,可据此构造 `MCPToolAdapter::namespaced(...)`
+- **`ToolDiscovery`**:批量发现 + 健康检查,过滤掉不可用 server 的工具
+- **`ToolSpec`**:`timeout`(单次工具调用超时)、`max_retries` 等执行策略,超时命中熔断
+
+#### 7.1.9 ServerHealth / CircuitBreaker（健康与熔断） ✨ v0.15.0
+
+每个 server 有健康状态(`HealthStatus`)与熔断器:
+
+```rust
+use langchainrust::mcp::{CircuitBreaker, HealthStatus};
+
+let breaker = CircuitBreaker::new(5); // 连续 5 次失败 -> 熔断
+if !breaker.allow_request() {
+    // 熔断打开:直接短路,不再打后端
+} else {
+    match call_tool().await {
+        Ok(v) => breaker.record_success(), // 成功,自动重置计数
+        Err(_) => breaker.record_failure(),
+    }
+}
+```
+
+`ServerHealth` 记录延迟、错误率、最近一次探测时间,供上层做路由决策。
+
+#### 7.1.10 SamplingGuard（采样保护） ✨ v0.15.0
+
+对服务端采样请求(resources/sampling/createMessage)的递归防护:限制嵌套深度、整条采样链的 token 预算与总时长,防模型自行递归采样耗尽资源:
+
+```rust
+use langchainrust::mcp::SamplingGuard;
+
+let guard = SamplingGuard::new(5, 100_000) // 最大嵌套深度 5,整条链 token 预算 100k
+    .with_timeout(std::time::Duration::from_secs(60)); // 整条链总时长上限
+let lease = guard.enter(4000)?; // 进入一次采样,返回 SamplingLease,drop 时自动释放深度
+```
+
+#### 7.1.11 MCPGateway（网关） ✨ v0.15.0
+
+把多个 MCP server 聚合为一个统一入口,按 `server` 参数路由:
+
+```rust
+use langchainrust::mcp::{MCPGateway, GatewayServerSpec};
+
+let gateway = MCPGateway::new();
+gateway.register(GatewayServerSpec::new("files", "http://localhost:9001/mcp")).await?;
+gateway.register(GatewayServerSpec::new("db", "http://localhost:9002/mcp")).await?;
+gateway.sync_all().await?; // 拉取全部 server 的工具
+
+let tools = gateway.as_base_tools().await?; // 自动加 server 前缀,互不冲突
+```
+
+配套能力:
+- **`ServerSandbox`**:`ParamRule`(参数白名单/黑名单/类型校验)、`EgressPolicy`(出站策略,限制工具调用的网络/文件范围)
+- **`TenantGateway`**:多租户隔离,每租户独立的工具命名空间 + 配额 + 访问控制
+- **`ToolOrchestrator`**:工具 DAG 编排,声明依赖关系后自动排序/并行执行
+- **`MethodRateLimiter`**:client 侧方法级限流(命中即返回 -32002,不发网络请求)
+- **`VersionPolicy`**:协议版本协商策略,三条握手轨道共用——`Degrade`(默认,对端版本超出支持列表时降级到本库版本继续跑)/ `Reject`(严格,版本不符握手失败 `-32005`)
+
+#### 7.1.12 MCP Server 原语接线 ✨ v0.18.0
+
+client→server 原语(`resources/*` / `prompts/*` / `completion/complete`)为**注册制**:给 `MCPServer` 注册数据源后,对应方法返回真实数据;未注册仍返回 `method_not_found`(-32601,诚实边界)。`initialize` 握手时 `capabilities` 按实际注册项补齐(`tools` 恒声明)。
+
+```rust
+use langchainrust::mcp::{
+    MCPError, MCPServer, Resource, ResourceContent, ResourceProvider,
 };
+use std::sync::Arc;
 
-// 录播文件 → 过滤 → golden 数据集 → 入库的 eval/golden.jsonl
-let exchanges = read_exchanges("fixtures/recorded.jsonl")?;
-let scored: Vec<_> = exchanges.iter().filter(|e| is_scoring_candidate(e)).cloned().collect();
-let dataset = golden_dataset(&scored)?;
-write_golden_jsonl(&dataset, "eval/golden.jsonl")?;
+struct StaticResources;
 
-// 或一步到位读文件成数据集
-let dataset = lc_testkit::golden_dataset_from_file("fixtures/recorded.jsonl")?;
+#[async_trait::async_trait]
+impl ResourceProvider for StaticResources {
+    async fn list_resources(&self) -> Result<Vec<Resource>, MCPError> {
+        Ok(vec![Resource {
+            uri: "file:///README.md".into(),
+            name: "README".into(),
+            description: None,
+            mime_type: Some("text/markdown".into()),
+        }])
+    }
+    async fn read_resource(&self, uri: &str) -> Result<Vec<ResourceContent>, MCPError> {
+        let text = format!("content of {uri}");
+        Ok(vec![ResourceContent {
+            uri: uri.into(),
+            mime_type: Some("text/plain".into()),
+            text: Some(text),
+            blob: None,
+        }])
+    }
+}
+
+let server = MCPServer::new()
+    .with_tool(Arc::new(Calculator))
+    .with_resource_provider(Arc::new(StaticResources))
+    .with_prompt_provider(Arc::new(my_prompts))      // prompts/list + prompts/get
+    .with_completion_provider(Arc::new(my_completions)); // completion/complete
 ```
 
-零网络、无需 API key 的**离线冒烟跑**:用同一录播文件构造 FIFO `ReplayPredictor`,每条 reference 都会原样复现:
+server→host 方向的 `sampling::create_message` / `elicitation::create` 由 Server 发起、Host 执行: `MCPServer` 提供发起方法(`create_message` / `create_elicitation`),需注入回调(`with_sampling_handler` / `with_elicitation_handler`);未注入回调时返回明确错误,不静默。真实交互依赖宿主 UI/模型环境,由使用者经回调接入(测试用注入 mock 覆盖)。
 
-```rust,ignore
-use lc_evaluation::{EvalRunner, ExactMatch};
-use lc_testkit::{replay_golden_from_file, ReplayStrategy};
 
-let (dataset, replay) = replay_golden_from_file("fixtures/recorded.jsonl", ReplayStrategy::Fifo)?;
-let report = EvalRunner::new(vec![Box::new(ExactMatch)])
-    .run(&dataset, &replay)
-    .await?;
-assert!(replay.remaining() == 0);   // 每条样例都消费到了
-```
+### 7.2 A2A 智能体协议 ✨ v0.4.1
 
-`lc-testkit` 不是 facade 依赖,需要直接引(上面已把 dev-dependency 版本钉到 0.24.0);真模型的回归跑法见[评估章的 trace → golden → 回归门禁](#trace--golden-回归门禁--v0240)。
-
----
-
-<a id="a2a-agent-protocol"></a>
-## A2A 智能体协议 ✨ v0.4.1
-
-### 概念引入：A2A 是什么
+#### 7.2.1 概念引入：A2A 是什么
 
 [A2A](https://github.com/google/A2A)（Agent-to-Agent）是 Google 推出的智能体间互操作协议，解决"不同团队、不同厂商开发的智能体如何互相调用"的问题。LangChainRust 提供完整的 A2A 支持：Server 用于暴露智能体，Client 用于调用远程智能体，使用 JSON-RPC 2.0 风格的消息传递。
 
@@ -5916,7 +5322,7 @@ assert!(replay.remaining() == 0);   // 每条样例都消费到了
 
 分层定位：**A2A 管"Agent ↔ Agent 的通信"，MCP 管"Agent ↔ 工具 / 数据源的连接"**。两者常配合使用——MCP 提供工具，Agent 通过 A2A 互相协作，职责更清晰。
 
-### 协议流程与任务生命周期
+#### 7.2.2 协议流程与任务生命周期
 
 典型的 A2A 调用流程（发现 → 派活 → 跟进 → 收尾）：
 
@@ -5947,7 +5353,7 @@ Server 侧是**三个端点**（而非只有两个）：
 - `POST /` → 接收并处理 JSON-RPC 请求（`handle_a2a_request` / `handle_a2a_request_authenticated`）
 - `GET /events` → SSE 任务推送流（仅 `with_streaming` 启用后有事件）
 
-### A2AServer（暴露你的智能体）
+#### 7.2.3 A2AServer（暴露你的智能体）
 
 `A2AServer` 默认提供可插入任何 HTTP 框架（axum、actix、warp）的处理函数；启用 `lc-a2a` 的 `axum` feature 后还能直接 `serve` 起一个完整 HTTP 服务（见下文）。
 
@@ -5984,7 +5390,7 @@ let server = A2AServer::new(chain)
 
 **幂等与归属**：请求 metadata 里带 `message_id` 的 `tasks/send` 是幂等的——重试同一个 id 只会取回已创建的任务，不会把链跑两遍（在途 id 有原子预占，服务端 0.20.0 还修了竞争失败者不释放预占、把 id 永久"毒化"的 bug）；任务可带 `owner`，非属主调用 `tasks/get`、`tasks/cancel` 会被拒（`-32003`）。**0.25.0 起归属只信服务端签发的身份**：默认 `trust_metadata_owner=false`，客户端请求 metadata 里自报的 `owner` 一律忽略，属主由认证身份（`with_auth_identity` / `with_authenticator` → `Principal`）在 HTTP 边界一次性解析，并贯穿全部路由与 `/events` 订阅过滤；本地迁移如果确实要信任自报 owner，显式 `.with_trust_metadata_owner(true)`。
 
-### 开箱即用的 axum 服务（`axum` feature）
+#### 7.2.4 开箱即用的 axum 服务（`axum` feature）
 
 不想自己接 HTTP 框架时，给 `lc-a2a` 开 `axum` feature，直接起服务：
 
@@ -6002,7 +5408,7 @@ server.serve(8080).await?;           // B7(0.25)安全默认:绑 127.0.0.1:8080(
 
 **公网绑定注意（B7, 0.25 起）**：`serve` 只绑回环。要暴露到非回环地址,必须走 `server.serve_with(ServeConfig)`——非回环 bind 若未配置 bearer token(`ServeConfig.auth_token`,或 server 上 `with_auth_token`)且未显式 `insecure_public=true`,启动即拒绝(`refusing to serve A2A on non-loopback bind ... without a bearer token`);`insecure_public` 只留给有鉴权反代在前的部署。CORS 默认只放行 `http://localhost` / `http://127.0.0.1` 来源(0.22.0 审计前曾是任意来源;B7 起 `ServeConfig.cors_origins` 可配精确来源白名单)；面向公网部署请在 `ServeConfig` 收紧来源白名单,并在前置网关补 TLS 与速率限制。完整可运行示例见 `crates/lc/examples/a2a_http_server.rs`。
 
-### A2AClient（调用远程智能体）
+#### 7.2.5 A2AClient（调用远程智能体）
 
 ```rust
 use langchainrust::a2a::{A2AClient, A2AMessage};
@@ -6090,7 +5496,7 @@ let resp = client.post_request(A2ARequest::run_workflow(1, &wf)).await?;
 
 部署示例见仓库 `crates/lc/examples/a2a_http_server.rs`（axum HTTP 封装）。
 
-### v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
+#### 7.2.6 v1.0.1：多传输声明（supportedInterfaces） ✨ v0.22.0
 
 **解决什么问题**：v0.3 的 Agent Card 只能声明"一种协议版本 + 一种传输"——同时服务 JSON-RPC 和 HTTP+JSON 两类客户端时只能起两张卡。A2A v1.0.1 把单字段重构为 `supportedInterfaces[]`：一张卡声明多个 `(protocolVersion, transport, url)` 组合，每个接口还可以带企业租户标签。
 
@@ -6120,7 +5526,7 @@ assert!(card.is_v101());        // 卡片是否声明了 v1.0.1 接口
 let picked = card.negotiate(A2ATransport::HttpJson, &["1.0.1", "1.0"])?;
 ```
 
-### 卡片签名（JWS HS256） ✨ v0.22.0
+#### 7.2.7 卡片签名（JWS HS256） ✨ v0.22.0
 
 **解决什么问题**：Agent Card 是发现协议的核心——客户端拿它决定把任务发给谁、用什么协议。卡片被中间人篡改（换端点、降协议版本）就是一次供应链攻击。v1.0.1 提供卡片签名：签名前先把卡片 JSON 按 RFC 8785-lite 规范化（递归键排序），再打 HMAC-SHA256 紧凑型 JWS。
 
@@ -6151,7 +5557,7 @@ verify_card_jws(&card, &jws, secret)?;
 - **有效期由卡片自身的 `expiresAt` 字段承载**，签名不含时间戳声明；
 - `A2ATransport::Grpc` 目前只是卡片上可声明的枚举值，crate 内没有 gRPC 线协议绑定（tonic codegen 依赖 protoc、非 hermetic，自 0.22.0 推迟至今未做）；HTTP+JSON 与 JSON-RPC 两条绑定可独立使用。
 
-### 企业级扩展积木 ✨ v0.13.0
+#### 7.2.8 企业级扩展积木 ✨ v0.13.0
 
 基础三件套（Card / send / get）之外，`lc-a2a` 还带一整套面向"成百上千个 Agent 互联"的积木。它们都是独立类型、按需取用，不影响最简用法：
 
@@ -6179,7 +5585,7 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 // 跨重试要恰好一次语义,改用 send_task_with_message_id
 ```
 
-### 关键行为与边界
+#### 7.2.9 关键行为与边界
 
 | 能力 | 状态 |
 |---|---|
@@ -6200,14 +5606,14 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 | OAuth / OIDC | ⛔ 内置仅 Static Bearer；联邦场景需在前置网关自接 |
 | TLS 终结 | ⛔ 应用层不提供，生产部署放在反向代理 / 网关层 |
 
-### 生产注意点
+#### 7.2.10 生产注意点
 
 - 默认任务存储是内存级，进程重启即丢失；生产环境实现 `TaskStore` trait 接数据库（记得把 `compare_and_update` 覆盖成数据库的原子条件更新）。
 - 鉴权用 `with_auth_token` 或前置网关注入；别让任意任务 ID 可被查询 / 取消——多租户场景给请求 metadata 带 `owner`。
 - 客户端在非 HTTPS 地址上只会警告，跨网部署请用 `builder().enforce_https(true)` 或直接上 TLS 网关。
 - 部署示例见仓库 `crates/lc/examples/a2a_http_server.rs`（axum HTTP 封装）。
 
-### 怎么选
+#### 7.2.11 怎么选
 
 - 跨组织 / 跨服务、需要标准协议互操作时用 A2A。
 - 只是进程内多个 Agent 协作，优先用本地编排（交接、派活收结果），别引入网络协议。
@@ -6216,249 +5622,1001 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 ---
 
 <a id="with_structured_output"></a>
-## with_structured_output ✨ v0.4.1
 
-### 概念引入：给个 schema，一步拿到强类型对象
 
-传统做法是"提示模型输出 JSON → 手动解析 → 出错容错 → 再转成类型"，又烦又容易坏——模型输出常常裹着 JSON 代码块、带点废话、偶尔格式不标准。`with_structured_output` 让框架替你完成整套流程：**给个 schema，一步拿到强类型对象**。
+> **相关能力延伸:** [MCP 协议原语（见附录）](#附录16-mcp-协议原语)
 
-什么时候用：
+## 第八章 · 安全、可观测与质量
 
-- 需要把模型输出解析成程序可直接使用的结构体
-- 想省掉手写"提示 JSON → 解析 → 容错 → 转换"的胶水
-- 对输出字段有强类型要求，编译期就想要类型安全
+### 8.1 Guardrails
 
-### 工作机制：两套同名 API，别混用
-
-框架里有**两个** `with_structured_output`，名字相同、形状不同：
-
-1. **Provider 自带方法（工具调用约束，推荐）**：`OpenAIChat`（以及 `OpenAICompatibleChat`、`OllamaChat` 等）上的 `chat.with_structured_output::<T>()`——**同步**返回一个 `StructuredOutputMethod<T>`，它把 schema 作为一个 strict 工具声明绑给模型，再用消息调用 `invoke`，从结构化工具参数里直接解析出 `T`：
-
-   ```rust
-   use schemars::JsonSchema;
-   use serde::Deserialize;
-   use langchainrust::language_models::openai::OpenAIChat;
-   use langchainrust::schema::Message;
-
-   #[derive(JsonSchema, Deserialize)]
-   struct Answer {
-       city: String,
-       population: u64,
-   }
-
-   let chat = OpenAIChat::new(config);
-   let method = chat.with_structured_output::<Answer>();        // 注意:不 async,返回的是"方法对象"
-   let answer: Answer = method
-       .invoke(vec![Message::human("日本人口最多的城市是哪座?人口多少?")])
-       .await?;
-   ```
-
-2. **泛用 trait 方法（任意 chat 模型，提示注入 + 容错解析）**：`StructuredOutputExt` 对所有 `BaseChatModel` 自动实现，入参是**手写 JSON Schema + 提示词**，把 schema 注入 system 消息，输出经 `JsonOutputParser` 自动剥 markdown 代码块、容错修复后反序列化：
-
-   ```rust
-   use langchainrust::StructuredOutputExt;
-
-   let schema = serde_json::json!({
-       "type": "object",
-       "properties": { "city": {"type":"string"}, "population": {"type":"integer"} },
-       "required": ["city", "population"]
-   });
-   let answer: Answer = chat
-       .with_structured_output::<Answer>(schema, "日本人口最多的城市是哪座?人口多少?")
-       .await?;
-   ```
-
-选型很简单：OpenAI 及其兼容后端用第 1 种（走原生工具调用，不依赖模型自觉遵守文本格式）；模型不支持工具调用、或你只拿到一个泛型 `BaseChatModel` 时用第 2 种。
-
-### 流式版本 stream_structured_output
-
-`StreamingStructuredOutputExt` trait（同样对所有 `BaseChatModel` 自动实现）提供流式版：JSON 一边生成一边经 `PartialJsonParser` 增量解析，**字段一出来就能用**——每成功解析一次就 yield 一个 `T`（已生成的字段填值，其余为默认），流末给最终完整对象。适合前端边收边渲染，比如"书名先出来、作者后出来、年份最后"。
+输入/输出验证，用于阻止恶意输入和敏感信息泄露。实现 `InputGuardrail` / `OutputGuardrail`，或使用内置验证器，然后用 `GuardedAgent` 包装 Agent。
 
 ```rust
-use langchainrust::StreamingStructuredOutputExt;
+use langchainrust::guardrails::{
+    GuardrailsConfig, MaxLengthGuardrail, SensitiveInfoGuardrail, GuardedAgent,
+};
+use langchainrust::{BaseAgent, AgentExecutor, FunctionCallingAgent, OpenAIChat, OpenAIConfig};
+use std::sync::Arc;
+
+let config = GuardrailsConfig::new()
+    .with_input(Arc::new(MaxLengthGuardrail::new(1000)))    // 限制输入长度
+    .with_output(Arc::new(SensitiveInfoGuardrail::new()));  // 阻止敏感输出
+
+let agent = FunctionCallingAgent::new(OpenAIChat::new(OpenAIConfig::default()), vec![], None);
+let executor = Arc::new(AgentExecutor::new(
+    Arc::new(agent) as Arc<dyn BaseAgent>,
+    vec![],
+));
+
+let mut guarded = GuardedAgent::new(executor, config);
+let result = guarded.invoke("Summarize this content".to_string()).await?; // 验证输入 -> Agent -> 验证输出
+let violations = guarded.violations();
+```
+
+内置验证器：`MaxLengthGuardrail`（输入长度）、`ForbiddenWordsGuardrail`（禁用词）、`SensitiveInfoGuardrail`（API 密钥 / 邮箱 / 信用卡 / 关键词，可通过 `with_keywords` 扩展）。也可以使用 `GuardrailRunner` 手动驱动验证。
+
+#### 8.1.1 类型分离的护栏结果 ✨ v0.15.0
+
+护栏结果按输入/输出分开成两个类型,由类型系统强制安全规则:
+
+- **`InputGuardrailResult`** —— 只有 `Pass` / `Block`(输入侧不存在 `Modify`)
+- **`OutputGuardrailResult`** —— `Pass` / `Block` / `Modify`
+
+「Modify 只适用于输出」由编译器保证,而非运行时约定。`GuardrailError::Blocked` 携带 `reason` / `partial` / `suggestion`,失败时可带部分内容做降级展示。
+
+#### 8.1.2 Guardable（解耦包装目标） ✨ v0.15.0
+
+`GuardedAgent` 不再只认 `AgentExecutor`。`Guardable` trait(`invoke_str` / `stream_str`)让**任意可执行单元**都能被护栏包裹:
+
+- `AgentExecutor` 直接实现 `Guardable`
+- 任意 `BaseChain` 经 `ChainGuardable` 适配
+- `GuardedAgent::from_chain` 提供链式入口
+
+```rust
+use langchainrust::guardrails::{GuardedAgent, GuardrailsConfig, MaxLengthGuardrail};
+use langchainrust::LLMChain;
+
+let chain = LLMChain::new(llm, "You are a helpful assistant");
+let mut guarded = GuardedAgent::from_chain(
+    Arc::new(chain),
+    GuardrailsConfig::new().with_input(Arc::new(MaxLengthGuardrail::new(1000))),
+);
+let result = guarded.invoke("Summarize this".to_string()).await?;
+```
+
+#### 8.1.3 流式护栏 ✨ v0.15.0
+
+`StreamingOutputGuardrail` trait 的 `validate_chunk(&ChunkContext) -> ChunkAction::{Pass, Replace, Block { reason }}`(v0.22.4 起入参收敛为携带分块与上下文的 `ChunkContext`)配合 `GuardedAgent::invoke_stream` 做两阶段检查:增量关键词检查 + 24 字符滑动窗口(防止跨块切断)+ 完整输出复查。有状态护栏(如扣留式脱敏)还可通过流末 flush 钩子吐出缓冲的尾部,避免尾段被丢弃。
+
+**拦截带原因,改写是独立一步。** `ChunkAction::Block { reason }` 里的 `reason` 会进入审计记录,并原样透传到 `GuardrailError::Blocked { reason }`,不再被一句通用的"blocked by a guardrail"盖掉。拦截之后、真正丢弃之前,链上每个护栏都会被问一次 `rewrite(&RewriteRequest { guardrail, reason, token, full })`:谁先返回 `Some(text)` 就用谁的改写继续往下发(审计记 `chunk rewritten after detection: <原检测原因>`),全部返回 `None` 则拦截成立。于是"检测"和"修复"可以由两个不同护栏承担——检测方只报 `Block { reason }`,`rewrite` 默认返回 `None`;专门的修复方按 `req.guardrail` 认领自己处理的那类违规。
+
+```rust
 use futures_util::StreamExt;
 
-let mut stream = chat
-    .stream_structured_output::<Answer>(schema, "列出三本 Rust 经典书")
-    .await?;
-while let Some(item) = stream.next().await {
-    let partial: Answer = item?;   // 累积中的部分结果
+let mut stream = guarded.invoke_stream("Write a long summary".to_string()).await?;
+while let Some(chunk) = stream.next().await {
+    let chunk = chunk?;   // GuardableChunk { token, is_final }
+    print!("{}", chunk.token);
+    if chunk.is_final {
+        break;            // 最后一个分块,结束流式输出
+    }
 }
 ```
 
-> 注意 trait 约束：流式版的 `T` 除 `Deserialize + Serialize` 外还需 `Clone + PartialEq + Unpin`（相邻解析结果去重）。
+#### 8.1.4 PII 脱敏护栏:改写而不是掐断 ✨ v0.22.4
 
-### 关键行为
+`SensitiveInfoGuardrail` 的处置是 **Block**——输出里只要出现疑似 PII,整段回答被拦下。但客服工单摘要、对话转述这类场景要的是"内容照流、PII 消失":v0.22.4 新增的 `PiiRedactionGuardrail` 走输出侧 `Modify` 通道,把命中的标识符替换成固定标记后放行。
 
-| 行为 | 说明 |
-|---|---|
-| schema 定义 | 用 Rust 结构体 + `JsonSchema` / `Deserialize` 派生声明输出结构（provider 方法自动 `schema_for!`） |
-| 工具调用约束 | `OpenAIChat` 等的方法把 schema 绑成 strict 工具，从 tool 参数直接解析，不靠文本格式 |
-| 泛用回落 | `StructuredOutputExt` 对任意模型注入 schema 提示 + `JsonOutputParser` 容错解析 |
-| 类型安全 | 返回编译期确定的强类型，不手写解析 |
-| 流式版本 | `stream_structured_output` + `PartialJsonParser` 边生成边解析，产出部分结果流 |
+| `PiiKind` | 识别内容 | 替换为 | 误报防护 |
+|---|---|---|---|
+| `Email` | 邮箱 | `[REDACTED_EMAIL]` | 词边界 + 域名形态 |
+| `Phone` | 中国大陆手机号 `1[3-9]` 开头 11 位,含 `+86`/`86`/连字符前缀 | `[REDACTED_PHONE]` | 词边界,长数字串中的 11 位子串不命中 |
+| `NationalId` | 18 位身份证号(末位可为 X) | `[REDACTED_NATIONAL_ID]` | **GB 11643 加权校验码**,校验不过原样保留 |
+| `CreditCard` | 15–19 位银行卡/信用卡(允许空格/连字符分隔) | `[REDACTED_CREDIT_CARD]` | **Luhn 校验**,不过校验不动 |
+| `IpV4` | 点分 IPv4 | `[REDACTED_IP]` | 四段每段 ≤255,且排除邻接数字/点(版本号等) |
 
-### 怎么选
-
-- OpenAI / 兼容后端、要"一次拿完整结果、类型确定"→ `chat.with_structured_output::<T>()` 再 `invoke(messages)`。
-- 要"边生成边用、逐字段渲染"→ `stream_structured_output(schema, prompt)`。
-- 要引擎在解码层就**保证**合法 JSON（而不是事后解析）→ 下一节 `with_json_schema_output`。
-- 只是想解析模型已有的输出（不是让模型按 schema 返回）→ 直接用 `JsonOutputParser` 或 `TypedOutputParser` 等解析器。
-
-### 原生 JSON Schema 引擎约束（with_json_schema_output）✨ v0.21.0
-
-上面两条路径都是**拿到输出后再解析**——模型仍可能给出不合 schema 的内容。`with_json_schema_output` 把 schema 直接下发给 OpenAI（`response_format: {type: "json_schema", strict: true}`），由**引擎在解码时约束**每个 token 只能生成合乎 schema 的 JSON，从源头消灭格式错误。
+检测按"最长最特异优先"排序(卡→身份证→手机→邮箱→IP),避免短模式在长标识符内部先命中。这是**纯正则离线识别、零模型调用**,代价是覆盖面就是这五类——姓名、住址等语义 PII 不在其中。
 
 ```rust
-use schemars::JsonSchema;
-use serde::Deserialize;
-use langchainrust::language_models::openai::OpenAIChat;
-use langchainrust::schema::Message;
+use langchainrust::guardrails::{
+    GuardrailsConfig, PiiRedactionGuardrail, PiiKind,
+};
+use std::sync::Arc;
 
-#[derive(Debug, Deserialize, JsonSchema)]
-struct Person {
-    name: String,
-    age: u32,
-}
+// new() = 五类全开;only([...]) 收窄;disable(PiiKind::IpV4) 关单类
+let pii = Arc::new(
+    PiiRedactionGuardrail::new()
+        .only([PiiKind::Email, PiiKind::Phone, PiiKind::CreditCard])
+        .with_hold_back(48),                 // 流式扣留窗口,默认 48 字符
+);
 
-let chat = OpenAIChat::new(config);
-let method = chat.with_json_schema_output::<Person>(); // 自动生成 strict json_schema
-let person: Person = method.invoke(vec![Message::human("Introduce Alice, 30.")]).await?;
+// 同一个类型同时实现 OutputGuardrail 与 StreamingOutputGuardrail:
+let config = GuardrailsConfig::new()
+    .with_output(pii.clone())              // 整段复查:redact() 后 Modify 放行
+    .with_streaming(pii);                  // 流式增量:扣留式脱敏
+// 也可以不当护栏用,直接拿到改写后的字符串:
+let safe = PiiRedactionGuardrail::new().redact("联系我 a@b.com 或 13812345678");
 ```
 
-**关键行为**：
+**流式为什么需要"扣留"(hold-back):** 已经发给用户的字符收不回来,而标识符可能被模型切成两个块吐出(`"138"` + `"12345678"`),逐块正则永远慢半拍。护栏因此始终扣留末尾 48 个字符(覆盖最长的 19 位卡号带分隔符、18 位身份证),等后续文本证明"标识符不在继续写"才释放前面的安全部分;流末由 `flush()` 吐出缓冲区尾部。
 
-- schema 由 **schemars 1.x** 从 Rust 类型生成;`make_strict_schema` 自动补 `additionalProperties: false` + 全字段 `required`(strict 模式要求)
-- 提供该方法的只有 `OpenAIChat` 与 v0.22.4 起的 `OpenAICompatibleChat`(后者原样转发 `response_format`,Groq/OpenRouter/xAI 等后端在底层模型支持时才生效);不支持时服务端会显式回 4xx,不静默降级。`OllamaChat` 等其他 provider 只有工具调用版 `with_structured_output`
-- `AnthropicChat` / `GeminiChat` 各有自己的结构化输出方法类型(`AnthropicStructuredOutputMethod` / `GeminiStructuredOutputMethod`)
-- `PartialJsonParser` 流式增量解析保留为泛用 fallback 与流式路径
+- **`ChunkAction::Replace("")`(空串)= "先扣住这个 token"**,每个干净流的早期分块都会发生,所以**不计审计**;非空 Replace(真改写)才立即记一次干预。
+- `flush()` 返回 `FlushOutput` 三态:`Empty`(无缓冲)/ `Release(text)`(原文释放,不记审计)/ `Rewritten(text)`(尾部含脱敏标记,记一次干预)。`GuardedAgent::invoke_stream` 在流末自动调 `flush_stream()` 并把尾部 delta 当普通分块发出,再跑整段输出复查。
+- **一个护栏实例只能服务一条被守护的流**(缓冲状态存在实例内部的 `Mutex` 里);`GuardrailsConfig` 在 `GuardedAgent::new` 时被消费,并发流请各自建实例。上面 output/streaming 共用同一实例是可以的(整段 `validate` 不碰流式状态),但不要跨流共享。
+- `with_hold_back(n)` 可调小以降低输出延迟,代价是标识符异常分散地跨块时可能漏放。
+
+#### 8.1.5 Schema 输出护栏:边生成边验 JSON ✨ v0.22.4
+
+结构化输出的老问题:模型把 JSON 写坏(类型错、缺必填、多吐字段),要等整段生成完、下游 `serde` 反序列化炸掉才发现——钱已经花了,流式 UI 也已经把坏数据亮给了用户。`SchemaOutputGuardrail` 把输出绑死在一份 JSON Schema 上(和 `StructuredOutput<T>` / `schemars::schema_for!` 同源),**流式期做宽松增量校验提前拦确定性错误,流末做严格终检**。
+
+```rust
+use langchainrust::guardrails::{GuardrailsConfig, SchemaOutputGuardrail};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use std::sync::Arc;
+
+#[derive(Deserialize, JsonSchema)]
+struct Person { name: String, age: u32 }
+
+// 方式一:让 schemars 从类型派生;方式二:SchemaOutputGuardrail::new(schema_value)
+let rail = Arc::new(SchemaOutputGuardrail::for_type::<Person>());
+let config = GuardrailsConfig::new()
+    .with_streaming(rail.clone())   // 无状态、Clone,同一实例注册两次安全
+    .with_output(rail);
+// schemars 默认不输出 additionalProperties:false,护栏默认仍拒绝未声明字段;
+// 想放开:SchemaOutputGuardrail::for_type::<Person>().allow_additional_properties()
+```
+
+**"未声明字段"是按整份组合判断的。** 合成出来的 `additionalProperties:false`(schema 没写这个关键字、`strict_properties` 开着)不会只看当前这一层 `properties`,而是把 `allOf`/`anyOf`/`oneOf` 分支和它们的 `$ref` 目标一起算进来——schemars 给 `#[serde(flatten)]` 生成的形状正是"外层 `properties` + 一个 `allOf` 分支装着被展平的字段",只按当前层判断会把合法字段当成多余字段拒掉。两点边界:`additionalProperties: false` 是显式写下的,按 JSON Schema 语义只对本 schema 对象生效,仍按字面执行;schema 里有 `patternProperties` 时不做这个合成判断(本护栏不求值正则,判不了就闭嘴,不误伤)。
+
+**每次拦截都附"期望形状"。** 阻断原因末尾会拼上一份由 schema 派生的可填充 JSON 骨架(`; expected shape: {...}`,如 `{"name":"","age":0}`),`const`/`enum` 取第一个取值,联合类型取第一个分支,`allOf` 合并各分支的对象字段。只有"哪儿错了"不够用,"该长什么样"才是调用方(或把消息回灌给模型的重试循环)能直接动手的部分。
+
+**两阶段各自拦什么(刻意不同的严格度):**
+
+| 检查项 | 流式增量(`validate_chunk` 看累计原文) | 流末终检(`validate_complete`) |
+|---|---|---|
+| 还不是合法 JSON / 括号没闭合 | 放行(文档还在写) | 阻断 |
+| 已成形值类型错误(`age:"x"`) | **立即 Block** | 阻断 |
+| 未声明属性(`strict_properties` 默认开) | **立即 Block** | 阻断 |
+| 缺必填字段 | 容忍 | 阻断 |
+| `enum`/`const` 不匹配、oneOf 计数 | 基本容忍(oneOf 零匹配会拦) | 阻断 |
+| 长度/范围/条数边界 | 无意义("3"还可能变成"30") | 阻断 |
+| ` ```json ` 围栏与前后散文 | — | 容忍,自动抽取 JSON 切片 |
+
+增量解析走的是结构化输出章同款的 `PartialJsonParser`(容错、可修复半截 JSON);流式 Block 故意不带原因,精确的 `$.age: expected type integer, got string` 这类路径化报错由流末终检给出。终检支持的 Schema 子集覆盖普通 Rust 类型经 schemars 1.x 产出的全部常见结构:type、properties/required/additionalProperties、items、enum/const、oneOf/anyOf/allOf、本地 `$ref`/`$defs`、长度与数值边界。
+
+它和 provider 侧 `response_format` / `with_json_schema_output` 是**两道独立的门**:后者是"请求模型按 schema 写"(不是所有后端支持),前者是"写完之后验证"(任何后端都能挂),两者可叠加;与 `with_structured_output`(工具绑定式结构化)也不冲突——护栏作用于最终文本,不挑生成路径。
+
+#### 8.1.6 审计持久化 ✨ v0.15.0
+
+`AuditSink` trait + `FileAuditSink`(JSON Lines 追加式)把违规记录落盘,供事后分析:
+
+```rust
+use langchainrust::guardrails::audit::FileAuditSink;
+
+let config = GuardrailsConfig::new()
+    .with_output(Arc::new(SensitiveInfoGuardrail::new()))
+    .with_audit_sink(Arc::new(FileAuditSink::new("guardrails.log")?));
+```
+
+`violations` 有界(`MAX_VIOLATIONS = 1000`),可 `clear_violations()` 清空。`SensitiveInfoGuardrail` 支持挂 LLM 裁判(`with_judge`,复用 `SensitiveJudge` / `LlmSensitiveJudge`)做上下文敏感检测,并对高误报词(`password`/`密码`/`token`/`secret`)降级为仅告警。
+
+#### 8.1.7 Retrieval Rail(检索护栏)✨ v0.21.0
+
+**解决什么问题**：输入输出护栏守住了用户消息和模型回复,但 RAG 检索回来的文档也是不可信输入——外部网页/PDF 里可能埋着 "ignore all previous instructions" 这类提示注入。RetrievalRail 对检索结果做**批量注入检测**(模式库与 `PromptInjectionHook` 共享),三种处置模式:
+
+| 模式 | 行为 | 适用 |
+|------|------|------|
+| `Flag`(默认) | 保留文档,metadata 打标记 `retrieval_rail_flagged` | 保守,先观察 |
+| `Redact` | 内容替换为 `[REDACTED by retrieval rail: ...]` | 保留条数、去掉内容 |
+| `Drop` | 直接从结果集移除 | 强隔离 |
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{GuardedRetriever, RetrievalRail, RailAction};
+use langchainrust::retrieval::{RetrieverTrait, SemanticCacheConfig, CachedRetriever};
+
+// 直接扫描(不改变行为,拿到报告):
+let mut results = /* Vec<SearchResult> */;
+let report = RetrievalRail::default().scan(&mut results);
+println!("flagged={} redacted={} dropped={}", report.flagged, report.redacted, report.dropped);
+
+// 装饰任意 RetrieverTrait:
+let guarded = GuardedRetriever::new(
+    Arc::new(inner_retriever),            // 你的底层 retriever
+    RetrievalRail::new(RailAction::Drop),
+)
+.with_audit_sink(audit_sink);             // 可选:命中写审计
+
+// 与语义缓存叠加:护栏放缓存内侧(先过滤再入缓存,防污染)
+let cached = CachedRetriever::new(
+    Arc::new(guarded),
+    Arc::new(embedder),
+    SemanticCacheConfig::new(),
+);
+// cached 实现了 RetrieverTrait,可直接接入 RAGPipeline
+```
+
+**关键行为**:无命中时零改动;`with_patterns(vec![...])` 可追加自定义模式;词法/语义缓存条目永远是护栏过滤后的干净结果。
+
+#### 8.1.8 AI 透明披露(disclose)✨ v0.21.0
+
+对齐 **EU AI Act 第 50 条**:与 AI 系统交互时应告知用户。提供的是**能力**而非强制——是否调用由应用决定。
+
+```rust
+use std::sync::Arc;
+use langchainrust::guardrails::{disclose, DisclosureConfig, AuditSink};
+
+let audit: Arc<dyn AuditSink> = /* 你的 AuditSink(如 FileAuditSink) */;
+let config = DisclosureConfig::new()
+    .with_statement("{system} is an AI assistant. Responses may contain errors.") // 支持 {system} 占位符
+    .with_session_disclosed(false);
+
+// 会话开始时调用一次:渲染文案 + 写审计 + 返回渲染后文本
+let text = disclose(&audit, &config, "support-bot", Some("trace-1")).await;
+// text = "support-bot is an AI assistant. Responses may contain errors."
+```
+
+披露失败只记告警不抛错(fire-and-forget),不会阻断业务请求。
 
 ---
 
-<a id="filevectorstore"></a>
-## FileVectorStore ✨ v0.4.1
 
-基于 JSON 持久化的向量存储。填补了 InMemory（不持久化）与外部数据库（过于重量级）之间的空白。
+### 8.2 回调
 
-它把**向量 + 文档**序列化成 JSON 落到磁盘文件：进程退出数据不丢，重启后用同一个 `new(path, dim)` 就能把上次的数据加载回来；不需要装任何数据库，也没有网络依赖。适合演示、离线、小规模本地知识库这类「要持久化、但不想上服务」的场景。
+回调系统让你在 LLM 调用的关键节点（开始、结束、出错、流式 token）插入自定义逻辑，用于日志、追踪、监控。`CallbackManager` 管理多个处理器，按顺序触发。
 
-工作流：`FileVectorStore::new(path, 4).await` 指定落盘路径和向量维度（**创建是 async，需 `.await`**）→ `add_documents(docs, embeddings)` 存一批「文档 + 向量」→ `similarity_search(&query, k)` 给查询向量取 top-k。写操作自动落盘，不用手动保存。
+#### 8.2.1 CallbackManager
 
-### 创建与加载
-
-| 参数 | 含义 |
-|---|---|
-| `path` | JSON 文件路径（如 `./vectors.json`） |
-| `dim` | 向量维度（如 4），建库时固定 |
-
-加载方式：用相同的 `path` + `dim` 再调一次 `FileVectorStore::new(path, dim).await`，即可把上次落盘的数据读回来。维度在建库时固定，之后 `add_documents` 塞入维度不一致的向量会直接报错，防止污染同一份索引。
-
-### 用法
+管理多个回调处理器，支持组合使用（如同时输出到控制台和 LangSmith）：
 
 ```rust
-use langchainrust::{FileVectorStore, VectorStore, Document, MockEmbeddings};
-use std::path::PathBuf;
+use langchainrust::{CallbackManager, StdOutHandler, LangSmithHandler};
+use std::sync::Arc;
 
-let path = PathBuf::from("./vectors.json");
-let store = FileVectorStore::new(path, 4).await?;  // 4 维(async 创建)
-
-let docs = vec![
-    Document::new("Rust focuses on safety and performance").with_id("rust"),
-    Document::new("Python is great for rapid development").with_id("python"),
-];
-let embeddings = vec![
-    vec![1.0, 0.0, 0.0, 0.0],
-    vec![0.0, 1.0, 0.0, 0.0],
-];
-let ids = store.add_documents(docs, embeddings).await?;
-
-let query = vec![0.9, 0.1, 0.0, 0.0];
-let results = store.similarity_search(&query, 2).await?;
-
-// 持久化：文件自动写入；重启时使用 new(path, dim) 加载
-store.clear().await?;
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(LangSmithHandler::from_env()?));
 ```
 
-**特性**：原子写入（tmp+rename）、维度验证、跨实例持久化。
+#### 8.2.2 StdOutHandler
 
-### 关键行为
+输出到标准输出（用于调试）。最简单的回调，直接打印 LLM 的输入输出。
+
+```rust
+use langchainrust::StdOutHandler;
+
+let handler = StdOutHandler::new();
+```
+
+#### 8.2.3 FileCallbackHandler
+
+输出到文件。支持 JSON 格式（便于程序解析）和文本格式（便于人阅读）。
+
+```rust
+use langchainrust::{FileCallbackHandler, LogFormat};
+
+// JSON 格式
+let handler = FileCallbackHandler::new("trace.json", LogFormat::Json);
+
+// 文本格式
+let handler = FileCallbackHandler::new("trace.log", LogFormat::Text);
+```
+
+#### 8.2.4 CallbackHandler 生命周期 ✨ v0.15.0
+
+实现 `CallbackHandler` 即可接入回调系统。每个 Run 有三段生命周期回调：`on_run_start` → `on_run_end` / `on_run_error`；组件级钩子（`on_llm_start/end/new_token/thinking/error`、`on_chain_*`、`on_tool_*`、`on_retriever_*`）可选覆盖，默认空实现。`StdOutHandler` 的 `verbose` 开关控制是否打印组件级细节。
+
+> **v0.22.4**：Agent 执行器在**规划阶段**（`BaseAgent::plan` / `plan_stream`，含 ReAct 与 Function-Calling 每一轮规划）也会带上当前 Run 的回调配置——此前规划 LLM 调用对回调/追踪不可见，现在 `on_llm_*` 钩子、LangSmith 与 OTel 都能收到这些调用。注意这是 `BaseAgent::plan`/`plan_stream` trait 方法签名的破坏性变更：末尾新增 `config: Option<&RunnableConfig>` 参数，自定义实现需同步更新（执行器内部已自动传入，直接使用内置 Agent 不受影响）。
+
+#### 8.2.5 LangSmith 追踪
+
+LangSmith 是 LangChain 的官方追踪平台，用于监控和调试 LLM 应用。
+
+##### 8.2.5.5 环境变量
+
+```bash
+export LANGSMITH_API_KEY="ls_xxxxx"       # 必填
+export LANGSMITH_PROJECT="my-project"      # 项目名称
+export LANGSMITH_TRACING="true"            # 启用追踪
+export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"
+```
+
+##### 8.2.5.6 使用 LangSmithHandler
+
+```rust
+use langchainrust::{CallbackManager, LangSmithHandler, StdOutHandler};
+use std::sync::Arc;
+
+// 从环境变量自动配置
+let langsmith = LangSmithHandler::from_env()?;
+
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(StdOutHandler::new()))
+    .add_handler(Arc::new(langsmith));
+```
+
+##### 8.2.5.7 手动配置
+
+```rust
+use langchainrust::{LangSmithHandler, LangSmithConfig};
+
+let config = LangSmithConfig {
+    api_key: "ls_xxxxx".to_string(),
+    project: "my-project".to_string(),
+    endpoint: "https://api.smith.langchain.com".to_string(),
+    tracing: true,
+    workspace_id: None,
+};
+
+let handler = LangSmithHandler::new(config);
+```
+
+##### 8.2.5.8 LangSmith 功能
+
+| 功能 | 说明 |
+|---------|-------------|
+| **追踪** | 记录每次 LLM 调用 |
+| **监控** | 查看 token 用量、延迟 |
+| **调试** | 比较不同版本输出 |
+| **评估** | 测试集评估 |
+| **分享** | 分享追踪链接 |
+
+---
+
+#### 8.2.6 OtelHandler
+
+将 LLM / Chain / Tool / Retriever 的开始/结束/错误事件转换为 OpenTelemetry span。需要 `opentelemetry` feature 和已配置的全局 tracer provider。
+
+```toml
+[dependencies]
+langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
+```
+
+```rust
+use langchainrust::{CallbackManager, OtelHandler};
+use std::sync::Arc;
+
+// set tracer provider first: opentelemetry::global::set_tracer_provider(...)
+let manager = CallbackManager::new()
+    .add_handler(Arc::new(OtelHandler::from_global("langchainrust")));
+// llm.with_callbacks(Arc::new(manager));
+```
+
+嵌套 span；导出到 Jaeger / Tempo / Grafana。
+
+**OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
+
+```toml
+langchainrust = { version = "0.28.0", features = ["otlp"] }
+```
+
+```rust
+// 读环境变量自建 tracer provider,返回的 guard 活到进程结束(drop 时 flush)
+let _otlp = langchainrust::callbacks::otlp::install_otlp_pipeline()?;
+// 环境变量:OTEL_EXPORTER_OTLP_ENDPOINT(默认 http://localhost:4318,自动拼 /v1/traces)
+// OTEL_EXPORTER_OTLP_HEADERS(k1=v1,k2=v2)、OTEL_EXPORTER_OTLP_TIMEOUT(默认 10s)
+// OTEL_SERVICE_NAME(默认 langchainrust);自定义参数用 install_otlp_pipeline_with(OtlpConfig)
+```
+
+最小可运行例程:`crates/lc/examples/otel/otlp_tracing.rs`(`--features otlp`)。
+
+**gen_ai 语义约定对齐 ✨ v0.21.0**：span 属性对齐 OpenTelemetry GenAI 语义约定（development 状态）——`gen_ai.system`、`gen_ai.request.model`、`gen_ai.request.max_tokens` / `gen_ai.request.temperature`、`gen_ai.response.finish_reason`、`gen_ai.response.model`、token 用量 `gen_ai.client.token.usage.prompt_tokens` / `completion_tokens`，以及扩展属性 `gen_ai.usage.cache_read.input_tokens` / `gen_ai.usage.reasoning.output_tokens`（provider 有上报才填）。LLM 调用 span 的 `gen_ai.operation.name = "chat"`，检索 span 为 `"retrieve"`，工具 span 携带 `gen_ai.tool.name`（`gen_ai.tool.*` 为扩展命名空间，标准稳定后迁移）。Langfuse / Grafana 等消费方可直接按 `gen_ai.*` 属性过滤聚合。
+
+---
+
+<a id="evaluation"></a>
+
+### 8.3 Token Counter
+
+**解决什么问题**：LLM 按 token 计费，但 token 数不等于字符数——一段中文、一段代码、一段英文的 token 密度各不相同。想回答"这一轮花了多少 token、多少钱"、发请求前估算 token 数（用来截断超长文本）、或自动累计每次调用的用量，都需要专门的工具。Token Counter 相关组件把"计数 → 追踪 → 计价"串成一条链。
+
+```rust
+use langchainrust::{TokenTrackingLLM, ModelPricing, OpenAIChat, OpenAIConfig, BaseChatModel};
+use langchainrust::schema::Message;
+
+let tracked = TokenTrackingLLM::for_openai(OpenAIChat::new(OpenAIConfig::default()))?;
+
+let result = tracked.chat(vec![Message::human("hi")], None).await?;
+
+let usage = tracked.get_usage().await;                               // prompt / completion / total tokens
+let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await; // USD
+```
+
+#### 8.3.1 四个组件各管什么
+
+| 组件 | 作用 | 什么时候用 |
+|---|---|---|
+| `TiktokenCounter` | 用 OpenAI 同款分词算法精确计数（cl100k_base） | 需要精确 token 数（计费、对齐上下文窗口） |
+| `CharRatioCounter` | 没有 tiktoken 时的粗略估算——按字符数量比例推算（中文场景常用） | 快速估算、拿不到精确分词器时兜底 |
+| `TokenTrackingLLM` | 包装任意模型，自动记录每次调用的 token 用量并累计 | 想自动追踪累计用量，不想手动算 |
+| `ModelPricing` | 给每个模型配定价（每千 token 价格），按累计用量算费用 | 估算成本 / 按用量算钱 |
+
+> 导入路径：`TiktokenCounter` / `TokenTrackingLLM` / `ModelPricing` 在根级；`CharRatioCounter` 需从 `langchainrust::core::token_counter::CharRatioCounter` 导入。
+
+#### 8.3.2 精确计数 vs 估算
+
+| 场景 | 选哪个 |
+|---|---|
+| 计费、限额、对齐窗口 | `TiktokenCounter` 精确计数 |
+| 快速估算、中文长文本裁剪 | `CharRatioCounter` 粗略估算 |
+| 自动记录每次调用用量 | `TokenTrackingLLM`（包装模型） |
+| 按用量算 USD 成本 | `ModelPricing` + `estimate_cost` |
+
+#### 8.3.3 关键行为
+
+- **真实用量优先**：`TokenTrackingLLM` 优先使用模型 API 返回的真实 usage 统计；模型没返回时才用估算。
+- **不侵入原模型**：统计对象是包装器自己，原模型行为不变——包一层就能自动累计用量。
+- **内置定价**：`ModelPricing::gpt4o()` / `gpt4o_mini()` 为内置定价；用 `ModelPricing::new(prompt_per_1k, completion_per_1k)` 可自定义其它模型的定价。
+- **算钱**：`get_usage().await` 拿累计的 prompt / completion / total tokens，`estimate_cost(&pricing).await` 按定价换算成 USD(这两个方法是 async)。
+
+#### 8.3.4 怎么选（人话）
+
+- 只是想"每次调用记个数、最后报个总价"，直接用 `TokenTrackingLLM::for_openai(...)` 包装模型 + `estimate_cost`，一条链搞定。
+- 要在发请求**前**估算一段文本的 token 数（比如判断要不要截断），用 `TiktokenCounter`（精确）或 `CharRatioCounter`（估算）。
+- 中文内容占比高、且不追求精确时，`CharRatioCounter` 够用；正式计费请用精确分词。
+
+#### 8.3.5 成本台账:PricingTable + CostTracker + 美元硬闸门 ✨ v0.22.4
+
+上面的 `ModelPricing` + `estimate_cost` 只能事后给**单个包装器**算一笔钱。生产场景缺三样东西:多个模型/多次运行的**累计与分模型汇总**、对接监控系统的**事件导出**、以及超预算时**真正停下来**的强制手段。v0.22.4 在 `lc-core::cost` 补齐(facade 根级直接导出)。
+
+**三层分工,刻意把"测量"和"执法"分开:**
+
+1. **`ModelPrice`——单价**。单位统一是 **USD / 1000 token**,输入输出分开报:
+   ```rust
+   use langchainrust::{ModelPrice, PricingTable, CostTracker};
+
+   let p = ModelPrice::new(2.5, 10.0);          // $2.5/1K in, $10/1K out
+   p.cost_of(1000, 500);                         // 2.5 + 5.0 = 7.5(纯函数)
+   ModelPrice::free();                           // 本地/开源模型,0 也是合法价格
+   p.blended_per_1k();                           // 路由比价用的单一数字:按 3:1 典型
+                                                 // 输入输出比混合(0.75·in + 0.25·out)
+   ```
+2. **`PricingTable`——按 (provider, model) 查价的表**。provider 限定条目优先;查不到时回落到只按 model 注册的兜底条目(同名模型走不同网关时有用):
+   ```rust
+   let table = PricingTable::new()
+       .with("openai", "gpt-4o", ModelPrice::new(2.5, 10.0))
+       .with_model_only("some-self-hosted-model", ModelPrice::free());
+   table.get(Some("openai"), "gpt-4o");  // 限定条目遮蔽同名兜底
+   ```
+   - `PricingTable::builtin()` 自带 12 条常见模型的价格快照(截至 2026-09:gpt-4o/gpt-4o-mini/gpt-4.1 系列/o4-mini、claude-3-5-sonnet/haiku-latest、gemini-1.5-pro/flash、groq llama 两款、deepseek-chat)。**这是方便起步的种子,不是持续维护的真相源**——厂商调价频繁,正式计费请走下面的注册表。
+   - 生产路径:`ModelRegistry::fetch(url).await?` 从远端拉最新目录(`fetch_with_client` 可传自定义 reqwest client,也可 `from_json` 读本地 JSON、手工 `register`/`merge`),再 `PricingTable::from_registry(&registry)` 转成表;加载失败报 `CostError::Fetch/Payload`。
+3. **`CostTracker`——线程安全的累计台账**。一个 run 建一个,或一个会话共享同一个 `Arc`;每次 LLM 调用记一笔:
+   ```rust
+   let tracker = Arc::new(
+       CostTracker::with_builtin_prices()        // 或 CostTracker::new(Arc::new(table))
+           .with_scope("session-user-42")         // 报表/事件里带的标签
+           .with_metrics_sink(sink),              // 可选:每笔再导出一个 ObsEvent::Cost
+   );
+
+   let usd = tracker.record(Some("openai"), "gpt-4o", 1000, 500).await; // 返回本次费用
+   tracker.record_usage(Some("openai"), "gpt-4o", &token_usage).await;  // 或直接吃 TokenUsage
+
+   let total = tracker.total_cost_usd().await;   // 预算门读的就是这个数
+   let report = tracker.report().await;          // CostReport:总调用/token/费用 +
+                                                 // by_model 按 "openai/gpt-4o" 分模型汇总
+   let each = tracker.records().await;           // 每笔明细 CostRecord(最旧在前)
+   tracker.reset().await;                        // 同会话开启新 run 时清零
+   ```
+
+**两条关键的降级语义(接追踪器永远不会搞坏 agent 主循环):**
+
+- 表里**查不到的模型照样计调用数和 token 数,只是价格按 0**——缺价格数据降级为"只计量",不报错;
+- sink 导出失败只 `warn`,不传播给调用方。
+
+**自动记账:把 tracker 挂到包装 LLM 上。** `TokenTrackingLLM` 提供 `.with_cost_tracker(arc)` 和 `.with_provider("openai")`:包装器自己也是 `BaseChatModel`(v0.20.1 起),直接塞进 agent,循环里每次 `chat`/流式/`bind_tools` 调用都自动计价累计;`with_temperature` / `with_max_tokens` / `bind_tools` 重建出的新包装器共享同一组 `Arc`,记账不断。模型 id 优先取响应里回传的 model,空了才退回 `model_name()`。
+
+> 流式的已知边界:流式路径没有完整文本可估算,**只计 provider 在末块真实回报的 usage**;从不回报 usage 的 provider,流式下记账可能为 0。非流式 `chat` 在模型不报 usage 时会回退到 tiktoken 估算。
+
+**美元硬闸门:测量之外的执法放在执行器。** tracker 本身只测量;真正的硬停止复用 §4.2 预算门:
+
+```rust
+use langchainrust::{AgentExecutor, CostTracker, BudgetConfig};
+
+let tracker = Arc::new(CostTracker::with_builtin_prices());
+let tracked_llm = TokenTrackingLLM::for_openai(llm)?
+    .with_provider("openai")
+    .with_cost_tracker(tracker.clone());   // 同一个 Arc:LLM 记账
+let executor = AgentExecutor::new(agent, tools)
+    .with_cost_tracker(tracker.clone())    // 同一个 Arc:执行器读表
+    .with_budget(BudgetConfig {
+        max_cost_usd: Some(1.0),           // 累计花满 $1 硬停
+        max_tool_calls: Some(20),          // 预算门其余四项照旧可同用
+        ..Default::default()
+    });
+```
+
+执行器在**每次规划 LLM 调用之后**读 `total_cost_usd()`,达到/超过限额即返回 `AgentError::BudgetExceeded(BudgetExceeded::Cost { limit, actual })`——调用方能把"预算主动停止"和"模型没收敛"区分开;流式路径同样在每轮 LLM 后检查。两个不对称是有意为之:**只挂 tracker 不设限额 = 只测量不拦截;只设限额不挂 tracker = 永不触发**(读不到花费,读数恒为 0);记账必须靠 tracker 另一端连着 `TokenTrackingLLM`(或你自己在每次调用后 `record`)。
+
+---
+
+
+### 8.4 评估
+
+量化 LLM 输出质量：在更改提示词 / 模型 / 添加 RAG 之后，运行评估集并查看分数是否提升。5 个类别共 13 个评估器，覆盖从字面匹配到 RAG 幻觉检测：
+
+| 类别 | 评估器 | 描述 |
+|----------|-----------|-------------|
+| 字面匹配 | `ExactMatch` / `StringDistance` | 精确相等 / 归一化 Levenshtein 距离 |
+| 语义 | `EmbeddingSimilarity` / `LLMAsJudge` / `PairwiseJudge` | 余弦相似度 / LLM 评判 / 成对比较（交换 A/B 以消除位置偏差） |
+| 规则 | `ContainsKeyword` / `RegexMatch` / `LengthCheck` | 关键词 / 正则 / 长度 |
+| 经典 NLP | `Bleu` | n-gram 精确率（字符级 + 平滑 + 有效阶） |
+| RAG | `Faithfulness` | 拆分声明，逐一验证，检测幻觉 |
+| RAG（RAGAS 三指标）✨ v0.22.4 | `ContextPrecision` / `ContextRecall` / `AnswerRelevancy` | 上下文精确率 / 上下文召回率 / 答案相关性,见下方专节 |
+
+#### 8.4.1 EvalRunner
+
+对 `Dataset` 运行一组评估器，生成 `Report`（每个示例的分数 + 每个评估器的平均值）。支持从 JSONL 文件加载评估集。
+
+```rust
+use langchainrust::evaluation::*;
+use async_trait::async_trait;
+
+let dataset = Dataset::new(vec![
+    Example::new("2+2=?", "4"),
+    Example::new("capital of China?", "Beijing"),
+]);
+// or: Dataset::from_jsonl("eval.jsonl")?
+
+struct MyLLM;
+#[async_trait]
+impl Predictor for MyLLM {
+    async fn predict(&self, input: &str) -> Result<String, EvalError> {
+        Ok("4".to_string())
+    }
+}
+
+let runner = EvalRunner::new(vec![
+    Box::new(ExactMatch),
+    Box::new(StringDistance),
+]);
+let report = runner.run(&dataset, &MyLLM).await?;
+println!("{:?}", report.summary);
+// {"ExactMatch": 1.0, "StringDistance": 1.0}
+```
+
+#### 8.4.2 Faithfulness
+
+将预测拆分为原子声明，并逐一对照参考（上下文）进行验证，检测捏造内容。对 RAG 最为有用。
+
+```rust
+use langchainrust::evaluation::{Faithfulness, Evaluator};
+use langchainrust::OpenAIChat;
+
+let judge = Faithfulness::new(OpenAIChat::new(config));
+// reference is context: "annual leave 15 days"
+let ok = judge.eval("", "annual leave 15 days, accruable", "annual leave 15 days").await?;
+assert_eq!(ok.value, 1.0); // faithful
+
+let halluc = judge.eval("", "annual leave 20 days", "annual leave 15 days").await?;
+assert_eq!(halluc.value, 0.0); // fabricated, caught
+```
+
+`with_llm_split(true)` 使用 LLM 拆分声明（默认：按句号拆分）；`with_empty_score(x)` 设置无声明时的分数。验证并发执行（`join_all`）。
+
+#### 8.4.3 LLMAsJudge（LLM 裁判） ✨ v0.15.0
+
+用 LLM 按 0-10 打分，可自定义评分标准（`with_rubric`）和满分（`with_max_score`）。
+
+```rust
+use langchainrust::evaluation::LLMAsJudge;
+
+let judge = LLMAsJudge::new(OpenAIChat::new(config))
+    .with_rubric("从正确性、完整性、清晰性三方面评分")
+    .with_max_score(10);
+let score = judge.eval(input, output, reference).await?; // 0.0 ~ 10.0
+```
+
+#### 8.4.4 PairwiseJudge（成对比较） ✨ v0.15.0
+
+竞技场模式：让 LLM 裁判在两个回答中二选一，返回 `Verdict::{AWins, BWins, Tie}`。
+
+```rust
+use langchainrust::evaluation::{PairwiseJudge, Verdict};
+
+let judge = PairwiseJudge::new(OpenAIChat::new(config));
+match judge.compare("问题是?", &answer_a, &answer_b).await? {
+    Verdict::AWins => { /* A 更好 */ }
+    Verdict::BWins => { /* B 更好 */ }
+    Verdict::Tie    => { /* 平局 */ }
+}
+```
+
+> **位置偏差缓解**：自动交换 A/B 顺序跑两次，两次都选同一个才算真赢，否则判平局；两次调用并发发起，不增加串行往返。
+
+#### 8.4.5 Report 容错 ✨ v0.15.0
+
+`EvalRunner.run` 逐条容错：单条 `predict` 失败或某个评估器打分失败，只记入 `Report::failures`（含 `index` 与 `stage`），其余样例照常出分——一条坏数据不会拖垮整次评估。
+
+```rust
+let report = runner.run(&dataset, &MyLLM).await?;
+if !report.failures.is_empty() {
+    eprintln!("{} 条失败", report.failures.len());
+}
+```
+
+#### 8.4.6 RAGAS 三指标（RAG 专用评估器）✨ v0.22.4
+
+RAG 系统的错误形态和普通问答不同:答得"像模像样"但检索没喂对料、召回的料里根本没有答案所需的信息、答案跑题。RAGAS 把这三种情况拆成三个独立指标,全部由 LLM 裁判驱动(与 Faithfulness 同源:优先 `bind_tools` 结构化调用、文本回落,单次评估内裁判并发上限 4,避免触发限流):
+
+| 评估器 | 衡量什么 | 算法要点 | 输入 |
+|--------|---------|---------|------|
+| `ContextPrecision` | 召回的上下文**排序质量**——有用的块是否排在前面 | 裁判逐块判定与问题是否相关,按排名加权精确率 | 问题 + 有序 contexts |
+| `ContextRecall` | 标准答案的信息有多少能在召回上下文里找到 | 拆参考答案为声明,逐句归因到上下文,算可归因比例 | 参考答案 + contexts |
+| `AnswerRelevancy` | 答案是否切题(不看参考回答,防答非所问) | LLM 从答案反生成 N 个问题(默认 3),与真实问题算嵌入余弦相似度后取均值 | 问题 + 答案(+ 嵌入模型) |
+
+`ContextPrecision` / `ContextRecall` 只实现 `RagEvaluator`(普通 `Evaluator` 没有 contexts 槽位);`AnswerRelevancy` 两个 trait 都实现,也能在非 RAG runner 里打分。
+
+```rust
+use langchainrust::evaluation::{
+    AnswerRelevancy, ContextPrecision, ContextRecall, Dataset, EvalRunner, Example,
+};
+
+let dataset = Dataset::new(vec![
+    // RAG 样例用 with_contexts,contexts 按检索排名顺序传入
+    Example::with_contexts(
+        "年假多少天?",
+        "15 天",
+        vec!["员工年假为 15 个工作日……".to_string(), "报销需附发票".to_string()],
+    ),
+]);
+
+let judge = OpenAIChat::new(config);                 // 任意 BaseChatModel
+let runner = EvalRunner::new(vec![])
+    .with_rag_evaluators(vec![
+        Box::new(ContextPrecision::new(judge.clone())),       // 排名第 1 的块无关 → 低分
+        Box::new(ContextRecall::new(judge.clone())),
+        Box::new(AnswerRelevancy::new(judge, embeddings)),    // 额外需要 Embeddings
+    ]);
+
+let report = runner.run(&dataset, &predictor).await?;
+// 上下文超长时:with_max_context_chars(默认每块/拼接上限 2000 字符)
+// 空 contexts 等无分可打的情况:with_empty_score(x) 显式指定默认分
+// AnswerRelevancy::with_n_questions(5) 调整反生成问题数
+```
+
+旧 JSONL 数据集没有 contexts 列时反序列化为空 vec(`#[serde(default)]`),普通评估器照跑、RAG 评估器按 `with_empty_score` 处理。
+
+> 底层复用 `core::judge::structured_call` 的结构化判定路径（强制 LLM 输出 JSON 后解析，错误统一为 `StructuredJudgeError`），保证裁判结果可机读。
+
+#### 8.4.7 trace → golden → 回归门禁 ✨ v0.24.0
+
+离线手写数据集会过时。v0.24.0 把"**线上 trace → 入库 golden 集 → CI 回归门禁**"闭环补齐:生产录播经 lc-testkit 转成 golden JSONL(转换规则见[测试章"录播 → golden 数据集"](#857-录播--golden-数据集评分桥--v0240)),新 prompt / 新模型在同一份 JSONL 上跑分,报告与基线报告逐指标对比,退步超阈值就让 CI 红。
+
+```rust
+use langchainrust::evaluation::{compare_reports, Dataset, EvalRunner, Report};
+
+// 基线报告来自已知良好版本(Report 支持 JSON round-trip,可落盘 / 传 CI artifact)
+let baseline: Report = serde_json::from_str(&std::fs::read_to_string("eval/baseline.json")?)?;
+
+// 候选跑:加载入库 JSONL,predictor 包住新 prompt / 新模型
+let dataset = Dataset::from_jsonl("eval/golden.jsonl")?;
+let candidate: Report = EvalRunner::new(evaluators).run(&dataset, &new_predictor).await?;
+
+// tolerance = 可接受的均值波动;delta 严格小于 -tolerance 才算退步(边界 -0.02 仍通过)
+let cmp = compare_reports(&baseline, &candidate, 0.02);
+assert!(!cmp.is_regressed(), "检测到指标回归:\n{}", cmp.to_table());
+```
+
+`ReportComparison` 给出:
+
+| 字段 | 内容 |
+|---|---|
+| `metrics: HashMap<String, MetricDelta>` | 每个共有评估器的 `baseline_mean` / `candidate_mean` / `delta` / 双方计分数 |
+| `regressions: Vec<Regression>` | 仅含 `delta < -tolerance`(严格不等式,边界值不算回归)的指标 |
+| `added: Vec<String>` / `dropped: Vec<String>` | 候选比基线**新增 / 丢失**的评估器名——候选偷偷少跑了一个评估器在同一张表里可见 |
+| `count_mismatches: Vec<String>` | 共有评估器在两次运行的样本数不一致(跑分集漂移),默认也拦门禁 |
+| `significance: HashMap<String, PairedSignificance>` | 每个共有评估器的配对符号检验(候选逐例胜/负/平 + p 值) |
+| `gate_on_dropped: bool` | 是否把「候选丢了评估器」当作门禁失败(默认开启) |
+
+`cmp.to_table()` 输出可直接贴进 CI 日志的对比表,并带一列 `p`(配对符号检验 p 值,显著处标 `*`)。基线怎么来:首次在已知良好版本上跑一遍,把 `Report` 序列化入库即可。
+
+**「丢评估器/跑分集漂移也红」的分层门禁**:`is_gate_failing()` 在四类情况红:①任一指标回归;②`count_mismatches` 非空(跑分集漂移);③`dropped` 非空——候选**悄悄少跑了一个评估器**(默认 `gate_on_dropped: true`,fail-closed,且对无该字段的旧 artifact 也默认关);④没有任何共有评估器可比(跑分集为空/跑歪了)。若候选确实可以合法去掉某个评估器,用 `compare_reports_with(&base, &cand, CompareOptions { gate_on_dropped: false, ..Default::default() })` 显式放行。
+
+**均值之外,还有配对符号检验**:均值会被个别样本带偏。`paired_significance(&base, &cand, "evaluator")`(或 `ReportComparison.significance`)对两次运行的**逐例得分**做符号检验,给出 `wins`(候选逐例更高)/ `losses` / `ties` / `n` / `p_value`(以 `n = wins+losses` 为口径的双侧精确二项检验)。p 值大 = 均值波动很可能是逐例噪声;`is_significant("evaluator")` 判断是否 `< significance_level`(默认 0.05,可用 `CompareOptions.significance_level` 调整)。回归只在显著时才有意义——波动 vs 真变化,判决交给 CI。
+
+**尾部指标**:`report.percentile("evaluator", 0.05)` 是某评估器逐例得分的 P5(最差一端的质量尾,拖低均值的就是它),`0.95` / `0.99` 是最佳尾;对延迟类指标 `0.95` 即延迟尾。底层 `percentile` 是 nearest-rank 实现,处理 `NaN` 不 panic(见 `runner::percentile`)。
+
+---
+
+<a id="mongodb-storage"></a>
+
+### 8.5 测试
+
+#### 8.5.1 概念引入：为什么要测试
+
+在 23 个 crate 组成的 workspace 里，测试是保证每个模块行为正确的最后防线——解析器、缓存、状态机这类纯逻辑一旦写错，会悄悄影响所有上层功能。用 `cargo test` 从 workspace 根目录跑一遍，能把各 crate 的单元测试、集成测试与文档测试一起执行，尽早发现问题。
+
+```bash
+cargo test
+```
+
+#### 8.5.2 测试覆盖范围
+
+| 层级 | 位置 | 覆盖对象 |
+|---|---|---|
+| 单元测试 | 各 crate 内部 | 解析器、缓存、淘汰策略、状态流转等纯逻辑 |
+| 集成测试 | facade crate（`langchainrust`）的 tests 目录 | 跨模块组装、对外行为 |
+| 文档测试（doctest） | 公开 API 的文档注释示例 | 示例代码可运行、API 真实存在 |
+
+#### 8.5.3 如何运行
+
+- 根目录 `cargo test`：跑遍全部 crate
+- `cargo test --workspace`：显式指定 workspace 全量
+- 单独跑某个 crate：`cargo test -p langchainrust`（facade crate 的包名），或进入对应 crate 目录再跑
+
+#### 8.5.4 如何为 lib 写测试
+
+**单元测试**：在实现文件里用 `#[cfg(test)]` 模块把测试代码圈起来，只测本模块内部逻辑，不依赖网络与真实模型。判键、解析、LRU 淘汰这类行为适合在这里逐条覆盖正反例。
+
+**集成测试**：把 lib 当作外部使用者调用公开 API，验证跨模块的组装是否正确。涉及真实 API 的用例建议用 **mock 实现替换**，既快又不花预算，还能稳定断言结果——比如"敏感输出确实被拦截"这类行为，应该用明确的断言验证，而不是只"跑通不 panic"。
+
+#### 8.5.5 要点
+
+- 纯逻辑优先用单元测试覆盖，快且好定位；覆盖正反例，别只测正常路径。
+- 对外组合行为用集成测试覆盖；集成测试要有明确断言，不能只验证不 panic。
+- 写文档示例时让它能作为 doctest 运行——示例即测试，示例里示范的 API 必须真实存在。
+
+#### 8.5.6 离线录播测试（lc-testkit） ✨ v0.16.0
+
+`lc-testkit` 是独立的录播测试 harness crate（不走 facade，作为 dev-dependency 引入）：`RecordingProvider` 包住任意 `BaseChatModel` 真调一次、把请求/响应逐行录成 JSONL；`ReplayProvider` 零网络、确定性地回放——没 key 的 CI 也能测链。
+
+```toml
+[dev-dependencies]
+lc-testkit = "0.24.0"
+```
+
+```rust
+// 录：真调一次，成功后写入 fixture 文件
+let recorded = RecordingProvider::new(real_llm, "fixtures/llm_chain_f01.jsonl")?;
+
+// 回放：零网络、FIFO、逐字节稳定
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?;
+let chain = LLMChain::new(llm, "用一句话回答:{question}");
+let result = chain.invoke(inputs).await?;
+```
+
+录制是旁路不是拦截：真调失败不写录播；写盘失败仅告警不阻断真实结果。内置 round-trip（录→回放逐字节一致）与真链回放测试。
+
+**三档回放策略（v0.18.0 起）**：
+
+| 策略 | 匹配方式 | 何时用 |
+|------|----------|--------|
+| `Fifo`（默认） | 按录制顺序逐个出队 | 单请求顺序回放、简单场景 |
+| `ByToolName` | 请求侧工具名命中即取 | 多工具并行、按工具路由 |
+| `Exact` ✨ v0.18.0 | 请求 `messages` 完整签名逐条严格匹配 | 并行乱序下精确对应；无匹配返回 `TestkitError::ReplayNoMatch`（不做静默 FIFO 兜底） |
+
+```rust
+use lc_testkit::{ReplayProvider, ReplayStrategy};
+
+let llm = ReplayProvider::from_file("fixtures/llm_chain_f01.jsonl")?
+    .with_strategy(ReplayStrategy::Exact);
+```
+
+#### 8.5.7 录播 → golden 数据集（评分桥） ✨ v0.24.0
+
+v0.24.0 起 lc-testkit 依赖 lc-evaluation,录播文件可以直接转成**评测数据集**:一条 `RecordedExchange` 映射成一条 `Example`,规则固定——请求历史里**最后一条 human 消息** → `input`,录到的 assistant 文本 → `reference`,非空工具结果按排名顺序 → `contexts`(让 RAGAS 类评估器也能给检索质量打分)。Agent 一轮用户提问会产生多条 exchange(包括纯工具调用、文本为空的),`is_scoring_candidate` 先过滤;`golden_dataset` 对漏网的坏行显式报错:
+
+| 错误 | 含义 |
+|---|---|
+| `GoldenError::NoUserMessage(i)` | 第 i 条交换里没有 human 消息 |
+| `GoldenError::EmptyReference(i)` | assistant 文本为空(纯工具轮次) |
+
+```rust,ignore
+use lc_testkit::{
+    golden_dataset, is_scoring_candidate, read_exchanges, write_golden_jsonl,
+};
+
+// 录播文件 → 过滤 → golden 数据集 → 入库的 eval/golden.jsonl
+let exchanges = read_exchanges("fixtures/recorded.jsonl")?;
+let scored: Vec<_> = exchanges.iter().filter(|e| is_scoring_candidate(e)).cloned().collect();
+let dataset = golden_dataset(&scored)?;
+write_golden_jsonl(&dataset, "eval/golden.jsonl")?;
+
+// 或一步到位读文件成数据集
+let dataset = lc_testkit::golden_dataset_from_file("fixtures/recorded.jsonl")?;
+```
+
+零网络、无需 API key 的**离线冒烟跑**:用同一录播文件构造 FIFO `ReplayPredictor`,每条 reference 都会原样复现:
+
+```rust,ignore
+use lc_evaluation::{EvalRunner, ExactMatch};
+use lc_testkit::{replay_golden_from_file, ReplayStrategy};
+
+let (dataset, replay) = replay_golden_from_file("fixtures/recorded.jsonl", ReplayStrategy::Fifo)?;
+let report = EvalRunner::new(vec![Box::new(ExactMatch)])
+    .run(&dataset, &replay)
+    .await?;
+assert!(replay.remaining() == 0);   // 每条样例都消费到了
+```
+
+`lc-testkit` 不是 facade 依赖,需要直接引(上面已把 dev-dependency 版本钉到 0.24.0);真模型的回归跑法见[评估章的 trace → golden → 回归门禁](#847-trace--golden--回归门禁--v0240)。
+
+---
+
+<a id="a2a-agent-protocol"></a>
+
+
+> **相关能力延伸:** [分布式追踪（tracing）（见附录）](#附录112-追踪分布式追踪)
+
+## 第九章 · 数据持久化
+
+### 9.1 MongoDB 存储
+
+MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长文档的「父文档 + 子块」关系**跨进程共享、跨重启保留**；二是把**对话记忆**落到 MongoDB，让多轮记忆**多实例共享**。默认的内存存储（如 `InMemoryChunkedDocumentStore`）进程一退出就没了，专用向量库又太重；当应用要起多个实例、或需要真持久化时，MongoDB 是生产级的中间选项。
+
+本节会出现两类对象，用途不同，别混淆：
+
+| 对象 | 归属 | 存什么 | 一句话 |
+|---|---|---|---|
+| `MongoChunkedDocumentStore` | 文档库（DocumentStore 家族） | 文档正文 + 父子分块关系 | 长文档切块后，正文落 MongoDB |
+| `MongoPersistentMemory` | 持久化记忆（记忆家族） | 对话历史 / 压缩摘要 | 多实例共享同一份对话记忆 |
+
+工作流程（以文档库为例）：先 `create_indexes()` 建好查询索引 → `add_parent_document(doc, 500)` 把长文档按分块大小切成子块入库 → 按父文档 ID 用 `get_chunks_for_parent` 取回全部子块。检索命中小块后，再用子块 ID 回文档库取父块正文，这是分块检索的标准回源路径。
+
+#### 9.1.1 适用场景（什么时候选 MongoDB）
+
+| 场景 | 是否推荐 | 原因 |
+|---|---|---|
+| 多实例部署，要共享同一份文档/记忆 | ✅ 推荐 | 所有实例连同一个 MongoDB，读到同一份数据 |
+| 服务重启后数据要保留 | ✅ 推荐 | 数据落库，不依赖进程内存 |
+| 单机演示、数据量小、想零依赖 | ⚠️ 可换轻量后端 | 本地可用 SQLite / 文件存储替代 |
+| 可接受进程重启丢数据 | ❌ 不必要 | 内存实现更简单，不用引入服务 |
+
+#### 9.1.2 启用 Feature
+
+```toml
+[dependencies]
+langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
+```
+
+#### 9.1.3 用法
+
+```rust
+use langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
+
+let config = MongoStoreConfig::new(
+    "mongodb://localhost:27017",
+    "langchainrust_db"
+);
+
+let store = MongoChunkedDocumentStore::new(config).await?;
+store.create_indexes().await?;
+
+// 与 InMemory 相同的接口
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;
+```
+
+`MongoStoreConfig::new` 的两个参数：
+
+| 参数 | 含义 | 例子 |
+|---|---|---|
+| 第一个参数 | MongoDB 连接串 | `mongodb://localhost:27017` |
+| 第二个参数 | 数据库名 | `langchainrust_db` |
+
+#### 9.1.4 MongoPersistentMemory（对话记忆持久化）
+
+`MongoChunkedDocumentStore` 管「文档正文」，`MongoPersistentMemory` 管「对话记忆」，两者是不同层的持久化。`MongoPersistentMemory`（详见 [MongoPersistentMemory](#914-mongopersistentmemory对话记忆持久化)）内部组合 `ConversationSummaryBufferMemory`、自带 token 预算，把「历史 + 摘要」写进 MongoDB，多个实例连同一个库就能共享同一份记忆。
 
 | 行为 | 说明 |
 |---|---|
-| JSON 落盘 | 向量 + 文档写入 JSON 文件，跨重启保留 |
-| 原子写入 | 先写临时文件再 rename，断电/崩溃不损坏已有文件 |
-| 维度验证 | 建库时固定维度，塞错维度的向量直接报错 |
-| 删除诚实 | 删不存在的文档返回 `DocumentNotFound`，不假装成功 |
-| 跨实例持久化 | 同一路径的文件，多个实例都能读（共享磁盘 / 演示场景） |
-| 纯存储 | 向量由调用方生成后传入，`similarity_search` 也直接收查询向量 |
+| 持久化 | 记忆存 MongoDB，服务重启不丢 |
+| 多实例共享 | 同一库同一集合，多实例读写同一份记忆 |
+| token 预算 | 内部是摘要缓冲，超出预算自动压缩 |
+| 乐观锁 | 并发写不互相覆盖，防「后写覆盖先写」 |
+| 会话绑定 | `set_session_id_async` 绑定当前会话 |
 
-### 适用场景
+#### 9.1.5 关键行为
 
-- 演示 / 原型：不想为演示装一个数据库服务。
-- 离线小规模知识库：本地数据量小，JSON 文件足够。
-- 免外部服务：没有任何网络依赖，开箱即用。
-- 数据量小但重启要保留：内存会丢，文件不会。
+- `create_indexes()` 建索引：首次建库建议先调用，为后续按父 ID / 子块 ID 查询做准备。
+- 父子分块关系持久化：删父文档会连带删掉它的全部子块。
+- 接口与 InMemory 实现一致：同一 `ChunkedDocumentStoreTrait`，换后端只换构造一行。
+- 存正文不存向量：向量由配套的向量库（如 `ChunkedVectorStore`）索引，`MongoChunkedDocumentStore` 只负责「正文 + 分块关系」。
+- 提供 `_blocking` 同步方法，供 BM25 这类同步检索路径使用。
 
-### 怎么选
+#### 9.1.6 怎么选
+
+什么时候用 MongoDB 文档库？一句话：需要**多进程/多实例共享同一份文档正文**，或需要**真持久化**时。如果只是单机、数据量小，SQLite 文档库更轻（见下节）；如果数据量大、要专业向量检索，就再配一个向量库——向量放 vector store，正文放这里。
+
+---
+
+<a id="redis--sqlite-storage"></a>
+
+### 9.2 Redis / SQLite 存储
+
+这两个都是 `ChunkedDocumentStoreTrait` 的轻量实现，管「文档正文 + 父子分块」，和 MongoDB 文档库干同一件事，但取舍相反：**Redis 走分布式共享，SQLite 走本地零依赖**。选谁，取决于你手里已有什么基础设施、数据要不要多实例共享。
+
+工作流程和 MongoDB 文档库完全一样：`add_parent_document(doc, 500)` 切块入库 → `get_chunks_for_parent` 按父 ID 取回子块。接口统一，换后端只换构造这一行。
+
+#### 9.2.1 适用场景与取舍
+
+| 后端 | 数据存哪 | 需要外部服务 | 数据生命周期 | 适用场景 |
+|---|---|---|---|---|
+| `RedisDocumentStore` | Redis 服务器内存 | 是，先起 Redis | 常驻 Redis；是否落盘取决于 Redis 服务自身的持久化配置（RDB/AOF），不归本库管 | 多实例共享、已有 Redis 基础设施、要跨进程一致 |
+| `SQLiteDocumentStore` | 本地 `.db` 文件 | 否，零依赖 | 直接写本地文件，进程退出数据保留 | 单机、本地开发、免服务 |
+
+一句话记法：Redis 是「多人共用的共享仓库」，SQLite 是「这台机器自己的抽屉」。
+
+#### 9.2.2 启用 Feature
+
+```toml
+[dependencies]
+langchainrust = { version = "0.28.0", features = ["redis-storage"] }
+```
+
+或
+
+```toml
+[dependencies]
+langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
+```
+
+#### 9.2.3 RedisDocumentStore
+
+```rust
+use langchainrust::{RedisDocumentStore, ChunkedDocumentStoreTrait};
+
+let store = RedisDocumentStore::new("redis://127.0.0.1:6379").await?;
+
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;
+```
+
+#### 9.2.4 SQLiteDocumentStore
+
+```rust
+use langchainrust::{SQLiteDocumentStore, ChunkedDocumentStoreTrait};
+
+let store = SQLiteDocumentStore::new("langchain.db").await?;
+
+let (parent_id, chunk_ids) = store.add_parent_document(doc, 500).await?;
+let chunks = store.get_chunks_for_parent(&parent_id).await?;
+```
+
+注意两者构造参数的不同语义：
+
+| 后端 | 构造参数 | 含义 |
+|---|---|---|
+| `RedisDocumentStore::new(uri)` | `redis://127.0.0.1:6379` | Redis 连接串，指向一个已在运行的服务 |
+| `SQLiteDocumentStore::new(path)` | `langchain.db` | 本地文件路径，文件不存在会自动创建 |
+
+#### 9.2.5 关键行为
+
+- 两者都实现 `ChunkedDocumentStoreTrait`，都是**文档库**——存文档正文和父子分块关系，**不存向量**；向量另放向量库。
+- `add_parent_document` 自动切块，返回 `(parent_id, chunk_ids)`；`get_chunks_for_parent` 按父 ID 取回全部子块。
+- 删父文档会连带删掉它的全部子块。
+- 提供 `_blocking` 同步方法，供 BM25 这类同步检索路径使用。
+- 接口与 InMemory 实现一致，换后端只换构造一行。
+- `RedisDocumentStore` 的数据可见性取决于所有实例是否连同一个 Redis；`SQLiteDocumentStore` 的数据就在本地文件里，单机使用最自然。
+
+#### 9.2.6 怎么选
 
 | 你的情况 | 推荐 |
 |---|---|
-| 数据可丢、进程内即可 | `InMemoryVectorStore` |
-| 要持久化、数据量小、免服务 | `FileVectorStore` |
-| 长文档要切块检索 | `ChunkedVectorStore` + 文档库 |
-| 数据量大 / 高并发 / 上生产 | 专业向量库（如 Chroma / Qdrant / Pinecone） |
+| 单机 / 本地开发 / 不想装任何服务 | `SQLiteDocumentStore` |
+| 多实例部署 / 团队已用 Redis 基础设施 | `RedisDocumentStore` |
+| 数据量大、要生产级可靠与更复杂查询 | `MongoChunkedDocumentStore`（上一节） |
+
+#### 9.2.7 Feature 门控
+
+| Feature 标志 | 存储后端 | 依赖 |
+|-------------|-----------------|--------------|
+| `redis-storage` | Redis | redis crate |
+| `sqlite-storage` | SQLite | rusqlite crate |
+| `mongodb-persistence` | MongoDB | mongodb crate |
 
 ---
 
-<a id="computerusetool"></a>
-## ComputerUseTool ✨ v0.4.1
+<a id="testing"></a>
 
-### 概念引入：对齐 Anthropic Computer Use beta
 
-普通工具让 Agent "调用 API、查数据"；Anthropic 的 computer use 让模型通过"截图 → 坐标点击 → 键盘输入"的循环操作 GUI。`ComputerUseTool` 是这一协议的**客户端封装**：把六个标准动作翻译成 `computer_20250124` 工具请求，POST 到 Anthropic `/v1/messages`（beta 头 `computer-use-2025-01-24`），再把响应原样返回。
+## 附录
 
-> **边界（先读再用）**：这个工具**不操控运行程序的这台机器**——它不调用任何系统鼠标/键盘 API、不自带虚拟机/浏览器，真实的 GUI 自动化发生在 Anthropic beta API 背后的托管环境里。它更像一个"动作 → computer-use 请求"的转发器：`ComputerUseOutput.result` 是 Anthropic 的原始响应文本；仅 `screenshot` 动作会额外从响应里抽出 base64 截图。请求体里模型固定 `claude-sonnet-4-20250514`、`max_tokens=4096`（当前版本不可配置）。
+### 附录.1 v0.5.0 新特性 ✨ v0.5.0
 
-六个动作（与 Anthropic 协议同名）：
-
-| 动作 | 必需参数 | 说明 |
-|---|---|---|
-| `screenshot` | — | 截一张当前屏幕，响应中抽 base64 图像 |
-| `click` | `coordinate:[x,y]`（必填） | 鼠标点击；`text:"right"` 表示右键，默认左键 |
-| `type` | `text`（必填） | 输入文本 |
-| `scroll` | `coordinate` + `direction`（up/down/left/right，均必填） | 滚动，`amount` 默认 3 |
-| `key_press` | `keys:["ctrl","a"]`（必填） | 组合键，内部拼成 `"ctrl+a"` |
-| `wait` | — | `duration_ms` 默认 1000ms |
-
-坐标会做构造时给定的宽高边界校验；动作名/必需参数缺失都在发请求前返回 `ToolError::InvalidInput`。
-
-### 构造与接入
-
-```rust
-use langchainrust::ComputerUseTool;
-use std::sync::Arc;
-
-// 没有 new()；唯一真实构造器是 new_anthropic(key, 宽, 高)
-let tool = ComputerUseTool::new_anthropic("sk-ant-...", 1024, 768)
-    .with_base_url("https://api.anthropic.com")  // 可选：默认官方地址
-    .with_timeout(Duration::from_secs(60));      // 可选：HTTP 超时，默认 60s
-
-// 作为 BaseTool 使用
-let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
-```
-
-### 使用注意
-
-- `Default::default()` 虽然存在，但用的是**空 API key、1024×768**，第一次调用就会报 "API key is required"——没有 `new()`，请走 `new_anthropic`
-- 目前只有 `AnthropicApi` 一种 `ComputerMode`（枚举里唯一的变体），没有本地 OS 自动化后端
-- 副作用发生在 Anthropic 侧环境，费用与安全策略以 Anthropic beta 条款为准；请求失败、非 2xx 都会带响应体转成 `ToolError::ExecutionFailed`
-
----
-
-<a id="v050-new-features"></a>
-## v0.5.0 新特性 ✨ v0.5.0
-
-### RouterLLM（模型路由 + 回退）
+#### 附录.1.1 RouterLLM（模型路由 + 回退）
 
 `RouterLLM` 本身实现 `BaseChatModel`：在异构模型池中按策略挑选主模型，失败时按注册顺序逐个回退，对调用方就是一个普通 chat 模型，即插即用。
 
@@ -6534,7 +6692,7 @@ let _ = (budget.spent_usd(), budget.is_tripped(), budget.trips());  // 可观测
 
 ---
 
-### CorrectiveRAG
+#### 附录.1.2 CorrectiveRAG
 
 标准 RAG 可能检索到不相关的文档，而 LLM 仍会幻觉出看似合理的答案。CorrectiveRAG 添加了三道关卡：评估文档 -> 重写查询或用网络搜索补充 -> 幻觉检查。
 
@@ -6567,7 +6725,7 @@ let answer = agent.invoke("What is Rust ownership?").await?;
 
 ---
 
-### AdaptiveRAG
+#### 附录.1.3 AdaptiveRAG
 
 固定的"先检索再生成"对两类查询都不划算：寒暄、常识题白付一次向量检索；复杂比较题一次 top-k 又覆盖不全。AdaptiveRAG 在入口加一次 LLM 路由，把每个查询分进三档：
 
@@ -6597,7 +6755,7 @@ assert!(result.sources.is_empty());
 
 ---
 
-### GraphRAG（知识图谱 RAG）
+#### 附录.1.4 GraphRAG（知识图谱 RAG）
 
 向量搜索会遗漏关系。GraphRAG 提取实体 + 关系 → 构建图 → **分层 Leiden 社区发现** → 逐层社区摘要 → 按社区/邻居查询。
 
@@ -6635,7 +6793,7 @@ let _ = graph_rag.query("...", GraphQueryMode::HybridAt(GraphGlobalLevel::Coarse
 
 ---
 
-### Deep Research 智能体
+#### 附录.1.5 Deep Research 智能体
 
 多轮深度研究：将主题分解为子主题 -> 跨多个工具并行搜索 -> 去重 -> 综合 -> 发现空白 -> 重新搜索 -> 带引用的报告。
 
@@ -6669,7 +6827,7 @@ for citation in &report.citations {
 
 ---
 
-### MCP 协议原语
+#### 附录.1.6 MCP 协议原语
 
 MCP 规范定义了 6 类原语。LangChainRust 中 **已实现调用逻辑** 的是：`initialize`（握手）、`tools/list`、`tools/call`、`resources/list`、`resources/read`、`prompts/list`、`prompts/get`、`completion/complete`。通知（无 id 的消息）也不再被静默丢弃：`notifications/cancelled`（请求取消某次调用）、`notifications/progress`（进度）、`notifications/roots/list_changed`、`notifications/initialized` 都有显式分发——但截至 v0.22.4 实现体只记录日志、预留扩展点，尚未接真正的取消/进度回调；**规范中的流式工具结果通知并未实现**，不要据此假设工具支持增量输出。client→server 原语均为**注册制**：注册数据源后才返回真实数据，未注册仍返回 `method_not_found`。server→host 方向的 `sampling/createMessage` / `elicitation/create` 由 `MCPServer` 发起，需注入回调。
 
@@ -6682,11 +6840,11 @@ MCP 规范定义了 6 类原语。LangChainRust 中 **已实现调用逻辑** �
 | **Roots** | ⏳ 类型已定义 | 发现客户端根目录（client 能力，未接入） |
 | **Sampling** | ✅ 发起方法 + 防护 | server→host；`create_message` 需注入 `SamplingHandler`；`SamplingGuard` 防护 |
 
-> 服务端采样有独立的 `SamplingGuard`（深度 / token 预算 / 超时三重防护），见 [MCP](#mcp) 章节。client→server 原语未注册数据源时仍返回 `method_not_found`；server→host 原语未注入回调时返回明确错误。真实交互（采样 / elicitation）依赖宿主 UI、模型环境，由使用者经回调接入（测试用注入 mock 覆盖）。
+> 服务端采样有独立的 `SamplingGuard`（深度 / token 预算 / 超时三重防护），见 [MCP](#71-mcp) 章节。client→server 原语未注册数据源时仍返回 `method_not_found`；server→host 原语未注入回调时返回明确错误。真实交互（采样 / elicitation）依赖宿主 UI、模型环境，由使用者经回调接入（测试用注入 mock 覆盖）。
 
 ---
 
-### 代码解释器沙箱
+#### 附录.1.7 代码解释器沙箱
 
 > **安全前提（务必先读）**：`SandboxTool` 默认**禁用**——不调用 `.with_dangerously_allow(true)`，任何执行请求都直接返回错误（0.20.0 安全加固）。内置的 `LocalSandbox` 只是"子进程 + 超时"，**没有任何 OS 级隔离**；Python 那个危险导入黑名单在源码注释里明确写着是 *noise filter*（`__import__("o"+"s")` 之类的写法即可绕过），**不是安全边界**。不可信代码要真隔离，用 **0.27.0 起真实现的 `WasmSandbox`**（见下节），或放进容器 / VM 后经自定义 `CodeSandbox` 实现接入。（`WasmSandbox` / `E2BSandbox` 曾在 0.20.0 因"只有接口、函数体永远 not implemented"连同 `sandbox-wasm` / `sandbox-e2b` feature 一起删除——承诺但不能交付的后端比没有更糟；0.27.0 里 `WasmSandbox` 以**真实现**回归，`E2BSandbox` 仍不回来。）
 
@@ -6716,7 +6874,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
 - **WASM**：`Language::Wasm` 由 `WasmSandbox` 执行（见下节）；`LocalSandbox` 收到它同样返回 `SandboxError::UnsupportedLanguage`
 - 自定义后端：实现 `async fn run(&self, code: &str, language: Language, timeout_ms: u64) -> Result<RunResult, SandboxError>` 的 `CodeSandbox` trait，即可塞进同一个 `SandboxTool<S>`
 
-#### WASM 后端（`sandbox-wasm` feature，0.27.0 #201）
+##### 附录.1.7.2 WASM 后端（`sandbox-wasm` feature，0.27.0 #201）
 
 `WasmSandbox` 执行 WASI preview1 模块，解释器是 **wasmi**（纯解释器：无 cranelift/JIT、离线、MSRV 轻）。宿主侧自带一组 WASI 导入——`fd_write`（stdout/stderr）、`fd_close`、`proc_exit`、`args_sizes_get`/`args_get`、`environ_sizes_get`/`environ_get`、`random_get`、`clock_time_get`/`clock_res_get`——**只有缓冲的 stdout/stderr 能跨出宿主边界**，没有文件系统、没有网络、没有进程：OS 隔离是构造出来的，不是靠子进程沙箱兜底。
 
@@ -6764,7 +6922,7 @@ let tool = SandboxTool::new(WasmSandbox::new(), Language::Wasm)
 
 ---
 
-### OpenAI Responses API
+#### 附录.1.8 OpenAI Responses API
 
 连接 `/v1/responses`（默认 base_url `https://api.openai.com/v1`，默认模型 `gpt-4o`），由 **OpenAI 服务端托管**内置工具——一次请求内模型自行决定检索/执行，框架不参与工具循环。
 
@@ -6796,7 +6954,7 @@ let result = model.chat(messages, None).await?;
 
 ---
 
-### Anthropic Extended Thinking
+#### 附录.1.9 Anthropic Extended Thinking
 
 配置思考预算让 Claude 在正文前先输出 thinking 块。非流式路径思考文本经 `LLMResult.thinking_content: Option<String>` 暴露（只有 thinking 块、没有正文时 `content` 保持空串，思考内容绝不会混进答案）；流式路径思考增量**不进数据流**——`stream_chat` 会把 thinking token 从输出流里丢弃，只能通过回调处理器的 `on_llm_thinking(run, chunk)` 观察。
 
@@ -6826,9 +6984,9 @@ println!("Answer: {}", result.content);
 
 ---
 
-### 流式结构化输出
+#### 附录.1.10 流式结构化输出
 
-`PartialJsonParser` 增量地把流式 JSON 解析为部分结构体——每收到一批 token 就尝试一次反序列化，UI 可以逐字段渲染而不必等整段回答结束。这是泛用 blanket 路径（任何 `BaseChatModel` 自动获得），底层走"schema 系统提示 + 逐块解析"，与 provider 原生 strict-tool 结构化是两套机制，区别见[结构化输出](#结构化输出)章。
+`PartialJsonParser` 增量地把流式 JSON 解析为部分结构体——每收到一批 token 就尝试一次反序列化，UI 可以逐字段渲染而不必等整段回答结束。这是泛用 blanket 路径（任何 `BaseChatModel` 自动获得），底层走"schema 系统提示 + 逐块解析"，与 provider 原生 strict-tool 结构化是两套机制，区别见[结构化输出](#附录110-流式结构化输出)章。
 
 ```rust
 use langchainrust::core::structured_output::StreamingStructuredOutputExt;
@@ -6863,7 +7021,7 @@ while let Some(result) = stream.next().await {
 
 ---
 
-### Batch API
+#### 附录.1.11 Batch API
 
 `BatchClient` 用同一套接口屏蔽两家的批量通道：**OpenAI**（JSONL 上传 + `/v1/batches`）与 **Anthropic**（`/v1/messages/batches`，内联请求数组）。批量通道价格约为实时的一半，但结果有分钟到 24 小时级延迟，只适合离线评测、翻译、语料生成这类不急的任务。
 
@@ -6906,7 +7064,7 @@ for result in results {
 
 ---
 
-### 追踪（分布式追踪）
+#### 附录.1.12 追踪（分布式追踪）
 
 `Tracer` + `SpanGuard`（RAII）手工埋点：guard drop 即结算 span（持续时间、父子关系自动写回后端），也可提前 `.end()`。三种后端：`InMemoryTracingBackend`（测试断言用）、`ConsoleTracingBackend`（打印）、`OtelTracingBackend`（接 OpenTelemetry 全局 tracer，在 `opentelemetry` feature 后，导出器由使用方自行装配，`OtelTracingBackend::from_global("service-name")`）。
 
@@ -6944,7 +7102,7 @@ span.end(); // 不手动 end 也会在 drop 时结算
 
 ---
 
-### v0.5.0 质量加固（176 项修复）
+#### 附录.1.13 v0.5.0 质量加固（176 项修复）
 
 在实现 12 个新特性后，对 223 个文件进行了两轮全代码库审查，发现并修复了 176 个问题（23 CRITICAL / 63 HIGH / 75 MEDIUM / 15 LOW）。
 
@@ -6962,15 +7120,16 @@ span.end(); // 不手动 end 也会在 drop 时结算
 ---
 
 <a id="v052-fixes"></a>
-## v0.5.2 修复 ✨ v0.5.2
+
+### 附录.2 v0.5.2 修复 ✨ v0.5.2
 
 v0.5.2 是一个稳定性和正确性版本，包含对多个 v0.5.0 特性的关键错误修复。
 
-### GraphRAG 社区摘要修复
+#### 附录.2.1 GraphRAG 社区摘要修复
 
 社区摘要之前拼接的是原始实体 ID（`e_xxx`）而非实体名称，导致生成无意义的摘要，降低了 Global/Hybrid 查询质量。已通过 `store.get_entity()` 查找实体名称修复。
 
-### Deep Research 报告格式修复
+#### 附录.2.2 Deep Research 报告格式修复
 
 合成器之前要求 LLM 将完整 markdown 报告输出为 JSON 字符串字段，由于 markdown 中未转义的 `\n`、`"`、`\` 导致频繁的 `serde_json` 解析失败。替换为基于分隔符的格式：
 
@@ -6985,11 +7144,11 @@ v0.5.2 是一个稳定性和正确性版本，包含对多个 v0.5.0 特性的�
 
 报告部分现在是原始文本，无需转义。旧的 JSON 格式作为向后兼容的回退保留。
 
-### DocumentStore 异步 Panic 修复
+#### 附录.2.3 DocumentStore 异步 Panic 修复
 
 `InMemoryDocumentStore` 和 `InMemoryChunkedDocumentStore` 之前使用 `tokio::sync::RwLock` 的 `blocking_read()`/`blocking_write()`，在异步上下文中会因 "Cannot block the current thread from within a runtime" 而 panic。当时切换为 `std::sync::RwLock`。（**v0.22.4 现状已继续演化**：`InMemoryDocumentStore` 改回 `tokio::sync::RwLock` 但全程 `.await`、不再有 blocking 调用；`InMemoryChunkedDocumentStore` 则刻意保留 `std::sync::RwLock`，因为它有同步调用方，并对 poison 做了恢复处理——读源码时以现状为准。）
 
-### CRAG 评分改进
+#### 附录.2.4 CRAG 评分改进
 
 **阈值修复**：默认 `grade_threshold` 从 `0.5` 改为 `0.6`。旧阈值处于 LLM 评分最不稳定的区域，且模糊解析默认值（`0.5`）恰好等于阈值——使纠正触发近乎随机。现在模糊默认值为 `0.4`，远低于 `0.6` 阈值。
 
@@ -7008,16 +7167,18 @@ let agent = CorrectiveRAGAgent::new(llm.clone(), retriever)
 - 幻觉检测提示词现在包含对抗性框架（"Be skeptical"）
 - 幻觉检查 LLM 失败时优雅降级（返回 `grounded: false`）而非中止
 
-### 其他 v0.5.2 变更
+#### 附录.2.5 其他 v0.5.2 变更
 
-- **Feature gate 声明**：`sandbox-e2b` 和 `sandbox-wasm` feature 在代码中被引用但未在 `Cargo.toml` `[features]` 中声明——当时补声明；**但这两个后端当时只有接口、函数体永远 "not implemented"，已在 v0.20.0 连同 feature 一起删除**（见上文[代码解释器沙箱](#代码解释器沙箱)）。**0.27.0 更新**：`sandbox-wasm` feature 与 `WasmSandbox` 以**真实现**回归（wasmi 解释器 + 自带 WASI preview1 宿主 + fuel 计量超时），`sandbox-e2b` 不再回来
+- **Feature gate 声明**：`sandbox-e2b` 和 `sandbox-wasm` feature 在代码中被引用但未在 `Cargo.toml` `[features]` 中声明——当时补声明；**但这两个后端当时只有接口、函数体永远 "not implemented"，已在 v0.20.0 连同 feature 一起删除**（见上文[代码解释器沙箱](#附录17-代码解释器沙箱)）。**0.27.0 更新**：`sandbox-wasm` feature 与 `WasmSandbox` 以**真实现**回归（wasmi 解释器 + 自带 WASI preview1 宿主 + fuel 计量超时），`sandbox-e2b` 不再回来
 - **Clippy 零警告**：所有 clippy 警告已解决
 
 ---
 
-## 更多资源
+
+### 附录.3 更多资源
 
 | 资源 | 内容 |
 |----------|---------|
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | 贡献指南 |
 | [API Docs](https://docs.rs/langchainrust) | Rust API reference |
+
