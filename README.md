@@ -13,6 +13,17 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 ---
 
+## Documentation
+
+| Docs | Content |
+|------|---------|
+| [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | 所有组件的详细用法（中文） |
+| [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
+| [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
+| [Changelog](https://github.com/atliliw/langchainrust/blob/main/CHANGELOG.md) | Release history and breaking changes |
+
+---
+
 ## Design Principles
 
 The framework is engineered around a few hard rules that come out of its own design reviews. These are what make it feel different from hand-rolled LLM glue code:
@@ -448,17 +459,6 @@ Some hard-won guidance from the framework's design reviews:
 - **Summary memory and sessions need no special wiring.** `EventSessionManager` accepts a `BaseMemory` via `with_memory` (or per-session `with_memory_factory`) for persistent multi-turn apps. The legacy `SessionManager` is deprecated and removed in 0.23.0.
 - **Unknown model prices bill $0, they don't crash the run.** `CostTracker` records usage for models missing from the `PricingTable` at zero cost — register the model price explicitly if the USD budget gate must actually constrain it; otherwise the gate silently never trips on that model.
 - **Checkpoint writes are optimistic.** Concurrent stale writes against the same LangGraph checkpoint return `GraphError::CheckpointVersionConflict` — re-read and retry, never last-write-wins (SQLite/Postgres/Redis backends all use compare-and-swap).
-
----
-
-## Documentation
-
-| Docs | Content |
-|------|---------|
-| [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | 所有组件的详细用法（中文） |
-| [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
-| [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
-| [Changelog](https://github.com/atliliw/langchainrust/blob/main/CHANGELOG.md) | Release history and breaking changes |
 
 ---
 
