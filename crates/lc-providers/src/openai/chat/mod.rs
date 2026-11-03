@@ -793,7 +793,15 @@ impl OpenAIChat {
                             // token usage from the streaming path — and, 0.20.0 S3.2, the
                             // complete tool_calls accumulated so far, so tool-call steps
                             // stream natively.
+                            //
+                            // F-16: a usage-carrying chunk is also a terminal marker. Some
+                            // compatible gateways (e.g. Ollama) emit a usage-only frame
+                            // (`{"choices":[],"usage":{...}}`) and then close the body
+                            // *without* sending `[DONE]` or a `finish_reason` (true OpenAI
+                            // appends `[DONE]` after usage). Marking terminal here keeps the
+                            // full answer from being misreported as `StreamInterrupted`.
                             if let Some(usage) = chunk.usage {
+                                saw_terminal = true;
                                 let token_usage = TokenUsage {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,

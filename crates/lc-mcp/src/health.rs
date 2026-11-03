@@ -185,6 +185,25 @@ impl CircuitBreaker {
         self.probe_in_flight
     }
 
+    /// Gates an ordinary (non-probe) acquisition — e.g. the connection manager
+    /// lazily building a *local* stateless client, which performs no network
+    /// I/O. Only rejects while the breaker is `Open` *and* its backoff is still
+    /// running (fail fast); it does **not** consume the single half-open probe
+    /// grant, so merely acquiring a client can never wedge the recovery path
+    /// with a stuck `probe_in_flight` (F-20).
+    pub fn gate_request(&mut self) -> bool {
+        match self.state {
+            BreakerState::Closed => true,
+            BreakerState::Open => {
+                let backoff_running = self
+                    .next_retry_at
+                    .map(|t| Instant::now() < t)
+                    .unwrap_or(false);
+                !backoff_running
+            }
+        }
+    }
+
     /// Records a success: back to `Closed`, resets the failure count and backoff steps.
     pub fn record_success(&mut self) {
         self.state = BreakerState::Closed;
@@ -225,7 +244,7 @@ impl CircuitBreaker {
     /// window (Open, backoff expired). Lets tests exercise the single-probe
     /// semantics without sleeping past the real backoff.
     #[cfg(test)]
-    fn force_half_open(&mut self) {
+    pub(crate) fn force_half_open(&mut self) {
         self.state = BreakerState::Open;
         self.next_retry_at = Some(Instant::now());
         self.probe_in_flight = false;

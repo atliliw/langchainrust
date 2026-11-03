@@ -1,6 +1,7 @@
 //! Token-tracking LLM wrapper and cost estimation
 
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::language_models::{BaseLanguageModel, LLMResult, StreamChunk, TokenUsage};
@@ -346,6 +347,11 @@ where
         let sink = self.metrics_sink.clone();
         let cost_tracker = self.cost_tracker.clone();
         let provider = self.provider.clone();
+        // F-15: a forwarded stream may carry `token_usage` on *every* delta chunk
+        // (compatible endpoints report running totals per chunk). Count the first
+        // usage-bearing chunk only, so usage/cost are not multiplied by the number
+        // of chunks. Mirrors the once-guard in `router_llm/mod.rs`.
+        let recorded_once = Arc::new(AtomicBool::new(false));
         let stream = stream.then(move |item| {
             let cost_scope = cost_scope.clone();
             let trace_id = trace_id.clone();
@@ -354,9 +360,14 @@ where
             let cost_tracker = cost_tracker.clone();
             let provider = provider.clone();
             let model_name = model_name.clone();
+            let recorded_once = recorded_once.clone();
             async move {
                 if let Ok(chunk) = &item {
                     if let Some(u) = &chunk.token_usage {
+                        // Skip every usage-bearing chunk after the first.
+                        if recorded_once.swap(true, Ordering::Relaxed) {
+                            return item;
+                        }
                         usage.lock().await.add(u.prompt_tokens, u.completion_tokens);
                         if let Some(tracker) = &cost_tracker {
                             tracker
@@ -486,6 +497,9 @@ mod tests {
         stream_usage: Option<TokenUsage>,
         /// Whether `bind_tools` succeeds (tool-capable mock).
         tool_capable: bool,
+        /// F-15 harness: emit many chunks, every one carrying `stream_usage`
+        /// (compatible endpoints report running usage totals per delta).
+        stream_usage_every_chunk: bool,
     }
 
     #[derive(Debug)]
@@ -559,7 +573,21 @@ mod tests {
             _config: Option<RunnableConfig>,
         ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, Self::Error>> + Send>>, Self::Error>
         {
-            let chunks = vec![
+            let chunks: Vec<Result<StreamChunk, Self::Error>> = if self.stream_usage_every_chunk {
+            // F-15: 10 deltas, every one carrying the same usage (as some
+            // compatible endpoints report per chunk).
+            (0..10_u32)
+                .map(|_| {
+                    Ok(StreamChunk {
+                        thinking_content: None,
+                        text: "x".to_string(),
+                        token_usage: self.stream_usage.clone(),
+                        tool_calls: None,
+                    })
+                })
+                .collect()
+        } else {
+            vec![
                 Ok(StreamChunk::new("hello")),
                 Ok(StreamChunk {
                     thinking_content: None,
@@ -567,7 +595,8 @@ mod tests {
                     token_usage: self.stream_usage.clone(),
                     tool_calls: None,
                 }),
-            ];
+            ]
+        };
             Ok(Box::pin(futures_util::stream::iter(chunks)))
         }
 
@@ -590,6 +619,7 @@ mod tests {
                 chat_usage,
                 stream_usage: None,
                 tool_capable,
+                stream_usage_every_chunk: false,
             },
             Arc::new(CharRatioCounter::new(4)),
         )
@@ -664,6 +694,7 @@ mod tests {
                 ..TokenUsage::default()
             }),
             tool_capable: false,
+            stream_usage_every_chunk: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
 
@@ -680,6 +711,38 @@ mod tests {
         assert_eq!(usage.completion_tokens, 15);
     }
 
+    /// F-15: compatible endpoints report `token_usage` on every delta chunk
+    /// (running totals). The once-guard must make usage/cost counted exactly once
+    /// per stream, not once per chunk.
+    #[tokio::test]
+    async fn stream_with_usage_on_every_chunk_counts_once() {
+        let llm = MockChatModel {
+            chat_usage: None,
+            stream_usage: Some(TokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                total_tokens: 120,
+                ..TokenUsage::default()
+            }),
+            tool_capable: false,
+            stream_usage_every_chunk: true, // 10 deltas, all carrying usage
+        };
+        let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
+
+        let stream = tracked
+            .stream_chat(vec![Message::human("hi")], None)
+            .await
+            .unwrap();
+        let items: Vec<_> = stream.collect().await;
+        assert_eq!(items.len(), 10);
+
+        // Counted once (single chunk's usage), not multiplied by 10.
+        let usage = tracked.get_usage().await;
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 20);
+        assert_eq!(usage.total_tokens, 120);
+    }
+
     #[tokio::test]
     async fn runnable_stream_counts_through_stream_chat() {
         let llm = MockChatModel {
@@ -691,6 +754,7 @@ mod tests {
                 ..TokenUsage::default()
             }),
             tool_capable: false,
+            stream_usage_every_chunk: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)));
 
@@ -846,6 +910,7 @@ mod tests {
                 ..TokenUsage::default()
             }),
             tool_capable: false,
+            stream_usage_every_chunk: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
             .with_metrics_sink(Arc::new(MockSink {
@@ -966,6 +1031,7 @@ mod tests {
                 ..TokenUsage::default()
             }),
             tool_capable: false,
+            stream_usage_every_chunk: false,
         };
         let tracked = TokenTrackingLLM::new(llm, Arc::new(CharRatioCounter::new(4)))
             .with_provider("mock")

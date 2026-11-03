@@ -1839,3 +1839,227 @@ async fn send_subscribe_missing_params_returns_error() {
     assert!(resp.is_error());
     assert_eq!(resp.error.unwrap().code, -32602);
 }
+
+// ---- F-27: invalid `tasks/list` status filter ----
+
+#[tokio::test]
+async fn handle_tasks_list_invalid_status_is_rejected() {
+    // F-27: an unparseable `status` filter must not silently degrade to "no
+    // filter" (which would hand the caller the full task set). It is rejected
+    // with invalid_params instead.
+    let server = echo_server();
+    let _ = server
+        .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")))
+        .await;
+    let resp = server
+        .handle_a2a_request(A2ARequest::new(
+            2,
+            "tasks/list",
+            Some(json!({ "status": "bogus" })),
+        ))
+        .await;
+    assert!(resp.is_error());
+    assert_eq!(resp.error.unwrap().code, -32602);
+
+    // A *valid* status still filters normally (regression guard against
+    // rejecting the whole feature).
+    let ok = server
+        .handle_a2a_request(A2ARequest::new(
+            3,
+            "tasks/list",
+            Some(json!({ "status": "submitted" })),
+        ))
+        .await;
+    assert!(!ok.is_error());
+}
+
+// ---- F-06: bounded in-flight executions ----
+
+#[tokio::test]
+async fn rejects_when_in_flight_budget_exhausted() {
+    // F-06: when the in-flight execution budget is exhausted, a new tasks/send
+    // must be rejected (busy) instead of spawning yet another unbounded worker.
+    // A blocking chain holds the single permit of the first task.
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let chain = Arc::new(BlockingChain {
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let server = A2AServer::new(chain).with_max_inflight_tasks(1);
+
+    let first = server
+        .handle_a2a_request(A2ARequest::send_task(1, &A2AMessage::user("hi")))
+        .await;
+    assert!(!first.is_error());
+    started.notified().await; // the worker is holding the single in-flight permit
+
+    // Budget exhausted -> rejected, not spawned.
+    let second = server
+        .handle_a2a_request(A2ARequest::send_task(2, &A2AMessage::user("more")))
+        .await;
+    assert!(second.is_error());
+    assert_eq!(
+        second.error.unwrap().code,
+        429,
+        "exhausted in-flight budget must reject, not spawn"
+    );
+
+    // Free the permit; once the worker finishes it drops the in-flight slot, so
+    // a later send is admitted again. The worker's wrap-up is async, so poll
+    // with a bounded retry rather than assuming it releases immediately.
+    release.notify_one();
+    let mut third = None;
+    for _ in 0..100 {
+        let r = server
+            .handle_a2a_request(A2ARequest::send_task(3, &A2AMessage::user("after")))
+            .await;
+        if !r.is_error() {
+            third = Some(r);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        third.is_some(),
+        "a send must succeed once the in-flight budget frees"
+    );
+}
+
+// ---- F-26: stateful cancellation (early cancel is not lost) ----
+
+#[tokio::test]
+async fn cancel_signal_fires_when_cancelled_before_any_waiter() {
+    // F-26: a bare `Notify` drops `notify_one()` issued before the worker
+    // registered its listener. The signal must remember the cancellation so the
+    // worker reacts as soon as it reaches its `select!`.
+    let signal = CancelSignal::new();
+    assert!(!signal.is_cancelled());
+    signal.cancel();
+    assert!(signal.is_cancelled());
+
+    // The waiter created *after* the cancel still resolves immediately.
+    tokio::time::timeout(Duration::from_millis(1000), signal.cancelled())
+        .await
+        .expect("cancelled() must resolve even though cancel() ran before any waiter");
+}
+
+#[tokio::test]
+async fn cancel_signal_wakes_an_already_parked_waiter() {
+    let signal = CancelSignal::new();
+    let sig = signal.clone();
+    let parked = tokio::spawn(async move { sig.cancelled().await });
+    // Give the waiter a chance to park in `select!`.
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    signal.cancel();
+    tokio::time::timeout(Duration::from_millis(1000), parked)
+        .await
+        .expect("a parked waiter is woken by cancel()")
+        .expect("waiter resolves cleanly");
+}
+
+// ---- F-25: store read failure must not leave a task stuck in `working` ----
+
+/// A store that fails `get` the first `fail_get` calls, then delegates, so a
+/// test can inject a transient read failure into the task-execution path.
+struct FlakyStore {
+    inner: InMemoryTaskStore,
+    fail_get: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl TaskStore for FlakyStore {
+    async fn get(&self, task_id: &str) -> Result<Option<StoredTask>, StoreError> {
+        use std::sync::atomic::Ordering;
+        // Check-then-decrement so the counter saturates at 0: a fetch_sub past
+        // zero would wrap to a huge value and poison every later read.
+        if self.fail_get.load(Ordering::SeqCst) > 0 {
+            self.fail_get.fetch_sub(1, Ordering::SeqCst);
+            return Err(StoreError::Unavailable("flaky read".to_string()));
+        }
+        self.inner.get(task_id).await
+    }
+
+    async fn upsert(&self, stored: StoredTask) -> Result<(), StoreError> {
+        self.inner.upsert(stored).await
+    }
+
+    async fn list(&self, filter: &TaskFilter) -> Result<Vec<StoredTask>, StoreError> {
+        self.inner.list(filter).await
+    }
+
+    async fn delete(&self, task_id: &str) -> Result<bool, StoreError> {
+        self.inner.delete(task_id).await
+    }
+
+    async fn compare_and_update(
+        &self,
+        task_id: &str,
+        update: StoredTask,
+    ) -> Result<bool, StoreError> {
+        self.inner.compare_and_update(task_id, update).await
+    }
+}
+
+#[tokio::test]
+async fn read_with_retry_recovers_from_transient_failure() {
+    // F-25: a transient store read failure must be retried, not swallowed —
+    // otherwise the task would sit in `working` forever.
+    let store: Arc<dyn TaskStore> = Arc::new(FlakyStore {
+        inner: InMemoryTaskStore::new(),
+        fail_get: std::sync::atomic::AtomicUsize::new(2),
+    });
+    store
+        .upsert(StoredTask::new(
+            A2ATask::new("t2".to_string(), A2AMessage::user("hi")).with_status(TaskStatus::Working),
+        ))
+        .await
+        .unwrap();
+
+    let stored = read_with_retry(&store, "t2").await;
+    assert!(stored.is_some(), "transient read failure is retried to a value");
+    assert_eq!(stored.unwrap().task.status, TaskStatus::Working);
+}
+
+#[tokio::test]
+async fn read_with_retry_is_bounded_on_permanent_failure() {
+    // F-25: a permanently-failing store read must not hang forever — it is
+    // surfaced (returns None) after a bounded number of attempts.
+    let store: Arc<dyn TaskStore> = Arc::new(FlakyStore {
+        inner: InMemoryTaskStore::new(),
+        fail_get: std::sync::atomic::AtomicUsize::new(1_000_000),
+    });
+    store
+        .upsert(StoredTask::new(
+            A2ATask::new("t3".to_string(), A2AMessage::user("hi")).with_status(TaskStatus::Working),
+        ))
+        .await
+        .unwrap();
+
+    let start = std::time::Instant::now();
+    let stored = read_with_retry(&store, "t3").await;
+    assert!(stored.is_none(), "permanent failure returns None after bounded attempts");
+    assert!(
+        start.elapsed() < Duration::from_millis(5_000),
+        "bounded attempts must not hang"
+    );
+}
+
+#[tokio::test]
+async fn task_reaches_terminal_despite_transient_store_read_failure() {
+    // End-to-end F-25: a transient read hiccup while the worker executes must
+    // not leave the task permanently `working`; it finalizes `completed`.
+    let store: Arc<dyn TaskStore> = Arc::new(FlakyStore {
+        inner: InMemoryTaskStore::with_max_tasks(10),
+        fail_get: std::sync::atomic::AtomicUsize::new(3),
+    });
+    let server = A2AServer::new(Arc::new(EchoChain)).with_store(store);
+
+    let task_id = send_task_id(&server, "hello").await;
+    let done = wait_for_status(&server, &task_id, "completed").await;
+    let output = done.result.unwrap()["result"]["output"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(output, "hello");
+}

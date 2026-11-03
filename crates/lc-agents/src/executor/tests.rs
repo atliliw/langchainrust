@@ -1995,10 +1995,13 @@ impl BaseAgent for MixedBudgetAgent {
     }
 }
 
-/// H2: with `max_tool_calls = 1`, a parallel batch of [real tool, not-found] must run
-/// the real tool (executed count 1 = exactly the limit) and finish normally — the
-/// not-found slot neither consumes budget nor trips the gate. The old pre-increment
-/// gate saw an attempt count of 2 > 1 and hard-stopped before executing anything.
+/// H2 + F-21: with headroom (`max_tool_calls = 2`), a parallel batch of [real tool,
+/// not-found] must run the real tool and finish normally — the not-found slot
+/// neither consumes budget nor trips the gate (`metrics.tool_calls == 1`, not 2).
+/// Note (F-21): the "real tool" here actually EXECUTES (and fails on invalid
+/// input), so under the corrected executed-only counting it consumes exactly one
+/// slot — a cap of 1 would therefore correctly trip on it. The headroom is what
+/// isolates the not-found-does-not-count property from the executed-tool share.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn budget_mixed_batch_not_found_does_not_trip_gate() {
     let executor = AgentExecutor::new(
@@ -2007,7 +2010,7 @@ async fn budget_mixed_batch_not_found_does_not_trip_gate() {
     )
     .with_max_concurrency(4)
     .with_budget(BudgetConfig {
-        max_tool_calls: Some(1),
+        max_tool_calls: Some(2),
         ..Default::default()
     });
 

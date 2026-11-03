@@ -332,7 +332,11 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Index<S> {
     /// this a parent that shrank or changed would leave phantom slots behind that
     /// inflate `n_docs`/`avgdl`, skew IDF and surface ghost hits. No-op when the
     /// parent is not (or no longer) indexed.
-    fn remove_parent_from_index(&mut self, parent_id: &str) {
+    ///
+    /// F-08: `pub(crate)` so higher-level indexes (e.g. `UnifiedHybridIndex`) can
+    /// clear a parent's BM25 slots before a changed re-ingest, mirroring this
+    /// crate's own `add_document` / `add_document_async` entry points.
+    pub(crate) fn remove_parent_from_index(&mut self, parent_id: &str) {
         let Some(leaves) = self.parent_to_leaves.get(parent_id) else {
             return;
         };
@@ -582,6 +586,14 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
         self.index.add_chunk_indexes(chunks);
     }
 
+    /// Drops every index slot belonging to `parent_id` (H3). Exposed so
+    /// higher-level indexes (e.g. `UnifiedHybridIndex`) can clear a parent's
+    /// BM25 slots before a changed re-ingest, mirroring this retriever's own
+    /// `add_document` / `add_document_async` entry points.
+    pub(crate) fn remove_parent_from_index(&mut self, parent_id: &str) {
+        self.index.remove_parent_from_index(parent_id);
+    }
+
     /// Adds a document synchronously: automatically splits Parent/Leaf and builds the index
     pub fn add_document(&mut self, document: Document) -> Result<(), VectorStoreError> {
         let parent_id = document
@@ -805,12 +817,20 @@ impl<S: ChunkedDocumentStoreTrait> ChunkedBM25Retriever<S> {
                 .collect::<Vec<_>>();
 
             if ratio >= threshold {
-                let parent_doc = self
-                    .index
-                    .store()
-                    .get_parent_document_blocking(&parent_id)
-                    .ok()
-                    .flatten();
+                // F-29: don't swallow a store read failure (former `.ok().flatten()`)
+                // into an empty merged doc entering the model — mirror the async
+                // path's explicit logging and keep `None` only for a genuine miss.
+                let parent_doc = match self.index.store().get_parent_document_blocking(&parent_id) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        log::error!(
+                            "failed to read parent `{}` during merge (parent missing from results): {}",
+                            parent_id,
+                            e
+                        );
+                        None
+                    }
+                };
 
                 results.push(ChunkedSearchResult {
                     merged_parent: parent_doc,

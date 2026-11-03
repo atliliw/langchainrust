@@ -26,6 +26,27 @@ impl InMemoryVectorStore {
             documents: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    /// F-28: verify the query vector's dimension matches the store's vectors.
+    /// The old code swallowed a mismatch with `cosine_similarity(...).unwrap_or(0.0)`,
+    /// silently returning garbled all-zero ordering; now it's an explicit error.
+    fn validate_query_dimension(
+        &self,
+        store: &HashMap<String, VectorDocument>,
+        query_embedding: &[f32],
+    ) -> Result<(), VectorStoreError> {
+        if let Some((_, first)) = store.iter().next() {
+            let stored = first.embedding.len();
+            if query_embedding.len() != stored {
+                return Err(VectorStoreError::StorageError(format!(
+                    "query embedding dimension {} does not match stored dimension {}",
+                    query_embedding.len(),
+                    stored
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for InMemoryVectorStore {
@@ -45,6 +66,24 @@ impl VectorStore for InMemoryVectorStore {
             return Err(VectorStoreError::StorageError(
                 "document count and embedding count mismatch".to_string(),
             ));
+        }
+
+        // F-28: reject a batch whose embeddings disagree on dimension up front,
+        // instead of silently storing vectors that later cosine-search would
+        // mismatch (which the old code papered over with `.unwrap_or(0.0)`).
+        if let Some(expected) = embeddings.first().map(|e| e.len()) {
+            if let Some((i, emb)) = embeddings
+                .iter()
+                .enumerate()
+                .find(|(_, e)| e.len() != expected)
+            {
+                return Err(VectorStoreError::StorageError(format!(
+                    "embedding dimension mismatch: expected {}, got {} at index {}",
+                    expected,
+                    emb.len(),
+                    i
+                )));
+            }
         }
 
         let mut store = self.documents.write().await;
@@ -89,6 +128,9 @@ impl VectorStore for InMemoryVectorStore {
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let store = self.documents.read().await;
 
+        // F-28: dimension mismatch is a caller error, not a silent all-zero zero.
+        self.validate_query_dimension(&store, query_embedding)?;
+
         // compute similarity for all documents, filter by threshold first, then take top-k (Q2)
         let mut results: Vec<SearchResult> = store
             .values()
@@ -123,6 +165,9 @@ impl VectorStore for InMemoryVectorStore {
         filter: Option<&MetadataFilter>,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
         let store = self.documents.read().await;
+
+        // F-28: dimension mismatch is a caller error, not a silent all-zero zero.
+        self.validate_query_dimension(&store, query_embedding)?;
 
         // S3: in-memory metadata filtering — filter documents by the condition first, then compute similarity and take top-k.
         let mut results: Vec<SearchResult> = store
@@ -244,6 +289,58 @@ mod tests {
 
         store.clear().await.unwrap();
         assert_eq!(store.count().await, 0);
+    }
+
+    /// F-28: a batch whose embeddings disagree on dimension is rejected at
+    /// `add_documents`, instead of silently storing vectors that later search
+    /// would mismatch.
+    #[tokio::test]
+    async fn test_add_rejects_mismatched_dimensions() {
+        let store = InMemoryVectorStore::new();
+        let err = store
+            .add_documents(
+                vec![Document::new("a"), Document::new("b")],
+                vec![vec![1.0, 0.0, 0.0], vec![1.0, 0.0]],
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("dimension mismatch"),
+            "unexpected error: {err}"
+        );
+        // nothing was stored.
+        assert_eq!(store.count().await, 0);
+    }
+
+    /// F-28: searching with a query of the wrong dimension returns an explicit
+    /// error rather than garbled all-zero ordering from the swallowed
+    /// `unwrap_or(0.0)` fallback.
+    #[tokio::test]
+    async fn test_search_rejects_dimension_mismatch() {
+        let store = InMemoryVectorStore::new();
+        store
+            .add_documents(
+                vec![Document::new("rust doc")],
+                vec![vec![1.0, 0.0, 0.0]],
+            )
+            .await
+            .unwrap();
+
+        let err = store
+            .similarity_search(&[1.0, 0.0], 1)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("dimension"),
+            "unexpected error: {err}"
+        );
+
+        // filtered search behaves the same.
+        let err = store
+            .similarity_search_with_filter(&[1.0, 0.0], 1, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("dimension"));
     }
 
     /// Q1: without a configured embedder, similarity_search_text must report EmbeddingError

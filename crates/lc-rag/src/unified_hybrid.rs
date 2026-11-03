@@ -375,6 +375,17 @@ impl UnifiedHybridIndex {
             let _ = self.vector_store.delete_document(chunk_id).await;
         }
 
+        // F-08: mirror chunked.rs's own `add_document`/`add_document_async`
+        // entries — drop this parent's previous BM25 slots BEFORE re-indexing.
+        // The old path only called `add_chunk_index` here, so re-ingesting the
+        // same parent with a shorter/different chunk set left phantom slots
+        // behind: the index grew without bound, avgdl/IDF drifted, and deleted
+        // segments kept surfacing as ghost hits.
+        {
+            let mut bm25 = self.bm25_retriever.lock().await;
+            bm25.remove_parent_from_index(&parent_id);
+        }
+
         let mut chunk_docs = Vec::new();
         let mut chunk_embeddings = Vec::new();
         for (segment, chunk) in chunks.iter().enumerate() {
@@ -467,19 +478,28 @@ impl UnifiedHybridIndex {
         let fused_scores: HashMap<String, (f64, Document)> = match self.config.fusion {
             FusionMode::Rrf => {
                 let mut scores: HashMap<String, (f64, Document)> = HashMap::new();
-                for (doc, _) in &bm25_results {
+                // F-07: fold by parent per leg — a parent spanning several chunks
+                // contributes only its best (first) rank once per leg, so a
+                // multi-chunk parent is not inflated by 1/(k+rank) per chunk.
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for (run_idx, (doc, _)) in bm25_results.iter().enumerate() {
                     let doc_id = doc.id.clone().unwrap_or_default();
-                    let rank = bm25_ranks.get(&doc_id).copied().unwrap_or(999);
-                    let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
+                    if !seen.insert(doc_id.clone()) {
+                        continue;
+                    }
+                    let contribution = 1.0 / (self.config.rrf_k as f64 + (run_idx + 1) as f64);
                     scores
                         .entry(doc_id.clone())
                         .and_modify(|(s, _)| *s += contribution)
                         .or_insert((contribution, doc.clone()));
                 }
-                for (doc, _) in &vector_results {
+                seen.clear();
+                for (run_idx, (doc, _)) in vector_results.iter().enumerate() {
                     let doc_id = doc.id.clone().unwrap_or_default();
-                    let rank = vector_ranks.get(&doc_id).copied().unwrap_or(999);
-                    let contribution = 1.0 / (self.config.rrf_k as f64 + rank as f64);
+                    if !seen.insert(doc_id.clone()) {
+                        continue;
+                    }
+                    let contribution = 1.0 / (self.config.rrf_k as f64 + (run_idx + 1) as f64);
                     scores
                         .entry(doc_id.clone())
                         .and_modify(|(s, _)| *s += contribution)
@@ -1308,6 +1328,143 @@ mod tests {
                 .iter()
                 .map(|r| r.document.id.clone())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// Builds a `LateChunk` directly (text + a mock document vector), letting
+    /// tests drive `add_late_chunked_document` without a token-level model.
+    fn manual_chunk(text: &str, mock: &DualEncoderMock) -> crate::late_chunking::LateChunk {
+        crate::late_chunking::LateChunk {
+            range: (0, text.len()),
+            text: text.to_string(),
+            vector: mock.document_embedding(text),
+        }
+    }
+
+    /// F-08: `add_late_chunked_document` must drop a re-ingested parent's old
+    /// BM25 slots (mirroring chunked.rs's own entry points). The former path
+    /// only called `add_chunk_index`, so re-ingesting the same parent with a
+    /// shorter chunk set grew the index and left the deleted segments hitting
+    /// as phantom results.
+    #[tokio::test]
+    async fn late_chunked_reingest_shrunk_parent_drops_phantom_slots() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = small_index(embeddings);
+
+        let pid = "late-reingested";
+        let chunks = vec![
+            manual_chunk("filler filler filler filler", &mock),
+            manual_chunk("filler filler filler filler", &mock),
+            manual_chunk("distinctive zebraphantom tail term", &mock),
+        ];
+        index
+            .add_late_chunked_document(
+                Document::new("unused".to_string()).with_id(pid.to_string()),
+                &chunks,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(index.chunk_count().await, 3);
+        {
+            let mut bm25 = index.bm25_retriever.lock().await;
+            assert_eq!(bm25.len(), 3, "bm25 must hold the 3 ingest chunks");
+            let hits = bm25.search("zebraphantom", 5);
+            assert!(!hits.is_empty(), "ingested distinctive term must hit first");
+        }
+
+        // Re-ingest the SAME parent with a single short segment carrying no
+        // distinctive term.
+        let shrunk = vec![manual_chunk("tiny new content", &mock)];
+        index
+            .add_late_chunked_document(
+                Document::new("unused".to_string()).with_id(pid.to_string()),
+                &shrunk,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(index.chunk_count().await, 1);
+        {
+            let mut bm25 = index.bm25_retriever.lock().await;
+            assert_eq!(
+                bm25.len(),
+                1,
+                "F-08: shrunken late-chunk parent must not grow the bm25 index"
+            );
+            let hits = bm25.search("zebraphantom", 5);
+            assert!(
+                hits.is_empty(),
+                "F-08: deleted segment's term must no longer hit: {:?}",
+                hits.iter().map(|h| h.content()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// F-07: RRF folds per parent per leg, so a parent matching through many
+    /// chunks cannot out-rank a genuinely relevant single-snippet parent.
+    /// "solo" tops both legs (highest cosine + shortest for BM25) and must win
+    /// over "multi" (several zebra chunks) instead of being swamped by multi's
+    /// accumulated per-chunk 1/(k+rank).
+    #[tokio::test]
+    async fn rrf_folds_multi_chunk_parent_in_retrieve_with_details() {
+        let mock = DualEncoderMock::new(32);
+        let embeddings: Arc<dyn Embeddings> = mock.clone();
+        let index = small_index(embeddings);
+
+        index
+            .add_document(Document::new("zebra".to_string()).with_id("solo"))
+            .await
+            .unwrap();
+
+        // multi: several chunks, each with zebra diluted by 5 distinct filler
+        // tokens → per-chunk cosine √(1/6) < 1, so its chunks rank behind solo
+        // on both legs.
+        let fillers = distinct_bucket_tokens(5, "zebra", 32);
+        let sentence = std::iter::once("zebra".to_string())
+            .chain(fillers)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let multi_text = std::iter::repeat_n(sentence.as_str(), 6)
+            .collect::<Vec<_>>()
+            .join(" . ");
+        index
+            .add_document(Document::new(multi_text).with_id("multi"))
+            .await
+            .unwrap();
+
+        let n_multi = index
+            .document_store()
+            .get_chunks_for_parent("multi")
+            .await
+            .unwrap()
+            .len();
+        assert!(
+            n_multi >= 2,
+            "multi must split into several chunks, got {n_multi}"
+        );
+
+        let results = index.retrieve_with_details("zebra", 5).await.unwrap();
+        let solo = results
+            .iter()
+            .find(|r| r.document.id.as_deref() == Some("solo"))
+            .expect("solo retrieved");
+        let multi = results
+            .iter()
+            .find(|r| r.document.id.as_deref() == Some("multi"))
+            .expect("multi retrieved");
+
+        assert_eq!(
+            results[0].document.id.as_deref(),
+            Some("solo"),
+            "F-07: the single-chunk relevant parent must rank above the multi-chunk parent"
+        );
+        assert!(
+            solo.rrf_score > multi.rrf_score,
+            "F-07: solo rrf {} must exceed multi rrf {}",
+            solo.rrf_score,
+            multi.rrf_score
         );
     }
 }

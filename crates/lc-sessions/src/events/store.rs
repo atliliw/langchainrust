@@ -6,6 +6,8 @@
 
 use async_trait::async_trait;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::model::SessionEvent;
 use crate::store::SessionError;
@@ -74,6 +76,20 @@ pub trait EventStore: Send + Sync {
         branch: &str,
         before_id: u64,
     ) -> Result<(), SessionError>;
+
+    /// F-09: returns the striped lock that serializes one manager's
+    /// `chat()`/`record_tool_use()` sequence for a `(session_id, branch)` log.
+    ///
+    /// A store-backed implementation returns the *same* lock to every caller,
+    /// so two independently-constructed managers over the same store (e.g. one
+    /// per request or restart) mutually exclude each other instead of racing
+    /// the same log — a race makes two `chat()` compute the same `next_id`,
+    /// and the idempotent append silently drops the losing turn (data loss).
+    /// The default returns a fresh lock per call (no cross-manager
+    /// serialization); third-party stores opt into sharing by overriding.
+    fn session_lock(&self, _session_id: &str, _branch: &str) -> Arc<tokio::sync::Mutex<()>> {
+        Arc::new(tokio::sync::Mutex::new(()))
+    }
 }
 
 /// In-memory [`EventStore`] — tests and single-process scenarios.
@@ -83,6 +99,11 @@ pub trait EventStore: Send + Sync {
 /// `append_batch`/`fork` atomic under concurrency.
 pub struct MemoryEventStore {
     events: tokio::sync::Mutex<BTreeMap<(String, String, u64), SessionEvent>>,
+    /// F-09: striped locks shared by *every* caller over this store, keyed by
+    /// `(session_id, branch)`. Because the table lives here (not in each
+    /// manager), two independently-constructed `EventSessionManager`s over the
+    /// same store serialize their `chat()` sequences — see the trait doc.
+    session_locks: std::sync::Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl MemoryEventStore {
@@ -90,6 +111,7 @@ impl MemoryEventStore {
     pub fn new() -> Self {
         Self {
             events: tokio::sync::Mutex::new(BTreeMap::new()),
+            session_locks: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -268,6 +290,13 @@ impl EventStore for MemoryEventStore {
             events.remove(&k);
         }
         Ok(())
+    }
+
+    fn session_lock(&self, session_id: &str, branch: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self.session_locks.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry((session_id.to_string(), branch.to_string()))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 }
 
@@ -572,5 +601,23 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+
+    /// F-09: the same `(session, branch)` yields the *same* lock to every caller,
+    /// so two managers over this store mutually exclude each other; an unrelated
+    /// session or branch gets its own lock (independent concurrency).
+    #[test]
+    fn session_lock_is_shared_across_callers() {
+        let store = MemoryEventStore::new();
+        let l1 = store.session_lock("s1", "main");
+        let l2 = store.session_lock("s1", "main");
+        assert!(
+            Arc::ptr_eq(&l1, &l2),
+            "same (session, branch) must share one lock"
+        );
+        let other_branch = store.session_lock("s1", "experiment");
+        assert!(!Arc::ptr_eq(&l1, &other_branch));
+        let other_session = store.session_lock("s2", "main");
+        assert!(!Arc::ptr_eq(&l1, &other_session));
     }
 }

@@ -34,7 +34,7 @@ use tokio::sync::{oneshot, Mutex};
 use crate::protocol::{
     notification_message, JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_ERROR_REQUEST_TIMEOUT,
 };
-use crate::server::{read_bounded_line, MAX_STDIO_LINE_BYTES};
+use crate::server::MAX_STDIO_LINE_BYTES;
 
 /// Grace period for the child to exit after its stdin gets EOF, before kill.
 const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(800);
@@ -296,21 +296,112 @@ impl StdioTransport {
     }
 }
 
-/// Reads stdout lines and routes JSON-RPC messages for the session's lifetime.
+/// Reads stdout frames and routes JSON-RPC messages for the session's lifetime.
 async fn stdout_reader(inner: Arc<Inner>, stdout: ChildStdout) {
     let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
     loop {
         // Bounded read: a misbehaving server can never OOM this reader by
-        // emitting an arbitrarily long line — oversize frames fail cleanly and
-        // the reader keeps draining the pipe (see #H-5).
-        match read_bounded_line(&mut reader, &mut line, MAX_STDIO_LINE_BYTES).await {
-            Ok(0) => break, // EOF: process exited or closed stdout
-            Ok(_) => handle_line(&inner, line.trim_end()).await,
+        // emitting an arbitrarily long line. An oversized frame is *skipped in
+        // place* (drained, drop, keep reading) rather than treated as fatal —
+        // one malformed/oversized tool result must not kill the whole session
+        // and fail every in-flight request (F-19, see #H-5).
+        match read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await {
+            Ok(Frame::Eof) => break, // process exited or closed stdout
+            Ok(Frame::Line(line)) => handle_line(&inner, line.trim_end()).await,
+            Ok(Frame::OversizeSkipped) => {
+                log::warn!(
+                    target: "lc_mcp::transport::stdio",
+                    "skipping stdio frame >{} bytes (Oversize); in-flight \
+                     requests remain intact",
+                    MAX_STDIO_LINE_BYTES
+                );
+            }
             Err(_) => break,
         }
     }
     fail_all_pending(&inner).await;
+}
+
+/// The outcome of reading the next stdio frame.
+#[derive(Debug)]
+enum Frame {
+    /// EOF reached with no buffered line.
+    Eof,
+    /// A complete newline-terminated frame (trailing `\n` included).
+    Line(String),
+    /// A single frame exceeded the size cap and was discarded in place (the
+    /// stream is realigned to the following frame; nothing else was dropped).
+    OversizeSkipped,
+}
+
+/// Reads the next newline-terminated frame from a stdio stream with a hard
+/// per-frame byte cap.
+///
+/// A frame longer than `max` is not buffered past the cap and is *skipped
+/// entirely* — its in-flight remainder is drained without being stored and the
+/// reader resumes at the next `\n`-bounded frame. This keeps a single oversized
+/// tool result from killing the connection the way a fatal `InvalidData` would
+/// (F-19); the memory bound (#H-5) is preserved because nothing past the cap is
+/// accumulated.
+async fn read_next_frame<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max: usize,
+) -> std::io::Result<Frame> {
+    let mut line = String::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            // EOF: return whatever was already buffered (a trailing unterminated
+            // line) or an explicit Eof when nothing is pending.
+            return Ok(if line.is_empty() {
+                Frame::Eof
+            } else {
+                Frame::Line(line)
+            });
+        }
+        let newline = available.iter().position(|&b| b == b'\n');
+        let consumed = match newline {
+            Some(pos) => pos + 1,
+            None => available.len(),
+        };
+        if line.len() + consumed > max {
+            // Crossed the cap: discard this frame. Consume the current chunk
+            // (through its newline if that ended the frame), then drain the
+            // continuation — but only if the newline wasn't in this chunk, so a
+            // frame that ends inside this chunk isn't double-discarded.
+            let ended = newline.is_some();
+            reader.consume(consumed);
+            if !ended {
+                drain_to_newline(reader).await?;
+            }
+            return Ok(Frame::OversizeSkipped);
+        }
+        line.push_str(&String::from_utf8_lossy(&available[..consumed]));
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(Frame::Line(line));
+        }
+    }
+}
+
+/// Consumes (without buffering) everything up to and including the next `\n`,
+/// so the reader resumes on a frame boundary after skipping an oversized frame.
+async fn drain_to_newline<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<()> {
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(()); // EOF mid-skip
+        }
+        let newline = available.iter().position(|&b| b == b'\n');
+        let consumed = match newline {
+            Some(pos) => pos + 1,
+            None => available.len(),
+        };
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(());
+        }
+    }
 }
 
 /// Parses and dispatches one stdout frame.
@@ -468,6 +559,68 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.is_connection_lost(), "{err}");
+    }
+
+    /// F-19: an oversized frame is skipped in place rather than treated as
+    /// fatal — following valid frames are read intact, so one >8MiB tool result
+    /// cannot kill the connection and drop the rest of the protocol.
+    #[tokio::test]
+    async fn oversized_frame_is_skipped_and_following_frames_read() {
+        use std::io::Cursor;
+        let big = "x".repeat(MAX_STDIO_LINE_BYTES + 1024);
+        // Oversized first frame, then two valid JSON-RPC frames.
+        let data = format!("{big}\n{{\"id\":1}}\n{{\"id\":2}}\n");
+        let mut reader = BufReader::new(Cursor::new(data));
+
+        assert!(
+            matches!(
+                read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap(),
+                Frame::OversizeSkipped
+            ),
+            "oversized frame must be skipped, not fatal"
+        );
+        let frame = read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap();
+        if let Frame::Line(line) = frame {
+            assert_eq!(line.trim_end(), "{\"id\":1}");
+        } else {
+            panic!("first valid frame must be read after the oversized one, got {frame:?}");
+        }
+        let frame = read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap();
+        if let Frame::Line(line) = frame {
+            assert_eq!(line.trim_end(), "{\"id\":2}");
+        } else {
+            panic!("second valid frame must be read, got {frame:?}");
+        }
+        assert!(
+            matches!(
+                read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap(),
+                Frame::Eof
+            ),
+            "all frames consumed; the reader must then observe EOF, not fail"
+        );
+    }
+
+    /// F-19 variant: an oversized frame whose newline lands in the *same* buffered
+    /// chunk as the reported over-cap must still be skipped exactly once (not
+    /// double-discarded past its own newline, which would swallow the next frame).
+    #[tokio::test]
+    async fn oversized_frame_ending_in_same_chunk_skips_once() {
+        use std::io::Cursor;
+        // Just over the cap, fed so the newline sits in the first (only) chunk.
+        let big = "y".repeat(MAX_STDIO_LINE_BYTES + 4);
+        let data = format!("{big}\n{{\"id\":9}}\n");
+        let mut reader = BufReader::new(Cursor::new(data));
+
+        assert!(matches!(
+            read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap(),
+            Frame::OversizeSkipped
+        ));
+        let frame = read_next_frame(&mut reader, MAX_STDIO_LINE_BYTES).await.unwrap();
+        if let Frame::Line(line) = frame {
+            assert_eq!(line.trim_end(), "{\"id\":9}");
+        } else {
+            panic!("the valid frame after the oversized one must be preserved, got {frame:?}");
+        }
     }
 
     /// StdioCommand builders compose.

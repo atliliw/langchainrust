@@ -1404,7 +1404,7 @@ Every memory above manages **conversation history** — which messages go into t
 
 **The pain point:** a conversation window cannot hold cross-session facts. Summary memory compresses "what was talked about", and facts erode across summarization rounds; besides, a summary only lives within its own session. Semantic memory stores "facts worth remembering long-term" separately, and at the start of a new session recalls entries semantically relevant to the current question to inject into the prompt — exactly the memory model of generative-agents-style systems.
 
-##### 3.1.9.7 The unified `MemoryStore` interface
+##### 3.1.9.1 The unified `MemoryStore` interface
 
 All three stores (`ShortTermMemory` / `LongTermMemory` / `TwoTierMemory`) implement the same trait and can be shared with multiple executors via `Arc`:
 
@@ -1426,7 +1426,7 @@ pub trait MemoryStore: Send + Sync {
 - A returned `MemoryHit { key, text, score, importance, tier: MemoryTier, metadata }` says whether the hit came from `MemoryTier::Short` or `Long`.
 - Both `get` and a `search` hit count as **one access** (`last_access_at` refreshed, `access_count +1`) — the counter the promotion mechanism below relies on.
 
-##### 3.1.9.8 Where similarity comes from: `SemanticScorer` and the zero-dependency default
+##### 3.1.9.2 Where similarity comes from: `SemanticScorer` and the zero-dependency default
 
 ```rust
 #[async_trait]
@@ -1437,7 +1437,7 @@ pub trait SemanticScorer: Send + Sync {
 
 The default `LexicalScorer` **calls no model**: it Unicode-aware-tokenizes both texts and scores cosine similarity over term-frequency vectors — fully offline, deterministic, zero extra dependencies. That means the out-of-the-box "semantic" recall is really **lexical overlap** matching: asking "refund policy" recalls facts containing the words "refund" and "policy", but not a paraphrase like "how long until the returned item arrives". For genuine vector semantics, implement `SemanticScorer` yourself (calling your embedding model) and inject it via `ShortTermMemory::with_scorer(capacity, Arc::new(scorer))` or `LongTermMemory::with_config(weights, Arc::new(scorer))`; the store layer needs no changes.
 
-##### 3.1.9.9 What the two tiers are
+##### 3.1.9.3 What the two tiers are
 
 | | Short term `ShortTermMemory::new(capacity)` | Long term `LongTermMemory::new()` |
 |---|---|---|
@@ -1455,7 +1455,7 @@ score = 0.70 · similarity + 0.15 · 2^(−age / half_life · ln2) + 0.15 · imp
 - Tunable: `DecayWeights::new().with_weights(0.6, 0.2, 0.2).with_half_life(Duration::from_secs(3*24*3600))`.
 - Effect: frequently recalled facts stay "fresh", old high-importance facts can still surface, and old untouched facts naturally sink.
 
-##### 3.1.9.10 `TwoTierMemory`: composing the tiers + promotion
+##### 3.1.9.4 `TwoTierMemory`: composing the tiers + promotion
 
 ```rust
 use langchainrust::memory::{TwoTierMemory, MemoryItem, MemoryQuery, PromotionPolicy};
@@ -1484,7 +1484,7 @@ let hits = mem.search(&MemoryQuery::new("user-42", "which languages does he like
 
 Promotion is an **OR condition**: importance qualifies (high-value facts recognized at write time) **or** repeated access does (high-value facts earned through use). Re-promotion never creates duplicates — the long tier merges by key: earliest creation time kept, access counts accumulated, importance maxed, text updated to the newest, metadata merged.
 
-##### 3.1.9.11 Wiring it to `AgentExecutor`: recall before, extraction after
+##### 3.1.9.5 Wiring it to `AgentExecutor`: recall before, extraction after
 
 `lc-agents` ships an LLM fact extractor, `LlmMemoryExtractor` (exported at the facade crate root), and an executor switch that is **off by default**:
 
@@ -1507,7 +1507,7 @@ Behavior per run once wired:
 
 The extractor's fault tolerance is worth knowing: the model is asked to return just a JSON array (`{key, text, importance}`), yet the parser tolerates fenced code blocks and surrounding prose (via `parse_llm_json`), and also accepts `{"memories":[...]}` / `{"items":[...]}` envelopes; one bad item is skipped, not fatal; missing importance defaults to 0.5; a missing key is derived deterministically from the normalized fact text (extracting the same fact twice updates one row); at most 10 items per turn are accepted to keep a runaway model bounded; an empty assistant output short-circuits without a model call.
 
-##### 3.1.9.12 Boundaries and caveats
+##### 3.1.9.6 Boundaries and caveats
 
 - **Pure in-memory, no built-in persistence**: all three stores are in-process structures (shareable across tasks via `Arc`); dropping them means forgetting. Cross-process/restart survival requires implementing `MemoryStore` yourself (Mongo, etc.) or taking application-level snapshots.
 - **The default scorer is lexical overlap, not vector semantics**; bring your own `SemanticScorer` for embedding-based recall.
@@ -1874,6 +1874,13 @@ let results = chain.batch(vec![1, 2, 3], None).await?;
 // results = ["Result: 2", "Result: 4", "Result: 6"]
 ```
 
+**What this is:** Feed a **batch of inputs** to a Runnable at once and run the same chain over each of them, returning the **entire batch of results** in one call (one input → one output, N inputs → an array of N outputs). It is equivalent to looping `invoke` N times, but more convenient.
+
+- By default inputs run sequentially.
+- `RunnableConfig.max_concurrency` controls how many run **concurrently** — useful for independent, parallelizable inputs.
+
+**Typical use cases:** data cleaning/scoring, batch translation, generating summaries for many documents at once — any case that processes many items together.
+
 #### 4.1.13 Stream Execution
 
 ```rust
@@ -1884,6 +1891,10 @@ while let Some(item) = stream.next().await {
     println!("Token: {}", item?);
 }
 ```
+
+**What this is:** **Fetch results as they're generated** — unlike `invoke`, which waits for the entire result to finish before returning one complete output, here you get each output piece one at a time (for an LLM, that's a token), pulling them with `stream.next()`.
+
+**Typical use cases:** typewriter-style per-character display, streaming a long document out section by section, front-ends that want to "reply to the user first, then slowly give the full text." Note that streaming requires underlying component support — not every Runnable can stream. Chained with `RunnableBranch` / `RunnableWithFallbacks`, it can stream too.
 
 #### 4.1.14 RunnableWithFallbacks (Fallback on Failure) ✨ v0.10.0
 
@@ -1900,6 +1911,13 @@ let chain = primary.with_fallbacks(vec![fallback.into_runnable_any()]);
 let result = chain.invoke(-5, None).await?;
 // result = 10 (fallback executed)
 ```
+
+**What this is:** Give a Runnable a **fallback** — when the primary Runnable **fails (errors/panics), it automatically switches to the backup Runnable** and keeps going instead of failing the call. It returns the result from whichever branch succeeded.
+
+- Primary fails → tries each fallback in order; it only errors if all of them fail.
+- Unlike `RunnableBranch` (chooses a branch by input content) and `RunnableRetry` (retries the same thing), this one **swaps the implementation** — it neither retries nor decides by content.
+
+**Typical use cases:** auto-switching to a backup model when the primary times out or is unavailable; degrading to a cache or local processing when a data source is down. `primary.with_fallbacks(vec![fallback])` can attach several backups at once.
 
 #### 4.1.15 RunnableAssign (Field Injection) ✨ v0.10.0
 
@@ -2365,6 +2383,12 @@ let answer = chain.predict("What is Rust?").await?;
 ### 4.3 Document Chains
 
 When you have too many documents to fit in a single prompt, Document Chains provide different strategies for processing multiple documents:
+
+**Let's first clear up two common misunderstandings:**
+
+1. **"Why can't the documents fit into the prompt?"** Because the prompt is sent to the LLM as context, and every LLM has an input **token limit (context window)**. When documents are many or long and their total exceeds the limit, the model either errors out or only sees half and answers wrongly. The bottleneck is not program memory — assembling a string is easy — it's the **upper bound a model can read in one go**. This is a hard architectural boundary of the model.
+
+2. **"If I feed them in batches, the LLM has no memory — so what's the point?"** The key to Document Chains is that **cross-batch memory doesn't rely on the LLM remembering at all** — the program accumulates each batch's **compressed result as text and feeds it into the next batch**. Take MapReduce: in the Map phase each document calls the LLM independently and yields **one short answer** (stored in a `Vec<String>`); the Reduce phase then stitches those answers together into a fresh prompt for the LLM to summarize. Each time the model is indeed a "blank slate with no memory", but the program writes the previous step's result onto the new slate before handing it over — that's "memory written on paper". The essence is **compression**: 10 long documents won't fit, but 10 short answers from those documents always will; information is carried across by the "long document → short answer" compression. The cost is more LLM calls (pricier than one shot), but when the window can't hold everything, it's the only way to make an answer that spans documents.
 
 | Chain | Strategy | Use Case |
 |-------|----------|----------|
@@ -3966,6 +3990,8 @@ println!("dim = {}", embedder.dimension()); // 384 (config.hidden_size)
 
 An optional capability trait: implementors return `(byte-offset span, L2-normalized vector)` per token. It is deliberately **not** part of the main `Embeddings` trait — the capability is opt-in (detected by whether it is implemented), so providers without token-level output are never forced into the contract.
 
+**How is this different from regular embeddings, and what's it for?** A regular embedding maps "a piece of text → one vector" (the whole sentence collapsed into a single point), and every provider has it. Token-level embeddings map "a piece of text → one vector per token, plus its byte position inside the original text" — only a few long-context models that support token output can do this (Qwen3-Embedding / BGE-M3 / Jina v3); pooling-based models can't, which is exactly why it lives outside the main trait. It is a prerequisite for [6.2.12 Late Chunking](#6212-late-chunking-v0210): token-level embedding first gives each token's vector and position, so late chunking can pool them into chunk vectors along chunk boundaries; without it, post-chunking is impossible.
+
 ```rust
 use langchainrust::embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings, TokenSpan};
 
@@ -4678,6 +4704,8 @@ The idea is "write the answer first, then look it up": a short query is an old p
 | User question far from document phrasing | Vector similarity unreliable | Use HyDE to improve recall |
 | Worried the hypothetical answer biases retrieval | Generated content quality is unstable | Turn on `with_include_original_query` to fold the original query into retrieval |
 | Recall sufficient, only precision wanted | Retrieved results are relevant enough | No HyDE needed, retrieve directly + rerank |
+
+**How to read these rows?** The four scenarios above where "HyDE is the fix" are really the same thing: **the user's query and the documents' phrasing are not on the same wavelength**, so vector similarity scores unreliable. HyDE's job is to have the LLM first "expand the query into a paragraph that reads like a document", then retrieve with that paragraph's embedding — once the wording aligns, recall improves. Take searching "HDFS 性能": the embedding only recognizes those 4 words, while the document writes "HDFS small-file reads under high concurrency are bounded by namenode memory and RPC overhead" — 4 words versus a whole sentence of specialized description, so similarity is obviously low; HyDE has the LLM write a plausible hypothetical answer first, whose style mirrors the real documents, then searches. Note again that the hypothetical answer can be wrong — it only serves to "align the wording"; what's returned is still the real document. The last row is the reverse — **if you already retrieve well, don't use HyDE**; it just burns an extra LLM call, so retrieving directly + reranking is cheaper.
 
 #### 6.7.2 How It Works
 

@@ -348,6 +348,40 @@ data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,
         );
     }
 
+    /// F-16: a compatible gateway (e.g. Ollama) may close the body after a
+    /// usage-only frame (`{"choices":[],"usage":{...}}`) without sending
+    /// `[DONE]` or a final `finish_reason` (true OpenAI appends `[DONE]` after
+    /// usage). The usage frame must count as the terminal marker — otherwise the
+    /// complete answer is misreported as `StreamInterrupted`.
+    #[tokio::test]
+    async fn stream_chat_usage_only_then_close_completes_ok() {
+        let sse_body = "\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi there\"},\"finish_reason\":null}]}\n\n\
+data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt\",\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3,\"total_tokens\":13}}\n\n";
+        let (base_url, _captured) = spawn_sse_server(sse_body).await;
+
+        let chat =
+            OpenAIChat::new(OpenAIConfig::new("test_key").with_base_url(format!("{base_url}/v1")));
+        let mut stream = chat
+            .stream_chat_internal(vec![Message::human("hi")])
+            .await
+            .unwrap();
+
+        let mut text = String::new();
+        let mut terminal_usage: Option<TokenUsage> = None;
+        while let Some(item) = stream.next().await {
+            let chunk =
+                item.expect("a usage-only close is a normal completion, not an interrupted stream");
+            text.push_str(&chunk.text);
+            if chunk.token_usage.is_some() {
+                terminal_usage = chunk.token_usage.clone();
+            }
+        }
+        assert_eq!(text, "Hi there", "the full answer must not be truncated");
+        let usage = terminal_usage.expect("the terminal usage chunk is delivered");
+        assert_eq!(usage.total_tokens, 13);
+    }
+
     /// A12 regression guard: a stream that ends with a `finish_reason` chunk but
     /// no explicit `[DONE]` sentinel (common among OpenAI-compatible servers)
     /// is a normal completion and must NOT be flagged as interrupted.

@@ -429,7 +429,11 @@ fn truncate_docs_by_tokens(docs: &[Document], max_tokens: Option<usize>) -> Vec<
                     log::warn!("token counting failed, falling back to byte-length estimate: {e}");
                     doc.content.len()
                 });
-                if used_tokens + doc_tokens > budget && !result.is_empty() {
+                // F-23: cap each document independently — the first (most relevant)
+                // doc is not exempt, so a single oversized doc cannot blow the model
+                // context. A doc that alone exceeds the remaining budget is skipped
+                // rather than injected whole.
+                if used_tokens + doc_tokens > budget {
                     break;
                 }
                 used_tokens += doc_tokens;
@@ -657,6 +661,26 @@ mod tests {
         // Budget of 5 tokens — only first doc fits (or is included even if it exceeds)
         let result = truncate_docs_by_tokens(&docs, Some(5));
         assert!(result.len() < 2);
+    }
+
+    /// F-23: a single (most-relevant) doc that alone exceeds the budget must be
+    /// skipped, not injected whole — so one oversized doc can no longer blow the
+    /// model context above the source cap.
+    #[test]
+    fn test_truncate_docs_by_tokens_skips_oversized_first_doc() {
+        let docs = vec![Document::new(
+            "Rust is a systems programming language focused on memory safety, speed, \
+             and concurrency without a garbage collector; this document is far too \
+             large for a minimal token budget.",
+        )];
+        // 1-token budget: the sole (highest-relevance) doc alone exceeds it, so it
+        // must be skipped instead of being injected whole.
+        let result = truncate_docs_by_tokens(&docs, Some(1));
+        assert!(
+            result.is_empty(),
+            "oversized first doc must be skipped, got {} doc(s)",
+            result.len()
+        );
     }
 
     /// Verify word-boundary-aware matching: "not grounded" should NOT match as "grounded".

@@ -249,6 +249,13 @@ impl MCPServer {
         self.auth_validator.as_ref()
     }
 
+    /// The resource-subscription registry when one is attached (0.27.0 T1).
+    /// The transport layer reads it so it can drop a retiring session's
+    /// subscription interest on TTL/session teardown (F-18).
+    pub(crate) fn subscriptions(&self) -> Option<&Arc<ResourceSubscriptions>> {
+        self.subscriptions.as_ref()
+    }
+
     /// Registers a tool
     pub fn with_tool(mut self, tool: Arc<dyn BaseTool>) -> Self {
         self.tools.push(tool);

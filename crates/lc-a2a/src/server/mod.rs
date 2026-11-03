@@ -81,7 +81,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, RwLock, Semaphore};
 
 use lc_agents::AgentExecutor;
 use lc_chains::base::BaseChain;
@@ -97,7 +97,9 @@ use super::router::{SkillMapRouter, SkillRouter};
 use super::store::{InMemoryTaskStore, StoredTask, TaskStore, DEFAULT_MAX_TASKS};
 use crate::security::SandboxConfig;
 
-use execution::{run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX_WORKFLOW_STEPS};
+use execution::{
+    read_with_retry, run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX_WORKFLOW_STEPS,
+};
 use handlers::{forbidden, publish_status, task_details_response, task_not_found};
 use message::extract_message;
 
@@ -125,6 +127,13 @@ fn task_scoped_stream(
 
 /// Default task time-to-live before expiry cleanup (24 hours).
 const DEFAULT_TASK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// Default cap on concurrent in-flight executions (F-06).
+///
+/// Without a bound, each `tasks/send` acks and spawns a worker; a burst lets a
+/// remote caller drive unbounded CPU/upstream load. This ceiling rejects a task
+/// (busy error) instead of spawning yet another worker when exhausted.
+const DEFAULT_MAX_IN_FLIGHT: usize = 64;
 
 /// Maximum number of tracked idempotency keys before the oldest entry is
 /// evicted (0.22.0 audit fix H-P5: the `message_id` table used to grow
@@ -179,6 +188,54 @@ impl MessageIdTable {
 
     fn remove(&mut self, mid: &str) {
         self.map.remove(mid);
+    }
+}
+
+/// A stateful cancellation signal shared between `tasks/cancel` and an
+/// in-flight worker (F-26).
+///
+/// `tokio::sync::Notify` alone is a *lost-wakeup* hazard: `notify_one()` issued
+/// before the worker's `select!` has registered its `notified()` waiter is
+/// dropped, so a cancel that lands right after the task is created never stops
+/// the running chain even though the status flips to `cancelled`. Recording the
+/// signal in an `AtomicBool` lets such an early cancel take effect once the
+/// worker reaches its `select!`. The retry loop below additionally re-checks the
+/// flag after constructing the `notified` future, closing the check-then-await
+/// race against a `cancel()` landing between those two steps.
+#[derive(Clone, Default)]
+pub(crate) struct CancelSignal {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl CancelSignal {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record the cancellation and wake any worker already parked in `select!`.
+    fn cancel(&self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    /// Whether [`Self::cancel`] has been called, even before the worker parked.
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolve when the signal fires; returns immediately if it already fired.
+    async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            // Re-check after building the waiter so a `cancel()` landing between
+            // an earlier check and `notified()` is not lost.
+            if self.is_cancelled() {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -248,8 +305,20 @@ pub struct A2AServer {
     /// set this to `false` so self-reported owners are ignored on every path.
     trust_metadata_owner: bool,
     /// task_id -> cancellation signal, so `tasks/cancel` can terminate an
-    /// in-flight `run_task` future rather than only flip status (B7).
-    cancellations: Arc<RwLock<HashMap<String, Arc<tokio::sync::Notify>>>>,
+    /// in-flight `run_task` future rather than only flip status (B7). Uses a
+    /// stateful [`CancelSignal`] (F-26) so a cancel issued before the worker is
+    /// parked is remembered instead of lost (a bare `Notify` would drop it).
+    cancellations: Arc<RwLock<HashMap<String, Arc<CancelSignal>>>>,
+    /// Bounds concurrent in-flight task/workflow executions (F-06).
+    ///
+    /// A2A acks `tasks/send` immediately and runs each chain in a spawned
+    /// worker. Without a cap, a burst of requests spawns an unbounded number of
+    /// `tokio::spawn` workers, letting a remote caller drive CPU/upstream load.
+    /// A default ceiling is installed; use
+    /// [`A2AServer::with_max_inflight_tasks`](Self::with_max_inflight_tasks) to
+    /// tune it (or `0` to disable). When the budget is exhausted a new task is
+    /// rejected with a busy error instead of spawning another worker.
+    in_flight: Arc<Semaphore>,
 }
 
 impl A2AServer {
@@ -296,6 +365,7 @@ impl A2AServer {
             // server (auth principal stamp) or absent.
             trust_metadata_owner: false,
             cancellations: Arc::new(RwLock::new(HashMap::new())),
+            in_flight: Arc::new(Semaphore::new(DEFAULT_MAX_IN_FLIGHT)),
         }
     }
 
@@ -320,6 +390,23 @@ impl A2AServer {
     /// discarding any tasks stored so far. Call this before sending tasks.
     pub fn with_max_tasks(mut self, max: usize) -> Self {
         self.store = Arc::new(InMemoryTaskStore::with_max_tasks(max.max(1)));
+        self
+    }
+
+    /// Bound how many task/workflow executions may be in flight at once (F-06).
+    ///
+    /// A cap is installed by default ([`DEFAULT_MAX_IN_FLIGHT`]); use this to
+    /// tune it. A `max` of `0` disables the bound (unbounded spawned workers).
+    /// When the budget is exhausted a new `tasks/send` is rejected with a busy
+    /// error (HTTP 429) rather than spawning yet another worker — a remote
+    /// caller cannot drive unbounded CPU/upstream load through a burst.
+    pub fn with_max_inflight_tasks(mut self, max: usize) -> Self {
+        let permits = if max == 0 {
+            Semaphore::MAX_PERMITS
+        } else {
+            max
+        };
+        self.in_flight = Arc::new(Semaphore::new(permits));
         self
     }
 

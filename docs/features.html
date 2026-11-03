@@ -527,7 +527,12 @@
         </div>
 
         <div class="sidebar-nav">
-            
+
+                <div class="nav-section">
+                <div class="nav-section-title">第一章 · 快速上手</div>
+                <a href="#quickstart" class="nav-item">🚀 Quickstart</a>
+                </div>
+
                 <div class="nav-section">
                 <div class="nav-section-title">第二章 · 语言模型与提示</div>
                 <a href="#llm" class="nav-item">💬 LLMs</a>
@@ -598,6 +603,7 @@
 
                 <div class="nav-section">
                 <div class="nav-section-title">第九章 · 数据持久化</div>
+                <a href="#mongodb" class="nav-item">🍃 MongoDB</a>
                 <a href="#storage" class="nav-item">💾 Storage Backends</a>
                 <a href="#chromadb" class="nav-item">💜 ChromaDB</a>
                 </div>
@@ -638,6 +644,138 @@
                 <h1 class="doc-title">功能 <span class="doc-title-accent">文档</span></h1>
                 <p class="doc-desc">LangChainRust 模块全面概览</p>
             </header>
+
+            <!-- ch1 -->
+            <section class="module chapter" id="ch1"><div class="chapter-head"><h2>第一章 · 快速上手</h2></div><hr class="divider"></section>
+
+<section class="module" id="quickstart">
+                <div class="module-header">
+                    <span class="module-icon">🚀</span>
+                    <h2>1.0 Quickstart 快速上手</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>从零搭一个 LLM 应用。</strong>先能<strong>对话</strong>，再能<strong>记住上下文</strong>，然后能<strong>检索文档</strong>，最后能<strong>调用工具</strong>。每一节在前一节的基础上加一块能力，照着往下读就能跑通。</p>
+                    <p style="color: var(--accent-tertiary); margin-top: var(--gap-md);">一条连续的程序：安装 → 对话 → 模板 → 链 → 记忆 → RAG → 智能体。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>1.1 安装与环境变量</h3><p>langchainrust = "0.28.0" + tokio；设置 OPENAI_API_KEY / OPENAI_BASE_URL，换 Provider 只换环境变量</p></div>
+                    <div class="feature-card"><h3>1.2 第一次聊天</h3><p>OpenAIChat + Message::system / Message::human，chat() 返回完整 LLMResult；stream_chat() 边生成边看</p></div>
+                    <div class="feature-card"><h3>1.3 提示词模板</h3><p>ChatPromptTemplate 用 {变量名} 占位，invoke 传入 HashMap 填充；变量缺失响亮报错</p></div>
+                    <div class="feature-card"><h3>1.4 用 LCEL 组合成链</h3><p>prompt.pipe(llm).pipe(parser) 一条链，invoke / batch / stream / transform 统一</p></div>
+                    <div class="feature-card"><h3>1.5 加记忆</h3><p>RunnableWithMessageHistory 把「读记忆 → 拼输入 → LLM → 写回」封装成一个 Runnable</p></div>
+                    <div class="feature-card"><h3>1.6 接上检索（RAG）</h3><p>RAGPipelineBuilder + RagRunnable，检索本地完成、零向量库也能跑；query_with_sources 拿引用</p></div>
+                    <div class="feature-card"><h3>1.7 给它工具（变成智能体）</h3><p>FunctionCallingAgent 读 tool_calls，AgentExecutor 执行；max_iterations 上限保护</p></div>
+                    <div class="feature-card"><h3>1.8 下一步</h3><p>换模型/流式/结构化见第二章；多轮记忆见第三章；完整 RAG 见第六章；MCP 见第七章</p></div>
+                </div>
+
+                <h3>安装与环境变量</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">toml</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">[dependencies]</span>
+langchainrust = <span class="str">"0.28.0"</span>
+tokio = { version = <span class="str">"1"</span>, features = [<span class="str">"full"</span>] }</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">bash</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="comment"># 以 OpenAI 为例;换 Provider 只需换环境变量</span>
+<span class="kw">export</span> OPENAI_API_KEY=<span class="str">"sk-..."</span>
+<span class="kw">export</span> OPENAI_BASE_URL=<span class="str">"https://api.openai.com/v1"</span>   <span class="comment"># 可选,默认官方地址</span></code></pre>
+                </div>
+
+                <h3>第一次聊天</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
+<span class="kw">use</span> langchainrust::schema::Message;
+
+<span class="comment">// 11 家 Provider 都实现同一个 BaseChatModel trait,换 Provider 只改 XxxConfig 一处</span>
+<span class="kw">let</span> llm = OpenAIChat::new(OpenAIConfig {
+    api_key: std::env::var(<span class="str">"OPENAI_API_KEY"</span>)?,
+    model: <span class="str">"gpt-4o-mini"</span>.to_string(),
+    ..Default::default()
+});
+
+<span class="kw">let</span> response = llm.chat(
+    vec![
+        Message::system(<span class="str">"你是一个简洁的 Rust 助手。"</span>),
+        Message::human(<span class="str">"用一句话说明什么是 Rust。"</span>),
+    ],
+    <span class="kw">None</span>,
+).await?;
+
+println!(<span class="str">"{}"</span>, response.content);</code></pre>
+                </div>
+
+                <h3>用 LCEL 组合成一条链</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{ChatPromptTemplate, Message, Runnable, StrOutputParser};
+<span class="kw">use</span> std::collections::HashMap;
+
+<span class="kw">let</span> prompt = ChatPromptTemplate::from_messages([
+    Message::system(<span class="str">"你是一个简洁的 Rust 助手。"</span>),
+    Message::human(<span class="str">"{question}"</span>),
+]);
+
+<span class="kw">let</span> chain = prompt.pipe(llm).pipe(StrOutputParser::new());
+
+<span class="kw">let</span> <span class="kw">mut</span> vars = HashMap::new();
+vars.insert(<span class="str">"question"</span>.to_string(), <span class="str">"什么是所有权系统?"</span>.to_string());
+<span class="kw">let</span> answer: <span class="type">String</span> = chain.invoke(vars, <span class="kw">None</span>).await?;
+println!(<span class="str">"{answer}"</span>);</code></pre>
+                </div>
+
+                <h3>接上检索：RAG（零向量库也能跑）</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="comment">// 使用 BM25 本地关键词检索,不依赖任何向量数据库</span>
+<span class="kw">use</span> langchainrust::{BM25Retriever, Document, RAGPipelineBuilder, RagRunnable, Runnable};
+
+<span class="kw">let</span> <span class="kw">mut</span> retriever = BM25Retriever::new();
+retriever.add_documents_sync(vec![
+    Document::new(<span class="str">"Rust 是一门系统编程语言,注重安全和性能。"</span>).with_id(<span class="str">"rust_intro"</span>),
+]);
+
+<span class="kw">let</span> pipeline = RAGPipelineBuilder::new()
+    .llm(llm)
+    .retriever(retriever)
+    .retrieve_k(<span class="num">2</span>)
+    .build()?;
+
+<span class="kw">let</span> rag_chain = RagRunnable::new(Arc::new(pipeline));
+<span class="kw">let</span> answer: <span class="type">String</span> = rag_chain.invoke(<span class="str">"Rust 有哪些核心特性?"</span>.to_string(), <span class="kw">None</span>).await?;
+<span class="comment">// 想要引用来源: RAGPipeline::query_with_sources() 返回每条引文</span></code></pre>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ 第一条链跑通</div>
+                    <p>完整分步教程见 docs/USAGE.md 第一章；每一步对应章节锚点：对话见 2.1 LLM、记忆见 3.1 Memory、完整 RAG 见 6.3 RAG。</p>
+                </div>
+
+                <hr class="divider">
+            </section>
 
             <!-- ch2 -->
             <section class="module chapter" id="ch2"><div class="chapter-head"><h2>第二章 · 语言模型与提示</h2></div><hr class="divider"></section>
@@ -1053,6 +1191,8 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                     <p><strong>模型路由</strong> 实现 BaseChatModel，在异构模型池上按策略路由调用，失败时自动切换。</p>
                 </div>
 
+                <p><strong>RouterLLM</strong> 实现 <code>BaseChatModel</code>：在异构模型池中按策略挑选主模型，失败 / 超预算时按注册顺序逐个回退，对调用方就是一个普通 chat 模型，即插即用。六种路由策略（前五种 v0.5.0，<code>LatencyWeighted</code> ✨ v0.22.4）+ 共享预算闸门 + 每模型限流。</p>
+
                 <table class="data-table">
                     <thead>
                         <tr><th>策略</th><th>说明</th><th>适用场景</th></tr>
@@ -1061,10 +1201,54 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                         <tr><td><strong>Fallback</strong></td><td>主模型优先，失败切换备用</td><td>可靠性</td></tr>
                         <tr><td><strong>RoundRobin</strong></td><td>轮询模型</td><td>负载均衡</td></tr>
                         <tr><td><strong>LeastLatency</strong></td><td>选择最低 EMA 延迟</td><td>速度优化</td></tr>
+                        <tr><td><strong>LatencyWeighted(beta)</strong> ✨v0.22.4</td><td>按 (1/延迟)^beta 加权抽签选主，没试过的模型乐观共享最佳延迟（保留探索流量），SplitMix64 确定性抽签</td><td>既要低延迟、又不想把新模型戳死</td></tr>
                         <tr class="highlight-row"><td><strong>LowestCost</strong></td><td>选择最便宜模型</td><td>成本优化</td></tr>
-                        <tr><td><strong>InputDirected</strong></td><td>基于闭包选择</td><td>自定义路由</td></tr>
+                        <tr><td><strong>InputDirected</strong></td><td>基于闭包选择（按输入文本路由）</td><td>自定义路由</td></tr>
                     </tbody>
                 </table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>ModelRateLimit ✨v0.22.4</h3><p>单槽位准入闸门：滑窗限 RPS/RPM、并发上限、FIFO 等待队列；限流饱和自动切到备援模型</p></div>
+                    <div class="feature-card"><h3>RouterBudget ✨v0.22.4</h3><p>共享美元/token 闸门（可多路由共享）；超限付费槽位跳过、免费槽位仍可兜底；超限错误 <code>RouterBudgetExceeded</code> 沿回退链传递</p></div>
+                    <div class="feature-card"><h3>三种定价</h3><p>with_cost 相对成本 / with_priced_model+ModelPrice 真实美元单价 / with_registry 可 JSON 拉取模型目录</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RouterLLM, RoutingStrategy, BaseChatModel};
+
+<span class="comment">// Fallback:主模型 + 备用模型(便捷构造器)</span>
+<span class="kw">let</span> router = RouterLLM::with_fallbacks(gpt4, vec![claude, local_model]);
+
+<span class="comment">// 延迟加权(beta=1.0:100ms 模型被抽中为主的概率约为 1000ms 的 10 倍)</span>
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LatencyWeighted(<span class="num">1.0</span>))
+    .with_model(fast_model)
+    .with_model(slow_but_smart_model);
+
+<span class="comment">// 每模型限流:主模型限流饱和时自动切到备援</span>
+<span class="kw">use</span> langchainrust::ModelRateLimit;
+<span class="kw">let</span> limit = ModelRateLimit::per_minute(<span class="num">600</span>)
+    .with_max_concurrent(<span class="num">20</span>)
+    .with_max_queue(<span class="num">32</span>)
+    .with_wait_timeout(Duration::from_secs(<span class="num">2</span>));
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::Fallback)
+    .with_model_rate_limited(primary, limit)
+    .with_model(backup);
+
+<span class="comment">// 共享预算闸门:5 美元 / 200 万 token</span>
+<span class="kw">use</span> langchainrust::RouterBudget;
+<span class="kw">let</span> budget = RouterBudget::with_cost_and_token_limits(<span class="num">5.0</span>, <span class="num">2_000_000</span>);
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_priced_model(paid, price)
+    .with_model(free_local)          <span class="comment">// 预算跳开后付费槽位跳过、免费槽位仍兜底</span>
+    .with_budget(budget.clone());
+
+<span class="comment">// 作为普通 BaseChatModel 使用——即插即用替换</span>
+<span class="kw">let</span> result = router.chat(messages, <span class="kw">None</span>).await?;</code></pre>
+                </div>
 
                 <hr class="divider">
             </section>
@@ -1155,6 +1339,43 @@ memory.save_context(&inputs, &outputs).await?;
                     <div class="feature-card"><h3>RunnableParallel</h3><p>扇出/扇入</p></div>
                     <div class="feature-card"><h3>RunnableBranch</h3><p>条件路由</p></div>
                     <div class="feature-card"><h3>RunnableBinding</h3><p>配置/kwargs 绑定</p></div>
+                    <div class="feature-card"><h3>RunnableWithFallbacks ✨v0.10.0</h3><p>with_fallbacks 兜底：主 Runnable 失败/panic 时自动按顺序切到备用，不重试、不靠内容判断</p></div>
+                    <div class="feature-card"><h3>RunnableAssign ✨v0.10.0</h3><p>parallel.assign() 在 parallel 输出 HashMap 中注入新字段</p></div>
+                    <div class="feature-card"><h3>RunnableRetry ✨v0.11.0</h3><p>with_retry(RetryConfig)：失败按指数退避自动重试（RetryOn::TransientErrors 默认 / AllErrors / Custom）</p></div>
+                    <div class="feature-card"><h3>CancellationToken ✨v0.11.0</h3><p>跨任务共享取消标记：cancel() 后所有 clone 同时变取消态，长任务轮询 is_cancelled() 优雅退出</p></div>
+                </div>
+
+                <h3>降级回退、字段注入、自动重试与取消</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RunnableExt, RunnableLambda};
+<span class="kw">use</span> langchainrust::core::runnables::{RetryConfig, RunnableAssign};
+
+<span class="comment">// 1. RunnableWithFallbacks —— 主失败自动切备用(类型相同直接传,内部自动抹类型)</span>
+<span class="kw">let</span> primary = RunnableLambda::new_sync(|x: i32| <span class="kw">if</span> x &lt; 0 { panic!(<span class="str">"negative"</span>) } <span class="kw">else</span> { x * 2 });
+<span class="kw">let</span> fallback = RunnableLambda::new_sync(|x: i32| x.abs() * 2);
+<span class="kw">let</span> chain = primary.with_fallbacks(vec![fallback]);
+<span class="kw">let</span> result = chain.invoke(-5, <span class="kw">None</span>).await?;  <span class="comment">// result = 10 (fallback 执行)</span>
+
+<span class="comment">// 2. RunnableRetry —— 失败指数退避重试(最多 5 次,初始 100ms,倍增 2.0)</span>
+<span class="kw">let</span> config = RetryConfig::new(<span class="num">5</span>)
+    .with_initial_delay(Duration::from_millis(<span class="num">100</span>))
+    .with_max_delay(Duration::from_secs(<span class="num">5</span>))
+    .with_backoff_multiplier(<span class="num">2.0</span>);
+<span class="kw">let</span> chain = flaky.with_retry(config);
+
+<span class="comment">// 3. RunnableAssign —— 在 parallel 输出中注入新字段</span>
+<span class="kw">let</span> chain = parallel.assign(<span class="str">"answer"</span>, RunnableLambda::new_sync(|m| <span class="str">"基于上下文"</span>.to_string()));
+
+<span class="comment">// 4. CancellationToken —— 跨任务共享取消标记,注入 Runnable 配置</span>
+<span class="kw">let</span> token = CancellationToken::new();
+<span class="kw">let</span> config = RunnableConfig::default().with_cancellation_token(token.clone());
+<span class="kw">let</span> result = chain.invoke(input, Some(config)).await?;
+<span class="kw">if</span> token.is_cancelled() { <span class="kw">return</span> Ok(<span class="str">"stopped by cancellation"</span>.to_string()); }</code></pre>
                 </div>
 
                 <h3>管道组合示例</h3>
@@ -1860,18 +2081,158 @@ graph.validate()?;
 <hr class="divider"></section>
 
 <section class="module" id="embeddings"><div class="module-header"><span class="module-icon">🌱</span><h2>6.2 Embeddings</h2></div>
-<div class="card"><p><strong>文本 → 固定维度浮点向量。</strong>使语义相近文本在向量空间距离更近，是语义检索、相似度计算、RAG 的基础。</p></div>
-<table class="data-table"><thead><tr><th>提供商</th><th>类</th><th>维度</th></tr></thead><tbody>
-<tr><td>OpenAI</td><td><code>OpenAIEmbeddings</code></td><td>1536</td></tr>
-<tr><td>DeepSeek</td><td><code>DeepSeekEmbeddings</code></td><td>1536</td></tr>
-<tr><td>Qwen</td><td><code>QwenEmbeddings</code></td><td>1536</td></tr>
-<tr><td>Cohere</td><td><code>CohereEmbeddings</code></td><td>自定义（多语言）</td></tr>
-<tr><td>FastEmbed</td><td><code>FastEmbedEmbeddings</code></td><td>384（本地 ONNX）</td></tr>
-<tr><td>Candle ✨v0.21.0</td><td><code>CandleEmbeddings</code></td><td>模型决定（local-candle）</td></tr>
-<tr><td>Cohere 视觉 ✨v0.22.4</td><td><code>CohereVisionEmbeddings</code></td><td>1536（图文同一空间）</td></tr>
-<tr><td>Qwen 视觉 ✨v0.22.4</td><td><code>QwenVisionEmbeddings</code></td><td>1024（图文同一空间）</td></tr>
+<div class="card"><p><strong>文本 → 固定维度浮点向量。</strong>使语义相近文本在向量空间距离更近，是语义检索、相似度计算、RAG 的基础。所有 Provider 统一实现 <code>Embeddings</code> trait（<code>embed</code> / <code>embed_batch</code> / <code>embed_query</code>），可直接替换。</p></div>
+
+<div class="card-grid">
+<div class="feature-card"><h3>6.2.1 支持的 Embeddings</h3><p>11 家后端：OpenAI / DeepSeek / Qwen / Cohere / FastEmbed / BagOfWords / Mock / LocalEmbeddings / CandleEmbeddings / 视觉双后端</p></div>
+<div class="feature-card"><h3>6.2.8 统一 trait ✨v0.15.0</h3><p>embed / embed_batch / embed_query；错误语义 EmptyInput / EmptyVectorInBatch / BatchMismatch，不静默吞错</p></div>
+<div class="feature-card"><h3>6.2.9 重试与并发 ✨v0.15.0</h3><p>对 429/5xx 自动重试（默认 3 次）+ jitter 抖动，优先遵循 Retry-After；批量并发 8、批次上限 2048；统一 L2 归一化</p></div>
+<div class="feature-card"><h3>6.2.11-12 Token 级嵌入 / Late Chunking ✨v0.21.0</h3><p>TokenLevelEmbeddings 返回每 token 向量+字节位置；late_chunk 沿块边界 mean-pooling，每块携带全文上下文</p></div>
+<div class="feature-card"><h3>6.2.13 视觉嵌入 ✨v0.22.4</h3><p>图文同一向量空间：CohereVision / QwenVision / MockVision，以文搜图</p></div>
+</div>
+
+<table class="data-table"><thead><tr><th>提供商</th><th>类</th><th>维度</th><th>特性 </th></tr></thead><tbody>
+<tr><td><strong>OpenAI</strong></td><td><code>OpenAIEmbeddings</code></td><td>1536</td><td>高质量</td></tr>
+<tr><td>DeepSeek</td><td><code>DeepSeekEmbeddings</code></td><td>1536</td><td>高性价比</td></tr>
+<tr><td>Qwen</td><td><code>QwenEmbeddings</code></td><td>1536</td><td>中文优化；Qwen3-Embedding 支持 matryoshka</td></tr>
+<tr><td>Cohere</td><td><code>CohereEmbeddings</code></td><td>自定义</td><td>RAG 场景、多语言</td></tr>
+<tr><td>FastEmbed</td><td><code>FastEmbedEmbeddings</code></td><td>384</td><td>本地 ONNX 加速</td></tr>
+<tr><td>BagOfWords</td><td><code>BagOfWordsEmbeddings</code></td><td>自定义</td><td>纯本地词袋</td></tr>
+<tr><td>Mock</td><td><code>MockEmbeddings</code></td><td>自定义</td><td>测试用</td></tr>
+<tr><td>Local</td><td><code>LocalEmbeddings</code></td><td>默认</td><td>纯 Rust 离线（local-embeddings feature）</td></tr>
+<tr><td>Candle ✨v0.21.0</td><td><code>CandleEmbeddings</code></td><td>模型决定</td><td>纯 Rust 推理（local-candle feature）</td></tr>
+<tr><td>Cohere 视觉 ✨v0.22.4</td><td><code>CohereVisionEmbeddings</code></td><td>1536</td><td>图文同一空间（Embed v4.0），无 feature 门控</td></tr>
+<tr><td>Qwen 视觉 ✨v0.22.4</td><td><code>QwenVisionEmbeddings</code></td><td>1024</td><td>图文同一空间（multimodal-embedding-v1），无 feature 门控</td></tr>
 </tbody></table>
-<div class="feature-card"><h3>语义向量空间</h3><p>embed / embed_batch；纯 Rust 离线：LocalEmbeddings、CandleEmbeddings</p></div>
+
+<h3>6.2.2 OpenAI 嵌入</h3>
+<p>text-embedding-ada-002，1536 维，质量最高但需要 API 调用。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{OpenAIEmbeddings, Embeddings};
+<span class="kw">use</span> std::sync::Arc;
+
+<span class="kw">let</span> embeddings = Arc::new(OpenAIEmbeddings::new(std::env::var(<span class="str">"OPENAI_API_KEY"</span>)?));
+
+<span class="kw">let</span> vector = embeddings.embed(<span class="str">"Rust is a systems language"</span>).await?;
+<span class="comment">// Dimension: 1536;批量用 embed_batch(texts)</span></code></pre></div>
+
+<h3>6.2.3 DeepSeek 嵌入</h3>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{DeepSeekEmbeddings, Embeddings};
+
+<span class="kw">let</span> embeddings = Arc::new(DeepSeekEmbeddings::from_env_result()?);
+<span class="kw">let</span> vector = embeddings.embed(<span class="str">"Deep learning fundamentals"</span>).await?;</code></pre></div>
+
+<h3>6.2.4 Qwen 嵌入</h3>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{QwenEmbeddings, Embeddings};
+
+<span class="kw">let</span> embeddings = Arc::new(QwenEmbeddings::from_env_result()?);
+<span class="kw">let</span> vector = embeddings.embed(<span class="str">"Qwen vector generation"</span>).await?;</code></pre></div>
+
+<h3>6.2.5 Qwen3-Embedding 与 matryoshka 维度 ✨v0.21.0</h3>
+<p>Qwen3 系列（<code>qwen3-embedding-0.6b</code> / <code>4b</code> / <code>8b</code>）在 <code>QwenEmbeddingsConfig</code> 中注册了维度映射，支持 <strong>matryoshka 输出</strong>：通过 <code>with_dimensions</code> 指定 32~4096 之间的任意输出维度，DashScope 按需截断向量——存储成本与检索精度可按需权衡。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{QwenEmbeddings, QwenEmbeddingsConfig};
+
+<span class="comment">// Qwen3-Embedding + 自定义输出维度(with_dimensions 返回 Result,0.6B 默认 1024 维)</span>
+<span class="kw">let</span> config = QwenEmbeddingsConfig::new(<span class="str">"sk-..."</span>)
+    .with_model(<span class="str">"qwen3-embedding-0.6b"</span>)
+    .with_dimensions(<span class="num">512</span>)?;
+<span class="kw">let</span> embeddings = Arc::new(QwenEmbeddings::new(config)?);
+<span class="kw">assert_eq!</span>(embeddings.dimension(), <span class="num">512</span>);
+
+<span class="comment">// 不设 dimensions 时用模型默认:0.6B=1024 / 4B=2560 / 8B=4096</span>
+<span class="kw">let</span> e8b = QwenEmbeddings::new(QwenEmbeddingsConfig::new(<span class="str">"sk-..."</span>).with_model(<span class="str">"qwen3-embedding-8b"</span>))?;
+<span class="kw">assert_eq!</span>(e8b.dimension(), <span class="num">4096</span>);</code></pre></div>
+<div class="callout info"><div class="callout-title">关键行为</div><p>默认模型仍是 <code>text-embedding-v1</code>（1536 维）兼容旧代码；dimensions 范围校验 32~4096，越界报错；只有 Qwen3 系列支持 matryoshka 截断。</p></div>
+
+<h3>6.2.6 Mock 嵌入（测试用）</h3>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{MockEmbeddings, Embeddings};
+
+<span class="kw">let</span> embeddings = Arc::new(MockEmbeddings::new(<span class="num">128</span>));  <span class="comment">// 自定义维度,不调用任何 API</span>
+<span class="kw">let</span> vector = embeddings.embed(<span class="str">"Test text"</span>).await?;     <span class="comment">// len = 128</span></code></pre></div>
+
+<h3>6.2.7 LocalEmbeddings（纯 Rust 离线）</h3>
+<p>词频哈希 + L2 归一化，无需 API 调用，适用离线 / 隐私 / 零成本的粗粒度检索。基于词袋哈希，语义质量有限。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::LocalEmbeddings;
+
+<span class="kw">let</span> emb = LocalEmbeddings::default_dim();
+<span class="kw">let</span> vec = emb.embed_query(<span class="str">"hello world"</span>).await?;</code></pre></div>
+
+<h3>6.2.8 统一 Embeddings trait ✨v0.15.0</h3>
+<p>错误语义：<code>EmptyInput</code>（空文本）/ <code>EmptyVectorInBatch</code>（批次某条空向量）/ <code>BatchMismatch</code>（输入条数≠返回向量数）。任一条嵌入失败即返回明确错误，不做静默降级。</p>
+
+<h3>6.2.9 重试与并发 ✨v0.15.0</h3>
+<p>对 429 / 5xx 自动重试（默认 3 次），带 <strong>jitter 抖动</strong>（避免重试风暴）并优先遵循服务端 <code>Retry-After</code> 响应头 ✨v0.21.0；批量嵌入并发度 8、批次上限 2048；向量统一 L2 归一化，便于余弦相似度比对。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{OpenAIEmbeddings, Embeddings, retrieval::graph_rag::EmbeddingMatcher};
+
+<span class="kw">let</span> emb = Arc::new(OpenAIEmbeddings::new(<span class="str">"sk-..."</span>));
+<span class="kw">let</span> docs = vec![<span class="str">"Rust ownership"</span>.into(), <span class="str">"Borrow checker"</span>.into()];
+<span class="kw">let</span> matcher = EmbeddingMatcher::new(emb, docs);
+<span class="kw">let</span> top = matcher.query(<span class="str">"memory safety in Rust"</span>, <span class="num">2</span>).await?;  <span class="comment">// 语义最相近的 2 篇</span></code></pre></div>
+
+<h3>6.2.10 CandleEmbeddings（纯 Rust 本地推理）✨v0.21.0</h3>
+<p>基于 Candle 的 CPU-only 本地嵌入后端，无需 ONNX Runtime。启用 <code>local-candle</code> feature 后可用，支持 BERT 家族模型（mask 加权 mean-pooling，L2 归一化，批大小 16）。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::embeddings::CandleEmbeddings;
+<span class="kw">use</span> langchainrust::Embeddings;
+
+<span class="comment">// 方式一:从 Hugging Face Hub 下载(config.json + tokenizer.json + model.safetensors,带缓存)</span>
+<span class="kw">let</span> embedder = CandleEmbeddings::from_hf_hub(<span class="str">"BAAI/bge-small-en-v1.5"</span>)?;
+<span class="comment">// 方式二:从本地模型目录加载 from_dir("./models/bge-small")</span>
+
+<span class="kw">let</span> vec = embedder.embed_query(<span class="str">"Rust is a systems programming language."</span>).await?;
+println!(<span class="str">"dim = {}"</span>, embedder.dimension());  <span class="comment">// 384(config.hidden_size)</span></code></pre></div>
+
+<h3>6.2.11 Token 级嵌入（TokenLevelEmbeddings）✨v0.21.0</h3>
+<div class="card"><p><strong>可选能力 trait。</strong>实现方为每个 token 返回 <code>(字节偏移 span, L2 归一化向量)</code>。它<strong>不在</strong> <code>Embeddings</code> 主 trait 里——实现了才有（能力探测），避免给不支持 token 输出的 provider 强加契约。它是 <a href="#embeddings">6.2.12 Late Chunking</a> 的前置能力：先按 token 逐个嵌入拿到每个 token 的向量和位置，后分块才能沿块边界池化成块向量。</p></div>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings, TokenSpan};
+
+<span class="kw">pub trait</span> TokenLevelEmbeddings {
+    <span class="kw">async fn</span> embed_tokens(&self, text: &amp;str)
+        -> Result&lt;Vec&lt;TokenEmbedding&gt;, langchainrust::embeddings::EmbeddingError&gt;;
+}
+<span class="comment">// TokenSpan 是字节偏移(多字节安全): "你好 world" → world 的 span 是 { start: 7, end: 12 }
+// 本地 fastembed(ONNX) 路径已实现该能力(与常规 embed 共享推理管线)</span></code></pre></div>
+
+<h3>6.2.12 Late Chunking（后分块）✨v0.21.0</h3>
+<p>传统做法"先切块、再逐块嵌入"会让每块丢失全文上下文。late chunking 反过来：<strong>整篇文本先过一次 token 级嵌入，再按块边界对 token 向量做 mean-pooling</strong>，每块都携带全文上下文。长文档检索质量通常更好。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::retrieval::late_chunking::{late_chunk, LateChunkConfig};
+
+<span class="kw">let</span> config = LateChunkConfig::new()
+    .with_chunk_size(<span class="num">1024</span>)     <span class="comment">// 字节,默认 1024</span>
+    .with_chunk_overlap(<span class="num">128</span>);  <span class="comment">// 字节,默认 128,须满足 0 &lt; overlap &lt; size</span>
+config.validate()?;
+
+<span class="kw">let</span> chunks = late_chunk(&amp;embedder, <span class="str">"整篇长文档……"</span>, &amp;config).await?;
+<span class="comment">// c.range = (start, end) 字节区间;c.text = 块文本;c.vector = 池化后 L2 归一化向量
+// 注意:需要模型支持 token 级输出;块内自洽的短文档收益为零</span></code></pre></div>
+
+<h3>6.2.13 视觉嵌入（图文同一向量空间）✨v0.22.4</h3>
+<p>多模态嵌入把<strong>图片和文本映射进同一个向量空间</strong>——这让"以文搜图 / 以图搜文"成为可能。0.22.4 新增（均<strong>无 feature 门控</strong>）：</p>
+<table class="data-table"><thead><tr><th>类型</th><th>后端</th><th>维度</th><th>密钥</th></tr></thead><tbody>
+<tr><td><code>CohereVisionEmbeddings</code></td><td>Cohere Embed v4.0（图片必须内联字节）</td><td>1536</td><td><code>COHERE_API_KEY</code></td></tr>
+<tr><td><code>QwenVisionEmbeddings</code></td><td>DashScope <code>multimodal-embedding-v1</code>（可传公网 URL，服务端抓取）</td><td>1024</td><td><code>QWEN_API_KEY</code></td></tr>
+<tr><td><code>MockVisionEmbeddings</code></td><td>确定性离线后端</td><td>自定义</td><td>无（测试用）</td></tr>
+</tbody></table>
+<p>图片用供应商中立的 <code>ImageInput</code> 表达：<code>from_url(url)</code> / <code>from_data_uri(...)</code> / <code>from_base64(raw, "image/png")</code>。Cohere 后端要求内联字节，纯 URL 会被显式拒绝（库不替你去抓调用方给的 URL——那会绕过 SSRF 防护）；需要 URL 入库就自己抓取后走 <code>Base64</code>，或改用支持 URL 引用的 DashScope 后端。</p>
+<div class="code-block"><div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">复制</button></div>
+<pre><code><span class="kw">use</span> langchainrust::embeddings::{ImageInput, QwenVisionEmbeddings, VisionEmbeddings};
+
+<span class="kw">let</span> vision = QwenVisionEmbeddings::from_env_result()?;  <span class="comment">// QWEN_API_KEY</span>
+<span class="kw">let</span> img_vec = vision
+    .embed_image(&amp;ImageInput::from_url(<span class="str">"https://example.com/shoe.jpg"</span>))
+    .await?;
+<span class="kw">let</span> text_vec = vision.embed_text(<span class="str">"红色运动鞋"</span>).await?;
+<span class="comment">// 两个向量同空间、均 L2 归一化,直接算余弦即跨模态相似度</span>
+<span class="kw">assert_eq!</span>(vision.dimension(), <span class="num">1024</span>);</code></pre></div>
+<div class="callout warning"><div class="callout-title">⚠️ 关键约定</div><p>文本查询必须用<strong>同一个视觉模型</strong>的 <code>embed_text</code>，不能拿纯文本 <code>Embeddings</code> 的向量去查图片库（两个模型家族的向量空间不一致）；后端保证返回向量 L2 归一化、批量请求条数对齐（不一致直接报错，不静默）。多模态 RAG 的切块/检索封装见 <a href="#rag">6.3</a>。</p></div>
 <hr class="divider"></section>
 
 <section class="module" id="rag" style="animation-delay: 0.5s;">
@@ -1989,6 +2350,50 @@ retriever.add_documents_sync(vec![
                     </tbody>
                 </table>
 
+                <h3>ChunkedBM25Retriever（父子结构）</h3>
+
+                <div class="card">
+                    <p><strong>解决"小块匹配但丢失上下文"。</strong>文档先分割为叶子块建立 BM25 索引，检索时如果同一父文档的多个叶子块都匹配，就自动合并为完整的父文档返回（阈值门控：命中比例过 <code>AutoMergingConfig</code> 阈值才合并）。</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
+
+<span class="kw">let</span> config = AutoMergingConfig::new()
+    .with_leaf_size(<span class="num">400</span>)      <span class="comment">// 叶子块大小</span>
+    .with_threshold(<span class="num">0.5</span>);     <span class="comment">// 当 50%+ 叶子匹配时合并</span>
+
+<span class="kw">let</span> store = Arc::new(ChunkedDocumentStore::new());
+<span class="kw">let</span> <span class="kw">mut</span> retriever = ChunkedBM25Retriever::with_config(store, config);
+retriever.add_document(Document::new(<span class="str">"Long document..."</span>));
+
+<span class="kw">for</span> result <span class="kw">in</span> retriever.search(<span class="str">"keyword"</span>, <span class="num">5</span>) {
+    <span class="kw">if</span> result.is_merged() { println!(<span class="str">"Merged: {}"</span>, result.content()); }
+}</code></pre>
+                </div>
+
+                <h4>小到大检索：句子窗口 / 父文档 ✨v0.24.0</h4>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>检索器</th><th>匹配单元</th><th>返回单元</th><th>合并条件</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>ChunkedBM25Retriever</code></td><td>叶子块</td><td>叶子或父文档</td><td>命中率过 AutoMergingConfig 阈值</td></tr>
+                        <tr><td><code>SentenceWindowRetriever</code></td><td>单句</td><td>±N 句窗口（默认 window=2）</td><td>无条件（按来源去重）</td></tr>
+                        <tr><td><code>ParentDocumentRetriever</code></td><td>叶子块</td><td>整个父文档（无阈值、不按比例）</td><td>无条件，任一叶子命中即返回父文档</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ 小到大思路</div>
+                    <p>三个检索器共用同一理念：<strong>用最小的语义单元保证命中精度，喂给 LLM 的却是它周围的完整上下文</strong>。思路同 LlamaIndex 的 sentence-window / parent-document。</p>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2041,6 +2446,82 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 
 <span class="comment">// Hybrid retrieval</span>
 <span class="kw">let</span> results = index.retrieve(<span class="str">"query"</span>, <span class="num">5</span>).await?;</code></pre>
+                </div>
+
+                <h3>Weighted 加权融合与 MMR 多样性 ✨v0.23.0</h3>
+
+                <div class="card">
+                    <p>RRF 只看排名、两路权重不可调，而且同一个窄主题可能占满 top-k。v0.23.0 给 <code>UnifiedHybridIndex</code> 补齐两种正式旋钮。</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{FusionMode, HybridIndexConfig, UnifiedHybridIndex};
+
+<span class="comment">// 加权线性融合:候选池内先 min-max 归一化再加权(FusionMode::Rrf 为默认)</span>
+<span class="kw">let</span> config = HybridIndexConfig::new()
+    .with_fusion(FusionMode::Weighted { bm25_weight: <span class="num">0.3</span>, vector_weight: <span class="num">0.7</span> });
+<span class="kw">let</span> index = UnifiedHybridIndex::with_config(embeddings, vector_store, <span class="num">1536</span>, config);
+
+<span class="comment">// MMR:贪心选"相关性 − 与已选结果相似度"最高的候选,λ=0.6 常用 0.5–0.7</span>
+<span class="kw">let</span> picks = index.retrieve_mmr(<span class="str">"查询"</span>, <span class="num">20</span>, <span class="num">5</span>, <span class="num">0.6</span>).await?;
+<span class="comment">// 也可对自带 (id, 相关性, 向量) 三元组跑纯算法:mmr(&candidates, 0.6_f32, 5)</span></code></pre>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>FusionMode::Weighted</h3><p>加权线性融合，min-max 归一化后按 bm25_weight / vector_weight 加权</p></div>
+                    <div class="feature-card"><h3>MMR 多样性</h3><p>λ 越偏向相关（λ=1 退化纯相关）；λ=0 最大化多样性；常用 0.5–0.7</p></div>
+                    <div class="feature-card"><h3>池内归一化</h3><p>λ 的权衡在 RRF 与 Weighted 两种融合下含义一致</p></div>
+                </div>
+
+                <h3>Late Chunking 双腿注入 ✨v0.24.0</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{late_chunk, LateChunkConfig, UnifiedHybridIndex};
+
+<span class="kw">let</span> config = LateChunkConfig::new().with_chunk_size(<span class="num">1024</span>).with_chunk_overlap(<span class="num">128</span>);
+<span class="kw">let</span> chunks = late_chunk(&amp;token_embedder, &amp;document.content, &amp;config).await?;
+
+<span class="comment">// 池化向量进向量索引,同文本同步进 BM25/父文档 store——一次调用完成双索引注册</span>
+<span class="kw">let</span> parent_id = index.add_late_chunked_document(document, &amp;chunks).await?;
+<span class="comment">// BM25 与向量两条腿用同一套确定性 id({parent_id}::{segment});
+// 重复注册同一父文档为幂等替换。纯向量单腿可用自由函数 late_index_in(...)</span></code></pre>
+                </div>
+
+                <h3>原生混合搜索（Qdrant Query API）✨v0.21.0</h3>
+
+                <div class="card">
+                    <p><code>UnifiedHybridIndex</code> 的 RRF 融合发生在客户端，需要先把两路候选拉回内存。<code>QdrantVectorStore</code>（≥1.10）支持把<strong>多路向量召回 + 融合</strong>下推到服务端 Query API，一次网络往返完成。能力通过 <code>NativeHybridSearch</code> trait 探测——不支持的 store 显式报错并指向客户端 RRF，绝不静默降级。</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::vector_stores::{
+    FusionMethod, NativeHybridQuery, NativeHybridSearch, QdrantConfig, QdrantVectorStore,
+};
+
+<span class="kw">let</span> store = QdrantVectorStore::new(
+    QdrantConfig::new(<span class="str">"http://localhost:6334"</span>, <span class="str">"my-collection"</span>).with_vector_size(<span class="num">1536</span>),
+).await?;
+
+<span class="kw">let</span> query = NativeHybridQuery::new(
+    vec![dense_vec, sparse_vec],  <span class="comment">// ≥ 2 路查询向量,同维度</span>
+    <span class="num">10</span>,
+)?
+.with_fusion(FusionMethod::Rrf)    <span class="comment">// 或 FusionMethod::Dbsf</span>
+.with_prefetch_limit(<span class="num">50</span>);
+
+<span class="kw">let</span> results = store.native_hybrid_search(&amp;query).await?;  <span class="comment">// 服务端融合</span></code></pre>
                 </div>
 
                 <h4>检索方式对比</h4>
@@ -2469,6 +2950,49 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                     <div class="feature-card"><h3>网关</h3><p>MCPGateway 聚合多 server 统一入口、TenantGateway 多租户、ToolOrchestrator DAG 编排</p></div>
                 </div>
 
+                <h3>OAuth 2.1 受保护远端 server ✨v0.22.4</h3>
+
+                <div class="card">
+                    <p>官方 Streamable HTTP server 普遍以 OAuth 2.1 <strong>资源服务器</strong>（RFC 9728）形态鉴权。完整流程的机器部分由 lc-mcp 提供，需要人参与的部分（打开授权页、接收重定向回调）留给嵌入应用。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>质询解析</h3><p>未带令牌的请求收到 401 + WWW-Authenticate: Bearer resource_metadata；OAuthChallenge::parse 解析出资源元数据地址、realm、scopes</p></div>
+                    <div class="feature-card"><h3>授权发现</h3><p>discover_protected_resource / discover_authorization_server 按 RFC 9728 / RFC 8414 发现授权服务器</p></div>
+                    <div class="feature-card"><h3>授权码 + PKCE</h3><p>code_challenge 由调用方自己持有 verifier 计算，库不引入新加密依赖；常伴随 DCR 动态客户端注册</p></div>
+                    <div class="feature-card"><h3>令牌交换与刷新</h3><p>OAuthTokenClient：exchange_authorization_code / refresh / client_credentials</p></div>
+                    <div class="feature-card"><h3>Bearer 提供者</h3><p>BearerTokenProvider 的 invalidate 恰好一次、401 后新令牌重试；固定令牌用 StaticBearerToken</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="comment">// connect_with_token_provider 接上鉴权;401 时传输层 invalidate 恰好一次后重试</span>
+<span class="kw">use</span> langchainrust::mcp::{OAuthTokenClient, StaticBearerToken};
+
+<span class="kw">let</span> token = OAuthTokenClient::new(token_endpoint, client_id)
+    .exchange_authorization_code(code, redirect_uri, code_verifier)
+    .await?;
+<span class="kw">let</span> client = connect_with_token_provider(url, StaticBearerToken::new(token.access_token));</code></pre>
+                </div>
+
+                <h3>工具执行审批与沙箱（fail-closed）✨v0.22.4</h3>
+
+                <div class="card">
+                    <p><strong>fail-closed（默认拒绝）</strong>：未匹配到显式许可的请求一律拒绝，而不是放行。工具执行审批（<code>ServerToolAcl</code> / 批准回调）与 <code>ServerSandbox::ToolAcl</code> 参数与出站策略配合，保证未声明的工具访问被硬拒绝。</p>
+                </div>
+
+                <h3>官方传输轨道 ✨v0.22.4</h3>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>StdioMcpClient</h3><p>官方 stdio 传输：spawn 子进程、JSON-RPC 帧、握手与工具调用</p></div>
+                    <div class="feature-card"><h3>StreamableMcpClient</h3><p>官方 Streamable HTTP 客户端：手、Mcp-Session-Id 分配、202 通知、Bearer 质询齐全</p></div>
+                    <div class="feature-card"><h3>MCPServer::serve_streamable_http</h3><p>服务端官方 Streamable HTTP 出口：立即返回端点 URL，后台任务 accept；官方 TS/Python SDK 客户端可直连</p></div>
+                    <div class="feature-card"><h3>互操作验证</h3><p>对官方 TypeScript SDK 1.30.0 与 Python SDK 客户端/服务端四方向互操作验证 4/4 通过</p></div>
+                </div>
+
                 <div class="callout">
                     <div class="callout-title">⚠️ 诚实状态</div>
                     <p><code>resources/list</code> / <code>resources/read</code> / <code>prompts/list</code> / <code>prompts/get</code> / <code>completion/complete</code> 已接线（v0.18.0）：注册 provider 后返回对应结构，未注册返回 <code>method_not_found</code>。<code>elicitation/create</code> / <code>sampling/createMessage</code> 为 server→host 发起方法，需注入 host 回调，未注入返回明确错误。<code>Roots</code> 仍为类型定义。</p>
@@ -2485,6 +3009,40 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <div class="feature-card"><h3>协议流程</h3><p>发现(agent-card.json) → 派活(tasks/send) → 跟进(tasks/get 轮询 / SSE 推送 / tasks/send 带 taskId 续谈) → 收尾(cancel / list / runWorkflow)</p></div>
 <div class="feature-card"><h3>任务状态机</h3><p>submitted → working → completed / failed / input-required / cancelled / rejected / auth-required / expired，共 9 状态，流转合法校验</p></div>
 <div class="feature-card"><h3>定位</h3><p>A2A 管"Agent↔Agent 通信"，MCP 管"Agent↔工具/数据源连接"，两者常配合使用</p></div>
+<div class="feature-card"><h3>开箱 axum 服务 ✨v0.22.0</h3><p>axum feature 下 server.serve(8080)：绑定回环（B7 安全默认）；公网绑定须 serve_with(ServeConfig) + bearer token</p></div>
+<div class="feature-card"><h3>多传输声明 v1.0.1 ✨v0.22.0</h3><p>supportedInterfaces[] 一卡声明多组 (protocolVersion, transport, url)；negotiate 按客户端版本选接口</p></div>
+<div class="feature-card"><h3>卡片签名 JWS HS256 ✨v0.22.0</h3><p>RFC 8785-lite 规范化后打 HMAC-SHA256 紧凑型 JWS；防端点/版本被中间人篡改</p></div>
+<div class="feature-card"><h3>WebSocket 传输 ✨v0.27.0</h3><p>ws feature 下 GET /ws，与 /events 共用同一套鉴权与逐连接过滤；connect_ws / send_task_streaming_ws</p></div>
+<div class="feature-card"><h3>企业级积木 ✨v0.13.0</h3><p>注册发现 AgentRegistry / 联邦 FederationGateway / ResilientA2AClient 四层容错 / TrustRegistry 信任链</p></div>
+</div>
+
+<h3>能力矩阵与边界（截至 v0.28.0）</h3>
+
+<table class="data-table">
+                    <thead>
+                        <tr><th>能力</th><th>状态</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>tasks/send</code>（后台执行、9 态状态机、message_id 幂等、owner 隔离）</td><td class="low">已实现</td></tr>
+                        <tr><td><code>tasks/get</code> / <code>tasks/cancel</code> / <code>tasks/list</code></td><td class="low">已实现</td></tr>
+                        <tr><td>多轮续谈（<code>input-required</code> → 带 <code>taskId</code> 续谈）</td><td class="low">已实现（resume_task，并发续谈有在途互斥）</td></tr>
+                        <tr><td><code>tasks/runWorkflow</code> 有序工作流</td><td class="low">已实现（50 步硬上限，后台执行）</td></tr>
+                        <tr><td>SSE 任务推送（with_streaming + GET /events）</td><td class="low">已实现（与 POST 同口径鉴权）</td></tr>
+                        <tr><td>WebSocket 传输（ws feature）</td><td class="low">已实现 ✨v0.27.0</td></tr>
+                        <tr><td>Static Bearer 鉴权（常量时间比较）</td><td class="low">已实现（with_auth_token）</td></tr>
+                        <tr><td>Agent Card 发现 + v1.0.1 supportedInterfaces 多传输声明与协商</td><td class="low">已实现 ✨v0.22.0</td></tr>
+                        <tr><td>卡片签名 JWS HS256（RFC 8785-lite 规范化）</td><td class="low">已实现 ✨v0.22.0</td></tr>
+                        <tr><td>分布式追踪</td><td class="low">已实现（metadata trace_id + W3C traceparent 头）</td></tr>
+                        <tr><td>gRPC 绑定</td><td class="high">⛔ 仅有卡片枚举值，无实现（0.22.0 推迟至今）</td></tr>
+                        <tr><td>ES256 非对称签名 / 完整 JCS</td><td class="high">⛔ 计划于 0.22.1，截至 0.28.0 未落地</td></tr>
+                        <tr><td>OAuth / OIDC</td><td class="high">⛔ 内置仅 Static Bearer；联邦场景需在前置网关自接</td></tr>
+                        <tr><td>TLS 终结</td><td class="high">⛔ 应用层不提供，生产部署放反向代理 / 网关层</td></tr>
+                    </tbody>
+                </table>
+
+<div class="callout info">
+<div class="callout-title">诚实声明</div>
+<p><strong>HS256 对称密钥</strong>：注册方与客户端共享 secret；ES256 非对称签名未落地。JSON 规范化为 <strong>RFC 8785-lite</strong>（递归键排序）而非完整 JCS；有效期由卡片自身的 <code>expiresAt</code> 字段承载，签名不含时间戳声明。<code>A2ATransport::Grpc</code> 目前只是可声明的枚举值，crate 内没有 gRPC 线协议绑定（HTTP+JSON 与 JSON-RPC 两条绑定可独立使用）。</p>
 </div>
 <hr class="divider"></section>
 
@@ -2498,7 +3056,53 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <div class="feature-card"><h3>内置验证器</h3><p>MaxLengthGuardrail（输入长度）/ ForbiddenWordsGuardrail（禁用词）/ SensitiveInfoGuardrail（API key、邮箱、信用卡，可 with_keywords 扩展）</p></div>
 <div class="feature-card"><h3>类型分离结果 ✨v0.15.0</h3><p>InputGuardrailResult（仅 Pass/Block）与 OutputGuardrailResult（Pass/Block/Modify）由类型系统强制，Modify 只适用于输出</p></div>
 <div class="feature-card"><h3>Guardable ✨v0.15.0</h3><p>任意可执行单元都能被护栏包裹：AgentExecutor 直接实现，BaseChain 经 ChainGuardable 适配，GuardedAgent::from_chain</p></div>
+<div class="feature-card"><h3>流式护栏 ✨v0.15.0</h3><p>StreamingOutputGuardrail + invoke_stream：增量检测 + 24 字符滑动窗口 + 完整输出复查；ChunkAction::Block{reason} 带原因</p></div>
+<div class="feature-card"><h3>PII 脱敏护栏 ✨v0.22.4</h3><p>PiiRedactionGuardrail 走 output Modify 通道，把命中标识符替换为标记后放行（Email/Phone/NationalId/CreditCard/IP）</p></div>
+<div class="feature-card"><h3>Schema 输出护栏 ✨v0.22.4</h3><p>SchemaOutputGuardrail 把输出绑死 JSON Schema：流式宽松增量校验 + 流末严格终检，边生成边验</p></div>
+<div class="feature-card"><h3>Retrieval Rail ✨v0.21.0</h3><p>检索护栏：guard_cache、拒绝引擎可回退；配合 AI 透明披露（disclose）</p></div>
+<div class="feature-card"><h3>审计持久化 ✨v0.15.0</h3><p>护栏触发记录落库，可审计、可回溯</p></div>
 </div>
+
+<h3>PII 脱敏护栏：改写而不是掐断 ✨v0.22.4</h3>
+
+<p><code>SensitiveInfoGuardrail</code> 的处置是 Block——输出里只要出现疑似 PII，整段回答被拦下。客服工单摘要这类场景要的是"内容照流、PII 消失"：<code>PiiRedactionGuardrail</code> 走输出侧 <code>Modify</code> 通道，命中标识符替换成固定标记后放行。</p>
+
+<table class="data-table">
+                    <thead>
+                        <tr><th>PiiKind</th><th>识别内容</th><th>替换为</th><th>误报防护</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Email</td><td>邮箱</td><td>[REDACTED_EMAIL]</td><td>词边界 + 域名形态</td></tr>
+                        <tr><td>Phone</td><td>中国大陆手机号，含 +86/86/连字符前缀</td><td>[REDACTED_PHONE]</td><td>词边界，长数字串中 11 位子串不命中</td></tr>
+                        <tr><td>NationalId</td><td>18 位身份证号（末位可为 X）</td><td>[REDACTED_NATIONAL_ID]</td><td>GB 11643 加权校验码，校验不过原样保留</td></tr>
+                        <tr><td>CreditCard</td><td>15–19 位银行卡（允许空格/连字符分隔）</td><td>[REDACTED_CREDIT_CARD]</td><td>Luhn 校验，不过校验不动</td></tr>
+                        <tr><td>IpV4</td><td>点分 IPv4</td><td>[REDACTED_IP]</td><td>每段 ≤255，排除邻接数字/点</td></tr>
+                    </tbody>
+                </table>
+
+<div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::guardrails::{GuardrailsConfig, PiiRedactionGuardrail, PiiKind};
+
+<span class="kw">let</span> pii = Arc::new(
+    PiiRedactionGuardrail::new()
+        .only([PiiKind::Email, PiiKind::Phone, PiiKind::CreditCard])
+        .with_hold_back(<span class="num">48</span>),   <span class="comment">// 流式扣留窗口,默认 48 字符,防标识符被切成两块吐出</span>
+);
+
+<span class="comment">// 同一个类型同时实现 OutputGuardrail 与 StreamingOutputGuardrail:</span>
+<span class="kw">let</span> config = GuardrailsConfig::new()
+    .with_output(pii.clone())   <span class="comment">// 整段复查:redact() 后 Modify 放行</span>
+    .with_streaming(pii);       <span class="comment">// 流式增量:扣留式脱敏</span>
+
+<span class="comment">// 也可以不当护栏用,直接拿到改写后的字符串:</span>
+<span class="kw">let</span> safe = PiiRedactionGuardrail::new().redact(<span class="str">"联系我 a@b.com 或 13812345678"</span>);</code></pre>
+                </div>
+
+<div class="callout info"><div class="callout-title">检测最长最特异优先</div><p>按"最长最特异优先"排序（卡→身份证→手机→邮箱→IP），避免短模式在长标识符内部先命中。纯正则离线识别、零模型调用；代价是覆盖面就这五类——姓名、住址等语义 PII 不在其中。流式扣留：标识符可能被模型切成两块吐出，护栏始终扣留末尾 48 字符等后续文本证明安全才释放。</p></div>
 <hr class="divider"></section>
 
 <section class="module" id="callbacks"><div class="module-header"><span class="module-icon">🔔</span><h2>8.2 Callbacks</h2></div>
@@ -2529,9 +3133,25 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <tr><td>规则</td><td><code>ContainsKeyword</code> / <code>RegexMatch</code> / <code>LengthCheck</code></td></tr>
 <tr><td>经典 NLP</td><td><code>Bleu</code>（n-gram）</td></tr>
 <tr><td>RAG</td><td><code>Faithfulness</code>（声明拆分逐一验证）</td></tr>
-<tr><td>RAGAS ✨v0.22.4</td><td><code>ContextPrecision</code> / <code>ContextRecall</code> / <code>AnswerRelevancy</code></td></tr>
+<tr><td>RAGAS ✨v0.22.4</td><td><code>ContextPrecision</code> / <code>ContextRecall</code> / <code>AnswerRelevancy</code>（RAG 专用评估器）</td></tr>
 </tbody></table>
-<div class="feature-card"><h3>EvalRunner</h3><p>对 Dataset 跑评估器生成 Report；支持 JSONL 加载评估集；trace → golden → 回归门禁</p></div>
+<div class="card-grid">
+<div class="feature-card"><h3>EvalRunner</h3><p>对 Dataset 跑评估器生成 Report；支持 JSONL 加载评估集</p></div>
+<div class="feature-card"><h3>LLMAsJudge ✨v0.15.0</h3><p>LLM 裁判 0-10 打分；PairwiseJudge 成对比较 + 位置偏差缓解</p></div>
+<div class="feature-card"><h3>Report 容错 ✨v0.15.0</h3><p>评估集逐条容错：单条失败不拖垮整份报告</p></div>
+</div>
+
+<h3>trace → golden → 回归门禁 ✨v0.24.0</h3>
+
+<div class="card">
+<p><strong>把真实流量固化成回归防线。</strong>生产 trace 落盘成 golden 数据集 → 评估器打分 → 设阈值为回归门禁：改模型 / 提示词 / 加 RAG 后一旦 RAG 相关指标下滑即报警，防止召回与答案质量悄悄退化。</p>
+</div>
+
+<div class="card-grid">
+<div class="feature-card"><h3>RAGAS 三指标</h3><p>ContextPrecision（检索精确度）/ ContextRecall（召回完整度）/ AnswerRelevancy（答案相关性）</p></div>
+<div class="feature-card"><h3>Faithfulness</h3><p>把答案拆成声明逐一验证是否被来源支持，检测幻觉</p></div>
+<div class="feature-card"><h3>回归门禁</h3><p>golden 数据集 + 阈值，CI/发布前跑，指标下滑即红灯</p></div>
+</div>
 <hr class="divider"></section>
 
 <section class="module" id="testing" style="animation-delay: 0.86s;">
@@ -2558,6 +3178,33 @@ cargo test --test function_calling_agent -- --include-ignored
 cargo test --test integration_agent_react -- --include-ignored</code></pre>
                 </div>
 
+                <h3>离线录播测试（lc-testkit）✨v0.16.0</h3>
+
+                <div class="card">
+                    <p><strong>不调真的 API 也能测。</strong>让 LLM 应用在测试里跑：<code>RecordingProvider</code> 把线上 LLM 调用录成回放，<code>ReplayProvider</code> 在离线 CI 里逐条回放，零外部依赖、确定可复现。</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>RecordingProvider</h3><p>包装任意 BaseChatModel，把请求/响应落盘成 JSON 记录（一次线上）</p></div>
+                    <div class="feature-card"><h3>ReplayProvider</h3><p>离线回放已录记录；ReplayStrategy::Exact ✨v0.18.0 按 messages 完整签名匹配，并行乱序精确对应</p></div>
+                    <div class="feature-card"><h3>离线 CI</h3><p>回放零网络、零计费，覆盖错误路径与边界输入</p></div>
+                </div>
+
+                <h3>录播 → golden 数据集（评分桥）✨v0.24.0</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="comment">// 把录好的对话记录转成 golden 数据集(question/a1/a2 ...),喂给评估器打分</span>
+<span class="kw">use</span> langchainrust::testkit::{RecordingProvider, ReplayProvider};
+
+<span class="comment">// 1. 录制:replay = RecordingProvider::new(real_llm);跑一遍业务</span>
+<span class="comment">// 2. 回放:replay = ReplayProvider::from_dir("./recordings")?;</span>
+<span class="comment">// 3. 评分:golden 转 Dataset → EvalRunner 跑评估器 → 报告</span></code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2567,10 +3214,67 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
             <!-- ch9 -->
             <section class="module chapter" id="ch9"><div class="chapter-head"><h2>第九章 · 数据持久化</h2></div><hr class="divider"></section>
 
+<section class="module" id="mongodb" style="animation-delay: 0.6s;">
+                <div class="module-header">
+                    <span class="module-icon">🍃</span>
+                    <h2>9.1 MongoDB 存储</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>把文档库与对话记忆落到 MongoDB，跨进程共享、跨重启保留。</strong>解决两类问题：一是把<strong>文档库</strong>落到 MongoDB，让长文档的「父文档 + 子块」关系<strong>跨进程共享、跨重启保留</strong>；二是把<strong>对话记忆</strong>落到 MongoDB，让多轮记忆<strong>多实例共享</strong>。默认内存存储进程一退出就没了，专用向量库又太重；要起多个实例、或需要真持久化时，MongoDB 是生产级的中间选项。</p>
+                </div>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>对象</th><th>归属</th><th>存什么</th><th>一句话</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>MongoChunkedDocumentStore</code></td><td>文档库（DocumentStore 家族）</td><td>文档正文 + 父子分块关系</td><td>长文档切块后，正文落 MongoDB</td></tr>
+                        <tr><td><code>MongoPersistentMemory</code></td><td>持久化记忆（记忆家族）</td><td>对话历史 / 压缩摘要</td><td>多实例共享同一份对话记忆</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
+                    </div>
+                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { features = ["mongodb-persistence"] }</span>
+<span class="kw">use</span> langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
+
+<span class="kw">let</span> config = MongoStoreConfig::new(
+    <span class="str">"mongodb://localhost:27017"</span>,   <span class="comment">// 连接串</span>
+    <span class="str">"langchainrust_db"</span>,              <span class="comment">// 数据库名</span>
+);
+
+<span class="kw">let</span> store = MongoChunkedDocumentStore::new(config).await?;
+store.create_indexes().await?;
+
+<span class="comment">// 与 InMemory 相同的接口:切块入库、按父 ID 取回全部子块</span>
+<span class="kw">let</span> (parent_id, chunk_ids) = store.add_parent_document(doc, <span class="num">500</span>).await?;
+<span class="kw">let</span> chunks = store.get_chunks_for_parent(&amp;parent_id).await?;</code></pre>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>适用场景</h3><p>多实例共享同一份文档/记忆 ✅；服务重启数据保留 ✅；单机小数据可换 SQLite；可接受重启丢数据用内存</p></div>
+                    <div class="feature-card"><h3>MongoPersistentMemory</h3><p>内部组合 ConversationSummaryBufferMemory + token 预算，把「历史 + 摘要」写进 MongoDB</p></div>
+                    <div class="feature-card"><h3>乐观锁</h3><p>并发写不互相覆盖，防「后写覆盖先写」</p></div>
+                    <div class="feature-card"><h3>父子分块持久化</h3><p>删父文档连带删全部子块；存正文不存向量（向量由配套向量库索引）</p></div>
+                    <div class="feature-card"><h3>统一接口</h3><p>同一 ChunkedDocumentStoreTrait，换后端只换构造一行；提供 _blocking 同步方法供 BM25 同步检索路径</p></div>
+                </div>
+
+                <div class="callout success">
+                    <div class="callout-title">✓ 怎么选</div>
+                    <p>一句话：需要<strong>多进程 / 多实例共享同一份文档正文</strong>，或需要<strong>真持久化</strong>时用 MongoDB。单机数据量小用 SQLite 文档库更轻；数据量大、要专业向量检索就再配一个向量库——向量放 vector store，正文放这里。</p>
+                </div>
+
+                <hr class="divider">
+            </section>
+
 <section class="module" id="storage" style="animation-delay: 0.6s;">
                 <div class="module-header">
                     <span class="module-icon">💾</span>
-                    <h2>9.1 Storage Backends</h2>
+                    <h2>9.2 Storage Backends</h2>
                 </div>
 
                 <div class="card">
@@ -2661,7 +3365,7 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
 <section class="module" id="chromadb" style="animation-delay: 0.59s;">
                 <div class="module-header">
                     <span class="module-icon">💜</span>
-                    <h2>9.2 ChromaDB</h2>
+                    <h2>9.3 ChromaDB</h2>
                 </div>
 
                 <div class="card">
@@ -2727,7 +3431,7 @@ store.add_documents(vec![
 <section class="module" id="whats-new-050" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">✨</span>
-                    <h2>A.1 v0.5.0+ 新特性</h2>
+                    <h2>附录.1 v0.5.0+ 新特性</h2>
                 </div>
 
                 <div class="card">
@@ -2850,7 +3554,7 @@ println!(<span class="str">"{}"</span>, report.summary);
 <section class="module" id="retrieval-agent" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🔄</span>
-                    <h2>A.2 RAG Agent</h2>
+                    <h2>附录.2 RAG Agent</h2>
                 </div>
 
                 <div class="card">
@@ -2896,7 +3600,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="corrective-rag" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🛡️</span>
-                    <h2>A.3 Corrective RAG</h2>
+                    <h2>附录.3 Corrective RAG</h2>
                 </div>
 
                 <div class="card">
@@ -2919,7 +3623,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="adaptive-rag" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🎯</span>
-                    <h2>A.4 Adaptive RAG</h2>
+                    <h2>附录.4 Adaptive RAG</h2>
                 </div>
 
                 <div class="card">
@@ -2942,7 +3646,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="langsmith" style="animation-delay: 0.82s;">
                 <div class="module-header">
                     <span class="module-icon">🧪</span>
-                    <h2>A.5 LangSmith 追踪</h2>
+                    <h2>附录.5 LangSmith 追踪</h2>
                 </div>
 
                 <div class="card">
@@ -2982,7 +3686,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="unified-015" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🧩</span>
-                    <h2>A.6 v0.15.0 统一能力 <span class="badge new">v0.15.0</span></h2>
+                    <h2>附录.6 v0.15.0 统一能力 <span class="badge new">v0.15.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3008,7 +3712,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="v018-complete" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🚀</span>
-                    <h2>A.7 v0.18.0 能力补全 <span class="badge new">v0.18.0</span></h2>
+                    <h2>附录.7 v0.18.0 能力补全 <span class="badge new">v0.18.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3034,7 +3738,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="v027-new" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🧩</span>
-                    <h2>A.8 v0.27.0 缺口补齐 <span class="badge new">v0.27.0</span></h2>
+                    <h2>附录.8 v0.27.0 缺口补齐 <span class="badge new">v0.27.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3056,7 +3760,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="whats-new-030" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">✨</span>
-                    <h2>A.9 v0.3.0 新特性</h2>
+                    <h2>附录.9 v0.3.0 新特性</h2>
                 </div>
 
                 <div class="card">
@@ -3085,7 +3789,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="module-structure" style="animation-delay: 0.88s;">
                 <div class="module-header">
                     <span class="module-icon">📦</span>
-                    <h2>A.10 Module Structure</h2>
+                    <h2>附录.10 Module Structure</h2>
                 </div>
 
                 <div class="code-block">
@@ -3154,7 +3858,7 @@ crates/
 <section class="module" id="api-reference" style="animation-delay: 0.9s;">
                 <div class="module-header">
                     <span class="module-icon">📖</span>
-                    <h2>A.11 API Reference</h2>
+                    <h2>附录.11 API Reference</h2>
                 </div>
 
                 <h3>Agent 构造器</h3>
@@ -3235,7 +3939,7 @@ crates/
 <section class="module" id="best-practices" style="animation-delay: 0.8s;">
                 <div class="module-header">
                     <span class="module-icon">💡</span>
-                    <h2>A.12 Best Practices</h2>
+                    <h2>附录.12 Best Practices</h2>
                 </div>
 
                 <div class="card-grid">

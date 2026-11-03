@@ -538,7 +538,33 @@ impl ToolGate {
             // cancelling safe siblings.) Sibling observations already collected are
             // preserved in the returned error (stage-G G3) rather than discarded.
             match &r {
-                Err(AgentError::ToolExecutionError(_)) | Err(AgentError::ToolNotFound(_)) => {
+                // F-21: a tool that ran and FAILED (`ToolExecutionError`) is still an
+                // *execution* — it consumed a `max_tool_calls` slot exactly like a
+                // completed run. Count it toward `batch_executed` and re-gate so the
+                // R-1 mid-batch budget recheck cannot be undercut by failing members
+                // (`agent_loop` already counts the same `tool_error_observation` into
+                // `metrics.tool_calls` after the batch — without this the two diverge).
+                // `ToolNotFound` stays a non-execution (hallucinated name — never ran).
+                Err(AgentError::ToolExecutionError(_)) => {
+                    batch_executed += 1;
+                    results.push((idx, r));
+                    if let Some(err) = budget_tool_gate(
+                        budget,
+                        &AgentMetrics {
+                            tool_calls: base_tool_calls + batch_executed,
+                            ..Default::default()
+                        },
+                        loop_start,
+                    ) {
+                        let partial = collect_partial(&results);
+                        set.abort_all();
+                        return Err(AgentError::BatchAborted {
+                            cause: Box::new(err),
+                            partial,
+                        });
+                    }
+                }
+                Err(AgentError::ToolNotFound(_)) => {
                     results.push((idx, r));
                 }
                 Err(_) => {
@@ -601,5 +627,129 @@ fn server_executed_observation(action: &AgentAction) -> String {
     match &action.tool_input {
         ToolInput::String { value: s } => s.clone(),
         ToolInput::Object { value: v } => serde_json::to_string(v).unwrap_or_else(|_| "{}".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AgentAction, ToolInput};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+    use tokio::sync::Semaphore;
+
+    struct OkTool;
+    #[async_trait]
+    impl BaseTool for OkTool {
+        fn name(&self) -> &str {
+            "ok"
+        }
+        fn description(&self) -> &str {
+            "succeeds"
+        }
+        async fn run(&self, _input: String) -> Result<String, ToolError> {
+            Ok("done".to_string())
+        }
+    }
+
+    struct BoomTool;
+    #[async_trait]
+    impl BaseTool for BoomTool {
+        fn name(&self) -> &str {
+            "boom"
+        }
+        fn description(&self) -> &str {
+            "executes then fails"
+        }
+        async fn run(&self, _input: String) -> Result<String, ToolError> {
+            Err(ToolError::ExecutionFailed("boom".to_string()))
+        }
+    }
+
+    fn action(tool: &str) -> AgentAction {
+        AgentAction {
+            tool: tool.to_string(),
+            tool_input: ToolInput::Object {
+                value: serde_json::json!({}),
+            },
+            log: String::new(),
+            tool_call_id: None,
+            server_executed: false,
+        }
+    }
+
+    /// F-21: a parallel-batch member that ran and failed (`ToolExecutionError`)
+    /// still consumed a `max_tool_calls` slot. A budget cap of 2 with a
+    /// two-member batch of [success, failure] — both of which actually execute —
+    /// must trip the R-1 mid-batch recheck on the *failure* being counted toward
+    /// the cumulative count. Before the fix the failure slipped past
+    /// `batch_executed`, the recheck saw only the success, and the batch returned
+    /// `Ok` (budget effectively bypassed).
+    #[tokio::test]
+    async fn parallel_failed_execution_counts_toward_tool_budget() {
+        let mut tools: HashMap<String, Arc<dyn BaseTool>> = HashMap::new();
+        tools.insert("ok".to_string(), Arc::new(OkTool));
+        tools.insert("boom".to_string(), Arc::new(BoomTool));
+        let gate = ToolGate::from_parts(
+            tools,
+            Vec::new(),
+            None,
+            None,
+            None,
+            false,
+            false,
+            Some(Duration::from_secs(5)),
+            Arc::new(Semaphore::new(2)),
+        );
+        let budget = BudgetConfig {
+            max_tool_calls: Some(2),
+            ..Default::default()
+        };
+        let root = RunTree::new("root", RunType::Chain, serde_json::json!({}));
+        let actions = [action("ok"), action("boom")];
+
+        let result = gate
+            .execute_many(&actions, &root, Some(&budget), Instant::now(), 0)
+            .await;
+
+        // Both members executed (2 total: one success + one failure) and 2 is the
+        // cap, so the batch must be stopped. Pre-F-21 the failed member was not
+        // counted → `batch_executed` stuck at 1 → the recheck passed and the batch
+        // returned `Ok`, dodging the budget.
+        assert!(
+            matches!(result, Err(AgentError::BatchAborted { .. })),
+            "failed-execution member must count toward budget; got {result:?}"
+        );
+    }
+
+    /// F-21 companion: a single successful member under an adequate cap still
+    /// completes normally — the failed-execution counting must not over-abort a
+    /// batch that stays within budget.
+    #[tokio::test]
+    async fn parallel_single_success_within_budget_completes() {
+        let mut tools: HashMap<String, Arc<dyn BaseTool>> = HashMap::new();
+        tools.insert("ok".to_string(), Arc::new(OkTool));
+        let gate = ToolGate::from_parts(
+            tools,
+            Vec::new(),
+            None,
+            None,
+            None,
+            false,
+            false,
+            Some(Duration::from_secs(5)),
+            Arc::new(Semaphore::new(2)),
+        );
+        // Cap of 10: one success (base 0) is well within budget.
+        let budget = BudgetConfig {
+            max_tool_calls: Some(10),
+            ..Default::default()
+        };
+        let root = RunTree::new("root", RunType::Chain, serde_json::json!({}));
+        let result = gate
+            .execute_many(&[action("ok")], &root, Some(&budget), Instant::now(), 0)
+            .await;
+        assert_eq!(result.unwrap(), vec!["done".to_string()]);
     }
 }

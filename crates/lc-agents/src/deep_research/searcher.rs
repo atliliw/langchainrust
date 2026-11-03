@@ -4,7 +4,8 @@
 
 use std::sync::Arc;
 
-use lc_core::tools::BaseTool;
+use lc_core::tools::{BaseTool, ToolError};
+use std::time::Duration;
 
 use super::ResearchError;
 
@@ -27,10 +28,31 @@ pub struct SearchResult {
 /// The executor keeps a concurrency gate for the same reason.
 const MAX_CONCURRENT_SEARCHES: usize = 8;
 
+/// F-22: cap on how long a single search request may run before it is treated
+/// as failed. Without it a hung search tool stalls the whole `join_all` — and
+/// with it the entire `deep_research` run — forever.
+const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Executes search queries in parallel across all configured search tools.
+///
+/// F-22: every individual request is bounded by [`SEARCH_REQUEST_TIMEOUT`], so a
+/// hung search tool degrades to a soft failure (its result is skipped, with a
+/// warning) rather than stalling the whole `join_all` — and the research run
+/// with it — forever.
 pub async fn search(
     searchers: &[Box<dyn BaseTool>],
     queries: &[String],
+) -> Result<Vec<SearchResult>, ResearchError> {
+    search_with_timeout(searchers, queries, SEARCH_REQUEST_TIMEOUT).await
+}
+
+/// Core implementation with an injectable single-request timeout (private so the
+/// hung-tool test can use a short window instead of waiting out the production
+/// default).
+async fn search_with_timeout(
+    searchers: &[Box<dyn BaseTool>],
+    queries: &[String],
+    request_timeout: Duration,
 ) -> Result<Vec<SearchResult>, ResearchError> {
     if searchers.is_empty() {
         return Err(ResearchError::Search(
@@ -60,7 +82,14 @@ pub async fn search(
                         .acquire_owned()
                         .await
                         .expect("search concurrency semaphore never closed");
-                    let output = searcher.run(input).await;
+                    // F-22: bound each single request. A timed-out request becomes a
+                    // soft `ToolError::Timeout`, routed through the same skip-with-
+                    // warning path as any other tool error below.
+                    let output = match tokio::time::timeout(request_timeout, searcher.run(input)).await
+                    {
+                        Ok(r) => r,
+                        Err(_) => Err(ToolError::Timeout(request_timeout.as_secs().max(1))),
+                    };
                     (query, output)
                 }
             })
@@ -278,5 +307,46 @@ mod tests {
     fn test_dedup_empty_input() {
         let deduped = SearchCollector::dedup(vec![]);
         assert!(deduped.is_empty());
+    }
+
+    /// A search tool whose `run` never completes within any realistic window —
+    /// used to prove F-22: `search_with_timeout` must return in bounded time
+    /// instead of awaiting `join_all` forever.
+    struct HangingSearchTool;
+
+    #[async_trait::async_trait]
+    impl BaseTool for HangingSearchTool {
+        fn name(&self) -> &str {
+            "hang"
+        }
+        fn description(&self) -> &str {
+            "hangs forever"
+        }
+        async fn run(&self, _input: String) -> Result<String, ToolError> {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok("never".to_string())
+        }
+    }
+
+    /// F-22: a hung search tool must not stall the whole `search` — the single-
+    /// request timeout bounds it. With the only tool hanging, `search_with_timeout`
+    /// returns `NoResults` (the timed-out request is skipped) rather than blocking
+    /// on the joined future.
+    #[tokio::test]
+    async fn test_search_times_out_when_tool_hangs() {
+        let searchers: Vec<Box<dyn BaseTool>> = vec![Box::new(HangingSearchTool)];
+        let queries = vec!["q1".to_string()];
+        let bounded = tokio::time::timeout(
+            Duration::from_secs(2),
+            search_with_timeout(&searchers, &queries, Duration::from_millis(50)),
+        )
+        .await;
+        match bounded {
+            Err(_elapsed) => panic!("search hung past the request timeout"),
+            Ok(result) => assert!(
+                matches!(result, Err(ResearchError::NoResults)),
+                "expected NoResults from a timed-out hung tool, got {result:?}"
+            ),
+        }
     }
 }

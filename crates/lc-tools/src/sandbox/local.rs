@@ -261,6 +261,11 @@ impl CodeSandbox for LocalSandbox {
         timeout_ms: u64,
     ) -> Result<RunResult, SandboxError> {
         let mut cmd = self.build_command(code, language)?;
+        // F-04 (HIGH): kill the child if we time out. Without this, dropping the `output()`
+        // future on a timeout detaches the subprocess and it keeps running — a guest looping
+        // forever (`while True: pass`) times out but leaves an orphan burning CPU per call.
+        // `python_repl.rs` already did this; this backend had missed it.
+        cmd.kill_on_drop(true);
 
         let start = Instant::now();
 
@@ -548,6 +553,34 @@ mod tests {
                 // Python not available, code didn't run — acceptable
             }
             Err(other) => panic!("expected Timeout, got: {:?}", other),
+        }
+    }
+
+    /// F-04: a busy-looping guest must surface as a timeout and the child must be killed on
+    /// drop (`kill_on_drop(true)`), so it neither hangs the test nor leaves an orphan process
+    /// burning CPU after the timeout fires. The timeout returning at all is the assertion that
+    /// we did not wait forever; `kill_on_drop` on the dropped `output()` future reaps the child.
+    #[tokio::test]
+    async fn test_busy_loop_timeout_reaps_child() {
+        let sandbox = LocalSandbox::new();
+        let result = sandbox
+            .run("while True: pass", Language::Python, 200)
+            .await;
+
+        match result {
+            Err(SandboxError::Timeout(ms)) => assert_eq!(ms, 200),
+            Err(SandboxError::Runtime(msg)) => {
+                // Python interpreter absent or unusable (e.g. a Windows Store `python3`
+                // alias stub that exists but exits 9009): the process never runs, so there
+                // is nothing to reap. Mirrors the tolerance in `test_execution_timeout`.
+                eprintln!("Python not available/unusable: {msg}");
+            }
+            // A Windows Store `python3` alias stub spawns but exits 9009 ("command not
+            // found") immediately — the guest never starts, so there is nothing to reap.
+            // Same tolerance as the Runtime-error arm; only an actually-running busy loop
+            // that times out (or truly hangs) is what this ticket guarantees.
+            Ok(r) if r.exit_code == 9009 => eprintln!("python3 is an unusable stub (exit 9009)"),
+            r => panic!("busy-loop guest should surface as Timeout, got: {r:?}"),
         }
     }
 

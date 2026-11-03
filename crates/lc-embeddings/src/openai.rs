@@ -165,8 +165,12 @@ impl Embeddings for OpenAIEmbeddings {
         let url = format!("{}/embeddings", self.config.base_url);
 
         // v0.27.0 T2: pace the request through the optional token-bucket limiter.
+        // F-01: a burst-only bucket's exhaustion surfaces as an error immediately
+        // instead of hanging the request forever.
         if let Some(l) = &self.config.rate_limiter {
-            l.acquire().await;
+            l.acquire()
+                .await
+                .map_err(|e| EmbeddingError::RateLimited(e.to_string()))?;
         }
 
         let body = serde_json::json!({
@@ -257,7 +261,11 @@ impl Embeddings for OpenAIEmbeddings {
                 let limiter = limiter.clone();
                 async move {
                     if let Some(l) = &limiter {
-                        l.acquire().await;
+                        // F-01: a burst-only bucket's exhaustion surfaces as an error
+                        // immediately instead of hanging the chunk dispatch forever.
+                        l.acquire()
+                            .await
+                            .map_err(|e| EmbeddingError::RateLimited(e.to_string()))?;
                     }
                     let body = serde_json::json!({
                         "model": model,

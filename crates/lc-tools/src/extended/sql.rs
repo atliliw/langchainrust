@@ -15,6 +15,14 @@ static TABLE_NAME_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         .expect("static regex literal must compile")
 });
 
+/// Hard cap on rows a single SELECT may materialize (F-33). An LLM-generated query over a large
+/// table is otherwise materialized in full — a DoS vector. Exceeded → the query errors instead.
+const MAX_RESULT_ROWS: usize = 1_000;
+
+/// Hard cap on bytes a single SELECT result set may carry (F-33). Guards one wide / verbose row
+/// granting a huge allocation even while staying under `MAX_RESULT_ROWS`.
+const MAX_RESULT_BYTES: usize = 1_000_000; // 1 MiB
+
 /// SQL query tool (read-only SELECT, table whitelist)
 pub struct SQLTool {
     conn: Mutex<rusqlite::Connection>,
@@ -169,9 +177,22 @@ impl SQLTool {
                 Ok(m)
             })
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        // F-33 (MED): materializing a full query result unbounded would let an LLM-generated
+        // SELECT over a large table become a DoS (huge row count / row bytes). Enforce hard row
+        // and byte caps; stop and error on exceed instead of silently truncating.
         let mut result = Vec::new();
+        let mut total_bytes = 0usize;
         for r in rows {
-            result.push(r.map_err(|e| ToolError::ExecutionFailed(e.to_string()))?);
+            let row = r.map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            let row_bytes: usize = row.values().map(|v| v.len()).sum();
+            if result.len() + 1 > MAX_RESULT_ROWS || total_bytes + row_bytes > MAX_RESULT_BYTES {
+                return Err(ToolError::ExecutionFailed(format!(
+                    "Query result exceeds limits (max {} rows / {} bytes)",
+                    MAX_RESULT_ROWS, MAX_RESULT_BYTES
+                )));
+            }
+            total_bytes += row_bytes;
+            result.push(row);
         }
         Ok(result)
     }
@@ -374,6 +395,29 @@ mod tests {
         assert!(tool.execute("PRAGMA writable_schema").is_err());
         assert!(tool.execute("SELECT * FROM sqlite_master").is_err());
         assert!(tool.execute("SELECT * FROM sqlite_schema").is_err());
+    }
+
+    /// F-33: a SELECT that would exceed the hard row cap must error (not materialize unbounded).
+    #[test]
+    fn test_result_row_limit_enforced() {
+        let tool = SQLTool::new(":memory:").unwrap();
+        {
+            let conn = tool.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute("CREATE TABLE big (id INTEGER)", []).unwrap();
+            // One past the cap so a plain SELECT would blow it.
+            for i in 0..(MAX_RESULT_ROWS + 1) {
+                conn.execute("INSERT INTO big VALUES (?1)", [i]).unwrap();
+            }
+        }
+        match tool.execute("SELECT * FROM big") {
+            Err(ToolError::ExecutionFailed(msg)) => {
+                assert!(
+                    msg.contains("exceeds limits"),
+                    "expected a limits error, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed limit error, got: {:?}", other),
+        }
     }
 
     /// Q5: bind parameters take effect by position.

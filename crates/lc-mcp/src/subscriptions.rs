@@ -151,6 +151,19 @@ impl ResourceSubscriptions {
         Ok(())
     }
 
+    /// Removes *every* `(uri, subscriber)` registration for `subscriber`,
+    /// across all uris. Used when the connection/session owning that subscriber
+    /// id is torn down (retired, TTL-swept, closed): without this, a dead
+    /// subscriber's interest would leak in the registry and eventually fill it,
+    /// crowding out live subscribers with `-32011` (F-18).
+    pub fn unsubscribe_all(&self, subscriber: &str) {
+        let mut map = self.subscribers.lock().expect("subscription lock");
+        map.retain(|_uri, set| {
+            set.remove(subscriber);
+            !set.is_empty()
+        });
+    }
+
     /// Whether `subscriber` is currently subscribed to `uri`.
     pub fn is_subscribed(&self, uri: &str, subscriber: &str) -> bool {
         let map = self.subscribers.lock().expect("subscription lock");
@@ -288,6 +301,27 @@ mod tests {
         assert!(subs.is_watched("file:///a.txt"), "sess-2 still watching");
         subs.unsubscribe("file:///a.txt", "sess-2").unwrap();
         assert!(!subs.is_watched("file:///a.txt"));
+    }
+
+    /// F-18: `unsubscribe_all` drops a subscriber's interest across every uri,
+    /// keeps other subscribers, and forgets uris with no remaining subscriber.
+    #[test]
+    fn unsubscribe_all_removes_subscriber_everywhere() {
+        let subs = ResourceSubscriptions::new();
+        subs.subscribe("file:///a.txt", "sess-1").unwrap();
+        subs.subscribe("file:///a.txt", "sess-2").unwrap();
+        subs.subscribe("file:///b.txt", "sess-1").unwrap();
+
+        subs.unsubscribe_all("sess-1");
+        assert!(!subs.is_subscribed("file:///a.txt", "sess-1"));
+        assert!(!subs.is_subscribed("file:///b.txt", "sess-1"));
+        // The other subscriber on the shared uri survives.
+        assert!(subs.is_subscribed("file:///a.txt", "sess-2"));
+        // b.txt was left with no subscriber → fully forgotten.
+        assert!(!subs.is_watched("file:///b.txt"));
+        // Idempotent: removing an already-removed subscriber is a no-op.
+        subs.unsubscribe_all("sess-1");
+        assert!(subs.is_subscribed("file:///a.txt", "sess-2"));
     }
 
     #[test]

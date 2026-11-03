@@ -121,11 +121,17 @@ impl<S: StateSchema> SqliteCheckpointer<S> {
         }
         conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS as u64))
             .map_err(sql_err)?;
-        // WAL lets multiple processes (one writer at a time) share the file;
-        // NORMAL sync is durable enough for checkpoints under WAL.
+        // WAL lets multiple processes (one writer at a time) share the file.
+        // `synchronous=FULL` fsyncs the WAL on each commit, so a `save()` that
+        // has returned `Ok` survives a power loss. This is the whole point of
+        // a *checkpointer* (resume from the last checkpoint after a crash), so
+        // it is worth the per-commit fsync — the previous NORMAL did NOT fsync
+        // and could silently lose the most recent checkpoint on power loss
+        // despite `save()` reporting success (F-17). Checkpoints are written
+        // per graph step (not high-frequency), so the durability cost is small.
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(sql_err)?;
-        conn.pragma_update(None, "synchronous", "NORMAL")
+        conn.pragma_update(None, "synchronous", "FULL")
             .map_err(sql_err)?;
         conn.execute_batch(SCHEMA).map_err(sql_err)?;
         migrate_parent_column(&conn)?;
@@ -508,6 +514,26 @@ mod tests {
         // seq strictly increases (sqlite AUTOINCREMENT primary key).
         assert!(snaps[0].seq < snaps[1].seq);
         assert!(snaps[0].timestamp <= snaps[1].timestamp);
+    }
+
+    /// F-17: the checkpointer must run with `synchronous=FULL` so a `save()` that
+    /// has returned `Ok` is actually durable (fsynced WAL), not silently lost on
+    /// power failure. `NORMAL` under WAL does not fsync on commit, which defeats
+    /// the crash-resume purpose of a checkpointer.
+    #[tokio::test]
+    async fn synchronous_mode_is_durable_full() {
+        let cp = SqliteCheckpointer::<AgentState>::in_memory("sync-durable").unwrap();
+        let mode: i32 = cp
+            .conn
+            .lock()
+            .unwrap()
+            .query_row("PRAGMA synchronous", [], |row| row.get(0))
+            .unwrap();
+        // SQLite pragma values: 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA.
+        assert_eq!(
+            mode, 2,
+            "synchronous must be FULL (2) so a returning-Ok save survives power loss, got {mode}"
+        );
     }
 
     #[tokio::test]

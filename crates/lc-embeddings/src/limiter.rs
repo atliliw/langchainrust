@@ -28,6 +28,17 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+/// Error returned by [`TokenBucket::acquire`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TokenBucketError {
+    /// The bucket is burst-only (`refill_per_sec == 0.0`) and its one-time token
+    /// grant is spent. Because no refill will ever arrive, acquirers fail
+    /// immediately instead of parking on a maximal sleep forever (which would
+    /// otherwise hang the caller, since no timeout is armed here).
+    #[error("token-bucket exhausted: burst-only bucket has no tokens left")]
+    Exhausted,
+}
+
 /// Lazy token bucket used to pace embedding HTTP requests.
 ///
 /// Clone/`Arc` freely: all mutable state lives behind a single `tokio::Mutex`, so
@@ -77,9 +88,10 @@ impl TokenBucket {
     ///
     /// Refill is computed lazily from elapsed time on entry. If a token is ready the
     /// call returns immediately; otherwise it sleeps for exactly the time the next
-    /// token needs to refill (subject to the caller's `tokio::time::timeout`, which
-    /// remains the control mechanism for a burst-only bucket).
-    pub async fn acquire(&self) {
+    /// token needs to refill. F-01: a burst-only bucket (`refill_per_sec == 0.0`)
+    /// that has exhausted its one-time grant returns [`TokenBucketError::Exhausted`]
+    /// immediately instead of spinning forever — a deficit it can never close.
+    pub async fn acquire(&self) -> Result<(), TokenBucketError> {
         loop {
             let wait = {
                 let mut st = self.inner.state.lock().await;
@@ -92,17 +104,18 @@ impl TokenBucket {
                     (st.stored + elapsed * self.inner.refill_per_sec).min(self.inner.capacity);
                 if st.stored >= 1.0 {
                     st.stored -= 1.0;
-                    return;
+                    return Ok(());
+                }
+                // F-01: a burst-only bucket can never refill this deficit, so fail
+                // immediately rather than parking on the maximal sleep below (a
+                // permanent hang with no caller-armed timeout to cancel it).
+                if self.inner.refill_per_sec == 0.0 {
+                    return Err(TokenBucketError::Exhausted);
                 }
                 // No token yet: sleep for the refill of exactly the shortfall
-                // (deficit / rate). Burst-only buckets sleep a maximal interval and
-                // are intended to be cancelled by the caller's timeout.
+                // (deficit / rate).
                 let deficit = 1.0 - st.stored;
-                if self.inner.refill_per_sec > 0.0 {
-                    Duration::from_secs_f64(deficit / self.inner.refill_per_sec)
-                } else {
-                    Duration::from_secs(3600)
-                }
+                Duration::from_secs_f64(deficit / self.inner.refill_per_sec)
             };
             tokio::time::sleep(wait).await;
         }
@@ -127,30 +140,52 @@ mod tests {
     #[tokio::test]
     async fn starts_full_and_serves_up_to_capacity() {
         let b = TokenBucket::new(3, 0.0);
-        b.acquire().await;
-        b.acquire().await;
-        b.acquire().await; // 3rd consumes the last token — still immediate
+        b.acquire().await.expect("1st acquires within capacity");
+        b.acquire().await.expect("2nd acquires within capacity");
+        b.acquire().await.expect("3rd consumes the last token");
     }
 
-    /// Beyond `capacity` the acquire parks and never returns under a burst-only
-    /// bucket. Exactly the configured number slip through — the "并发" cap.
+    /// Beyond `capacity` the acquire fails fast with [`TokenBucketError::Exhausted`]
+    /// — exactly the configured number slip through (the "并发" cap), the rest error
+    /// rather than hang forever.
     #[tokio::test]
     async fn burst_only_bounds_concurrent_acquires() {
         let b = Arc::new(TokenBucket::new(2, 0.0));
         let mut handles = Vec::new();
         for _ in 0..5 {
             let b = b.clone();
-            handles.push(tokio::spawn(async move {
-                b.acquire().await;
-            }));
+            handles.push(tokio::spawn(async move { b.acquire().await }));
         }
-        // Let tasks run: the first two consume the initial tokens; the rest
-        // block on the maximal no-refill sleep.
-        tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let acquired = handles.iter().filter(|h| h.is_finished()).count();
-        assert_eq!(acquired, 2, "only the configured burst capacity may pass");
+        let mut granted = 0;
+        let mut exhausted = 0;
+        for h in handles {
+            match h.await.expect("acquire task should not panic") {
+                Ok(()) => granted += 1,
+                Err(TokenBucketError::Exhausted) => exhausted += 1,
+                Err(_) => exhausted += 1,
+            }
+        }
+        assert_eq!(granted, 2, "only the configured burst capacity may pass");
+        assert_eq!(
+            exhausted, 3,
+            "over-capacity requests fail fast instead of hanging"
+        );
+    }
+
+    /// F-01: a burst-only bucket (`refill_per_sec == 0.0`) fails fast once its
+    /// one-time grant is spent, never parking forever on the maximal sleep — the
+    /// point of the fix is that an exhausted bucket returns promptly, not hangs.
+    #[tokio::test]
+    async fn burst_only_exhausted_fails_immediately() {
+        let b = TokenBucket::new(1, 0.0);
+        b.acquire().await.expect("first acquire consumes the lone token");
+        assert_eq!(
+            b.acquire().await,
+            Err(TokenBucketError::Exhausted),
+            "second acquire must fail immediately, not wait forever"
+        );
     }
 
     /// A non-zero refill lets the bucket sustain repeated acquires that would
@@ -161,9 +196,9 @@ mod tests {
         // ~20ms refill rather than hanging (which would fail via the runtime's
         // test timeout).
         let b = TokenBucket::new(1, 50.0);
-        b.acquire().await; // consume the initial token
+        b.acquire().await.expect("consume the initial token");
         for _ in 0..3 {
-            b.acquire().await; // would deadlock if refill did not happen
+            b.acquire().await.expect("refill must keep admitting");
         }
     }
 
@@ -174,7 +209,7 @@ mod tests {
         // capacity 1, huge refill: after a long idle the stored cap still
         // admits exactly one immediate token, not an unbounded backlog.
         let b = TokenBucket::new(1, 100_000.0);
-        b.acquire().await; // consumes cap token; stored refills to <= 1
+        b.acquire().await.expect("consumes cap token");
     }
 
     /// `new` rejects a zero capacity (which could never admit anything).
@@ -192,16 +227,18 @@ mod tests {
         let mut handles = Vec::new();
         for _ in 0..4 {
             let b = b.clone();
-            handles.push(tokio::spawn(async move {
-                b.acquire().await;
-            }));
+            handles.push(tokio::spawn(async move { b.acquire().await }));
         }
-        tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(10)).await;
-        let acquired = handles.iter().filter(|h| h.is_finished()).count();
-        assert_eq!(
-            acquired, 3,
-            "shared bucket funds all consumers up to capacity"
-        );
+        let mut granted = 0;
+        let mut exhausted = 0;
+        for h in handles {
+            match h.await.expect("acquire task should not panic") {
+                Ok(()) => granted += 1,
+                Err(_) => exhausted += 1,
+            }
+        }
+        assert_eq!(granted, 3, "shared bucket funds all consumers up to capacity");
+        assert_eq!(exhausted, 1, "the one over-capacity consumer fails fast");
     }
 }

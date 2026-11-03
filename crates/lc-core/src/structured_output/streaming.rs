@@ -327,7 +327,12 @@ where
                             // The accumulated buffer is invalid JSON even after repair.
                             // This can happen with garbage tokens; skip and continue.
                             // We don't terminate the stream for a single bad parse.
-                            log::warn!("structured output stream hit invalid JSON fragment (skipped, continuing to accumulate): {msg}");
+                            //
+                            // F-03: re-anchor to the latest top-level `{`/`[` (clearing
+                            // the buffer when none exists) so a sustained run of
+                            // invalid fragments can't grow the buffer unboundedly.
+                            log::warn!("structured output stream hit invalid JSON fragment (skipped, re-anchored): {msg}");
+                            this.parser.reanchor();
                             continue;
                         }
                     }

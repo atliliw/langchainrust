@@ -20,6 +20,19 @@ use super::A2AError;
 /// otherwise have its stream cut.
 pub(crate) const DEFAULT_SSE_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Hard cap on the buffered bytes of an SSE frame that has not yet been
+/// terminated by a blank line (`\n\n`) (F-02).
+///
+/// `A2aSseParser::feed` accumulates incoming bytes in `buffer` and only
+/// consumes them once a `\n\n` terminator is seen. Without a cap, a peer that
+/// streams an endless `data:` line (or any bytes) and never emits a blank line
+/// grows the buffer without bound — a memory-exhaustion DoS. When the buffer
+/// would exceed this ceiling, the stream is treated as hostile: the buffer is
+/// dropped and an error is surfaced instead of an OOM. A single legitimate SSE
+/// frame is small (an A2A notification payload), so 1 MiB is far above any real
+/// frame while hard-bounding memory.
+const SSE_MAX_BUFFER_BYTES: usize = 1 << 20;
+
 /// First reconnect delay after a transport break (0.27.0 T3 #95).
 const SSE_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(250);
 /// Upper bound on a single reconnect delay (0.27.0 T3 #95).
@@ -136,7 +149,15 @@ impl A2ASseStream {
             match tokio::time::timeout(self.idle_timeout, self.response.chunk()).await {
                 Ok(Ok(Some(chunk))) => {
                     let text = String::from_utf8_lossy(&chunk);
-                    self.pending.extend(self.parser.feed(&text));
+                    // F-02: a runaway stream whose frame never terminates must
+                    // surface as an error (bounded buffer) rather than growing
+                    // memory without bound. It is treated as fatal — no
+                    // reconnect — because the peer is behaving maliciously or
+                    // is broken, not transiently down.
+                    match self.parser.feed(&text) {
+                        Ok(events) => self.pending.extend(events),
+                        Err(msg) => return Some(Err(A2AError::Http(msg))),
+                    }
                     // Loop so queued events are returned even if a chunk
                     // carried none (or we keep reading on an empty chunk).
                 }
@@ -271,7 +292,22 @@ impl A2aSseParser {
     ///
     /// 0.22.0 audit fix: an event whose JSON payload fails to parse is logged
     /// and skipped; only transport-level errors surface to the caller.
-    fn feed(&mut self, chunk: &str) -> Vec<TaskPushNotification> {
+    ///
+    /// F-02: a frame that accumulates beyond [`SSE_MAX_BUFFER_BYTES`] without a
+    /// `\n\n` terminator is a hostile/runaway stream — the buffer is dropped
+    /// and `Err` is returned so the caller surfaces a clean error instead of
+    /// letting memory grow without bound.
+    fn feed(&mut self, chunk: &str) -> Result<Vec<TaskPushNotification>, String> {
+        // The bound is on the *un-terminated* tail: the check happens before
+        // `push_str`, so a legitimate chunk carrying complete frame(s) that the
+        // drain loop below consumes never trips it. Only an endless frame (no
+        // `\n\n`) accumulates across chunks and eventually exceeds the ceiling.
+        if self.buffer.len().saturating_add(chunk.len()) > SSE_MAX_BUFFER_BYTES {
+            self.buffer.clear();
+            return Err(format!(
+                "SSE frame exceeds the {SSE_MAX_BUFFER_BYTES} byte buffer limit; dropping the stream"
+            ));
+        }
         self.buffer.push_str(chunk);
         let mut out = Vec::new();
         while let Some(pos) = self.buffer.find("\n\n") {
@@ -304,7 +340,7 @@ impl A2aSseParser {
                 }
             }
         }
-        out
+        Ok(out)
     }
 }
 
@@ -318,16 +354,54 @@ mod tests {
         assert_eq!(p.last_event_id(), None);
 
         // A block with only an id (empty data) still advances the replay id.
-        p.feed("id: 3\n\n");
+        p.feed("id: 3\n\n").unwrap();
         assert_eq!(p.last_event_id(), Some("3"));
 
         // A later event with a data payload and a new id replaces it.
-        p.feed("event: status-update\nid: 5\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}\n\n");
+        p.feed("event: status-update\nid: 5\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"working\"}\n\n")
+            .unwrap();
         assert_eq!(p.last_event_id(), Some("5"));
 
         // Per the SSE spec an event without an `id:` inherits the previous one.
-        p.feed("event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}\n\n");
+        p.feed("event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}\n\n")
+            .unwrap();
         assert_eq!(p.last_event_id(), Some("5"));
+    }
+
+    #[test]
+    fn feed_returns_error_when_unterminated_buffer_exceeds_limit() {
+        // F-02 (DoS): a peer streaming `data:` without ever sending a `\n\n`
+        // terminator must trip the buffer cap and error out — not grow memory
+        // without bound.
+        let mut p = A2aSseParser::new();
+        let data_line = "data: ".to_string() + &"x".repeat(64 * 1024); // 64 KiB, no terminator
+        // Fill the buffer right up to the cap without tripping it.
+        let fills = SSE_MAX_BUFFER_BYTES / data_line.len();
+        for _ in 0..fills {
+            assert!(
+                p.feed(&data_line).is_ok(),
+                "feeding below the cap must still be accepted"
+            );
+        }
+        // One more exceeds the cap -> hard error, and the buffer is dropped so
+        // memory stays bounded (no silent unbounded growth).
+        assert!(
+            p.feed(&data_line).is_err(),
+            "overflowing the capped buffer must error out"
+        );
+        assert!(p.buffer.len() <= SSE_MAX_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn feed_accepts_frames_larger_than_a_single_chunk_when_terminated() {
+        // Legit large-but-terminated content must not be rejected: a frame whose
+        // size exceeds the per-chunk threshold still completes normally because
+        // the terminator is present within the same chunk.
+        let mut p = A2aSseParser::new();
+        let big = "event: status-update\ndata: {\"kind\":\"status-update\",\"id\":\"t1\",\"status\":\"completed\"}\n\n";
+        let events = p.feed(big).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id(), "t1");
     }
 
     #[test]

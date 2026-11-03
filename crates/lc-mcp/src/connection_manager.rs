@@ -134,7 +134,14 @@ impl ManagedServer {
     async fn client(&self) -> Result<StatelessMcpClient, MCPError> {
         {
             let mut breaker = self.breaker.lock().await;
-            if !breaker.allow_request() {
+            // F-20: gate with `gate_request`, NOT `allow_request`. Acquiring a
+            // client here is purely local (stateless construction does no
+            // network I/O), so it must neither grant nor consume the half-open
+            // probe slot — consuming it without a resolution left
+            // `probe_in_flight` stuck true, permanently blocking the recovery
+            // probe and blacklisting the server. Only real probe I/O (probe /
+            // report outcomes) moves the breaker.
+            if !breaker.gate_request() {
                 return Err(MCPError::new(
                     -1,
                     format!(
@@ -176,10 +183,28 @@ impl ManagedServer {
     /// result recorded here is the only outcome a probe contributes.
     async fn probe(&self) -> Result<(), MCPError> {
         *self.last_probe.lock().await = Some(Instant::now());
+        // The probe first needs an immaterial client handle. Because `client()`
+        // now gates (not grants), this does not consume the half-open probe.
         let client = match self.client().await {
             Ok(c) => c,
             Err(e) => return Err(e),
         };
+        // F-20: the probe grant is acquired HERE, right before the network I/O,
+        // and resolved by the record below — so exactly one concurrent probe
+        // does I/O in the half-open window, and a grant is never left dangling.
+        let granted = {
+            let mut breaker = self.breaker.lock().await;
+            breaker.allow_request()
+        };
+        if !granted {
+            return Err(MCPError::new(
+                -1,
+                format!(
+                    "MCP server '{}' has no free probe slot (backoff running or a probe already in flight)",
+                    self.spec.name
+                ),
+            ));
+        }
         let result = probe_health(&client).await;
         let mut breaker = self.breaker.lock().await;
         if result.is_ok() {
@@ -654,6 +679,38 @@ mod tests {
         let manager = ConnectionManager::new();
         let err = manager.health("ghost").await.unwrap_err();
         assert!(err.to_string().contains("not registered"), "{}", err);
+    }
+
+    /// F-20: acquiring a client (free, purely-local construction) must NOT consume
+    /// the half-open probe slot. Before the fix, `client()` called
+    /// `allow_request()`, which on a half-open window set `probe_in_flight`
+    /// without doing any network I/O (and nothing resolved it) — a stuck marker
+    /// that left the breaker Open forever and permanently blocked the real
+    /// recovery probe: a fake permanent blacklist.
+    #[tokio::test]
+    async fn test_client_acquisition_does_not_consume_probe_slot() {
+        let server = Arc::new(ManagedServer::new(
+            ServerSpec::new("probe", DEAD_URL).with_max_failures(1),
+        ));
+        // Force an immediately-grantable half-open window (Open, backoff expired).
+        server.breaker.lock().await.force_half_open();
+
+        // A plain client() acquisition is local (no network I/O) and is served…
+        server.client().await.expect("half-open local acquisition served");
+
+        // …and MUST NOT leave a probe marked in flight (the F-20 bug did).
+        {
+            let breaker = server.breaker.lock().await;
+            assert!(
+                !breaker.probe_in_flight(),
+                "client() is not a probe and must not consume the probe slot"
+            );
+        }
+        // The single real probe is therefore still grantable to a genuine probe.
+        assert!(
+            server.breaker.lock().await.allow_request(),
+            "the probe grant must survive a client() acquisition"
+        );
     }
 
     /// A16: a `ServerSpec::with_auth` scheme rides along on the lazily-built

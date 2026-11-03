@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// B5: applies each stream hook's `on_stream_chunk` to a token in order.
 ///
@@ -37,6 +37,34 @@ use std::time::Instant;
 /// hook's `Forward`/`Replace`, or the empty string once a hook has `Filter`ed.
 /// Returns `Some(text)` to forward (Forward/Replace content) or `None` when the
 /// token was filtered to nothing and must be dropped from the stream.
+/// F-24: window after which a blocked stream send is abandoned because the
+/// consumer has stopped polling. Bounds each send so a consumer that stops
+/// reading (but has NOT dropped the stream — no `cancel` signal fires) fills the
+/// 32-slot mpsc buffer and then leaves `tx.send().await` blocked forever; with
+/// this bound the loop's producer returns and proceeds to its cancellation /
+/// termination path instead of hanging.
+const STREAM_SEND_STALE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// F-24: a bounded wrapper over the stream's mpsc sender. Every `send` races the
+/// underlying `send().await` against [`STREAM_SEND_STALE_TIMEOUT`], so the
+/// background loop can never block indefinitely on a consumer that stopped
+/// polling.
+#[derive(Clone)]
+struct StreamTx {
+    inner: tokio::sync::mpsc::Sender<Result<AgentStreamEvent, AgentError>>,
+    stale: Duration,
+}
+
+impl StreamTx {
+    /// Bounded send: returns as soon as the event is enqueued, or after `stale`
+    /// elapses (consumer stopped reading). Also returns immediately when the
+    /// receiver has been dropped (`send`'s own `Err`), so a fully abandoned
+    /// stream never blocks either.
+    async fn send(&self, event: Result<AgentStreamEvent, AgentError>) {
+        let _ = tokio::time::timeout(self.stale, self.inner.send(event)).await;
+    }
+}
+
 fn apply_stream_hooks(hooks: &[Arc<dyn crate::hooks::AgentHook>], token: &str) -> Option<String> {
     let mut current = token.to_string();
     for hook in hooks {
@@ -104,6 +132,13 @@ impl AgentExecutor {
         input: String,
     ) -> Pin<Box<dyn Stream<Item = Result<AgentStreamEvent, AgentError>> + Send>> {
         let (tx, rx) = tokio::sync::mpsc::channel(32);
+        // F-24: bound every send with a stale-consumer timeout so a listener that
+        // stops polling (without dropping) cannot hang the loop's `send().await`
+        // forever once the buffer fills.
+        let tx = StreamTx {
+            inner: tx,
+            stale: STREAM_SEND_STALE_TIMEOUT,
+        };
 
         // 0.20.0 A-H2: dropping the returned stream must stop the background agent
         // loop. Without this, a consumer that stops reading (a client disconnect, an
@@ -896,5 +931,44 @@ async fn publish_metrics(
         if let Err(e) = sink.export(&evt).await {
             log::warn!(target: "lc_agents::metrics", "agent metrics export failed: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-24: a consumer that stops polling but does NOT drop the stream (so no
+    /// `cancel` fires) must not wedge the producer. A bare mpsc `send().await`
+    /// on a 8-slot channel with no reader blocks forever at the 9th event; the
+    /// bounded wrapper makes the producer return within the stale window instead.
+    #[tokio::test]
+    async fn stream_send_bounds_when_consumer_stops_polling() {
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<Result<AgentStreamEvent, AgentError>>(8);
+        let tx = StreamTx {
+            inner: tx,
+            stale: Duration::from_millis(20),
+        };
+        // Hold the receiver alive but never read it: the consumer has stopped
+        // polling but has not dropped — the drop-based cancel would never fire.
+        let _held = rx;
+
+        let producer = tokio::spawn(async move {
+            for _ in 0..20 {
+                tx.send(Ok(AgentStreamEvent::Text {
+                    content: "x".to_string(),
+                }))
+                .await;
+            }
+        });
+
+        // The producer must finish (bounded by the stale window) rather than block
+        // indefinitely on the overflow of the 8-slot buffer.
+        let done = tokio::time::timeout(Duration::from_secs(3), producer).await;
+        assert!(
+            done.is_ok(),
+            "producer blocked forever while consumer stopped polling"
+        );
     }
 }

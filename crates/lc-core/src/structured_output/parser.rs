@@ -120,6 +120,20 @@ impl PartialJsonParser {
             }
         }
 
+        // F-03: the fence-stripped slice is empty iff no top-level `{`/`[` has
+        // appeared yet — everything accumulated is pre-JSON garbage (markdown
+        // fence line, "答案是:", plain chat text). Drop it now so a model that
+        // never opens a JSON structure cannot grow the buffer unboundedly across
+        // a single stream (which previously hung `stream.next()` and leaked
+        // memory). Once a structural open appears we stop dropping and resume
+        // normal partial accumulation.
+        if json.is_empty() {
+            self.buffer.clear();
+            self.depth = 0;
+            self.in_string = false;
+            self.escape_next = false;
+        }
+
         Err(PartialJsonError::Incomplete(format!(
             "Buffer has {} chars, depth={}",
             self.buffer.len(),
@@ -150,6 +164,38 @@ impl PartialJsonParser {
                 truncate_at_char_boundary(&self.buffer, 200)
             ))
         })
+    }
+
+    /// Drop all non-JSON leading text, re-anchoring the internal buffer at the
+    /// latest top-level `{`/`[` (F-03).
+    ///
+    /// Bounds the buffer when an *invalid* fragment is delivered repeatedly:
+    /// instead of accumulating malformed text forever, retain only the tail from
+    /// the last structural open. When no structural open has ever appeared the
+    /// buffer becomes empty (all pre-JSON garbage dropped). Parser state
+    /// (bracket depth / string / escape) is rescanned from the re-anchored slice
+    /// so subsequent `push_and_parse` calls stay consistent.
+    pub fn reanchor(&mut self) {
+        let anchored = Self::strip_markdown_fence(&self.buffer).to_string();
+        self.buffer = anchored;
+        self.depth = 0;
+        self.in_string = false;
+        self.escape_next = false;
+        for ch in self.buffer.chars() {
+            if self.escape_next {
+                self.escape_next = false;
+            } else if ch == '\\' && self.in_string {
+                self.escape_next = true;
+            } else if ch == '"' {
+                self.in_string = !self.in_string;
+            } else if !self.in_string {
+                match ch {
+                    '{' | '[' => self.depth += 1,
+                    '}' | ']' if self.depth > 0 => self.depth -= 1,
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Return a reference to the current buffer contents.
@@ -248,5 +294,57 @@ impl PartialJsonParser {
 impl Default for PartialJsonParser {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F-03: a model that treats JSON as chat text emits ordinary tokens with no
+    /// top-level `{`/`[`. Each stays `Incomplete`, but the buffer must not grow
+    /// with every token (that previously hung `stream.next()` and leaked memory).
+    #[test]
+    fn plain_chat_tokens_keep_buffer_bounded() {
+        let mut parser = PartialJsonParser::new();
+        for _ in 0..10_000 {
+            let r = parser.push_and_parse("hello world, this is chat, not JSON ");
+            assert!(matches!(r, Err(PartialJsonError::Incomplete(_))));
+            assert!(
+                parser.buffer().len() < 64,
+                "buffer grew unboundedly to {} chars",
+                parser.buffer().len()
+            );
+        }
+    }
+
+    /// F-03: pre-structure garbage is dropped, but once a `{` arrives normal
+    /// partial-JSON accumulation resumes and the value parses (健康恢复).
+    #[test]
+    fn garbage_then_valid_json_recovers() {
+        let mut parser = PartialJsonParser::new();
+        assert!(parser.push_and_parse("答案是：" ).is_err());
+        assert!(parser.push_and_parse("那么我们来聊：").is_err());
+        let v = parser.push_and_parse(r#"{"name":"Alice","age":30}"#).unwrap();
+        assert_eq!(v, serde_json::json!({"name": "Alice", "age": 30}));
+    }
+
+    /// F-03: `reanchor` drops leading junk and retains only the tail from the
+    /// last top-level `{`/`[`, keeping the buffer bounded after an invalid
+    /// fragment and leaving the stream recoverable.
+    #[test]
+    fn reanchor_bounds_buffer_and_keeps_recoverable() {
+        let mut parser = PartialJsonParser::new();
+        for _ in 0..3 {
+            let _ = parser.push_and_parse("junk ");
+        }
+        // a malformed fragment that *has* opened a structure (so it is not
+        // auto-cleared by the pre-structure guard) accumulates leading junk.
+        let _ = parser.push_and_parse(r#"{"k": "#);
+        assert!(parser.buffer().contains('{'));
+
+        parser.reanchor();
+        assert!(parser.buffer().is_empty() || parser.buffer().starts_with('{'));
+        assert!(parser.buffer().len() < 64, "re-anchored buffer stayed {} chars", parser.buffer().len());
     }
 }

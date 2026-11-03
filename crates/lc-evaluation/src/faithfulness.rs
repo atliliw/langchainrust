@@ -242,6 +242,15 @@ pub(crate) fn parse_yes_no(raw: &str) -> Option<bool> {
         || lower.contains("不能")
         || lower.contains("不是")
         || contains_word(&lower, "false")
+        // F-12: inverted negations — "该陈述是不正确的 / 是不完整的 / 是不对的" carry
+        // a leading `是` whose bare `是` substring would otherwise be read as an
+        // affirmation. Detected here (before the positive match) so a negated
+        // sentence that happens to contain 是 still judges NO.
+        || lower.contains("不正确")
+        || lower.contains("不完整")
+        || lower.contains("不对")
+        || lower.contains("不准确")
+        || lower.contains("不相符")
     {
         return Some(false);
     }
@@ -478,6 +487,14 @@ mod tests {
         // negative markers still win when no hedge is present.
         assert_eq!(parse_yes_no("不能"), Some(false));
         assert_eq!(parse_yes_no("不是"), Some(false));
+        // F-12: inverted negations must not be read as affirmations via the bare
+        // `是` they contain.
+        assert_eq!(parse_yes_no("该陈述是不正确的"), Some(false));
+        assert_eq!(parse_yes_no("该回答是不完整的"), Some(false));
+        assert_eq!(parse_yes_no("这条结论是不准确的"), Some(false));
+        assert_eq!(parse_yes_no("前提与上下文不相符"), Some(false));
+        // a genuine affirmation with 是 still judges YES
+        assert_eq!(parse_yes_no("该陈述是正确的"), Some(true));
     }
 
     /// P0-1: models supporting bind_tools use structured output (boolean verdict), no longer relying on text parsing.

@@ -1414,7 +1414,19 @@ let fitted = cw.fit(messages).await?;
 
 **它解决的痛点**:对话窗口装不下跨会话事实。会话摘要记忆压缩的是"聊了什么",事实会随摘要轮次损耗;而且摘要只在本会话内有效。语义记忆把"值得长期记住的事实"单独存一份,新会话开始时按当前问题的语义召回相关条目注入 prompt——这正是生成式智能体(generative agents)类系统的记忆模型。
 
-##### 3.1.9.7 统一接口 MemoryStore
+**这一条到底是干什么的 / 它和前面所有记忆的区别**:前面 3.1 节里的记忆(`Buffer` / `Window` / `Summary` / `SummaryBuffer` …)都实现 `BaseMemory`,管的是**对话历史**——下一条 prompt 里按时间顺序放哪些消息。这一条换了一套抽象 `MemoryStore`,管的是**知识**——从已完成轮次提炼出的、关于用户/任务的持久事实,按 namespace 隔离、按**含义**而非消息时间线召回:
+
+| 维度 | 前面的记忆(`BaseMemory`) | 这一套(`MemoryStore` / 语义记忆) |
+|---|---|---|
+| 存什么 | 对话历史,一组 message | 事实知识,如"用户偏好 Rust" |
+| 下条 prompt 注入什么 | 完整/摘要后的历史 | 按当前问题语义召回的相关事实 |
+| 作用域 | 本会话内 | 可跨会话(namespace 隔离) |
+| 怎么召回 | 按时间全部放进去 | 语义相似度排序、挑 Top-k |
+| 数据从哪来 | 对话本身 | 每轮完成后提炼(抽取器 / LLM) |
+
+两者**互为补充**:前面的记忆回答"这段聊了什么";这一条回答"这个用户、这件事有哪些长期事实"。会话新开、历史不复存在时,只有这一套还能把跨会话的事实捞回来。注意当前实现**纯内存**,进程结束即忘;要跨重启持久化需自备 `MemoryStore` 实现(见下文 3.1.9.6)。
+
+##### 3.1.9.1 统一接口 MemoryStore
 
 三种存储(`ShortTermMemory` / `LongTermMemory` / `TwoTierMemory`)实现同一个 trait,都可以 `Arc` 共享给多个执行器:
 
@@ -1436,7 +1448,7 @@ pub trait MemoryStore: Send + Sync {
 - 返回的 `MemoryHit { key, text, score, importance, tier: MemoryTier, metadata }` 标明命中来自 `MemoryTier::Short` 还是 `Long`。
 - `get` / 被 `search` 命中都算**一次访问**(刷新 `last_access_at`、`access_count +1`)——这是后面晋升机制的计数来源。
 
-##### 3.1.9.8 相似度从哪来:SemanticScorer 与零依赖默认值
+##### 3.1.9.2 相似度从哪来:SemanticScorer 与零依赖默认值
 
 ```rust
 #[async_trait]
@@ -1447,7 +1459,7 @@ pub trait SemanticScorer: Send + Sync {
 
 默认实现 `LexicalScorer` **不调用任何模型**:对两段文本做 Unicode 感知分词、算词频向量的 cosine 相似度,完全离线、确定、零额外依赖。这意味着开箱即用的"语义"召回实质上是**词汇重合度**匹配——问"退款政策"能召回含"退款""政策"字样的事实,但召不回只写了"退货多久能到账"的近义条目。想要真正的向量语义,自己实现 `SemanticScorer`(内部调你的嵌入模型),通过 `ShortTermMemory::with_scorer(capacity, Arc::new(scorer))` 或 `LongTermMemory::with_config(weights, Arc::new(scorer))` 注入,存储层不用改一行。
 
-##### 3.1.9.9 两层各是什么
+##### 3.1.9.3 两层各是什么
 
 | | 短期 `ShortTermMemory::new(capacity)` | 长期 `LongTermMemory::new()` |
 |---|---|---|
@@ -1465,7 +1477,18 @@ score = 0.70 · 相似度 + 0.15 · 2^(−age / 半衰期 · ln2) + 0.15 · 重�
 - 可调:`DecayWeights::new().with_weights(0.6, 0.2, 0.2).with_half_life(Duration::from_secs(3*24*3600))`。
 - 效果:常被召回的事实持续"保鲜",高重要度的旧事实仍能被翻出来,又老又没人碰的事实自然沉底。
 
-##### 3.1.9.10 TwoTierMemory:组合两层 + 晋升
+`ShortTermMemory` / `LongTermMemory` / `TwoTierMemory` 三者是**同一个 `MemoryStore` 接口的三个实现**(见 3.1.9.1),契约完全一致,可互相替换、都能 `Arc` 共享给多个执行器——区别只在"怎么存、怎么排名、怎么淘汰":
+
+| | `ShortTermMemory` | `LongTermMemory` | `TwoTierMemory` |
+|---|---|---|---|
+| 定位 | 短期工作层 | 长期衰减层 | 两层组合 |
+| 容量 | 固定,满了 FIFO 踢 | 默认 256/命名空间,满了踢 | 短期有界 / 长期默认 256 |
+| 淘汰 | 硬性 FIFO | 读路径不删,只靠 TTL/容量兜底 | 继承两层各自策略 |
+| 排序 | 纯相似度 | 相似度+近因+重要度加权衰减 | 一层统一用长期公式 |
+
+**怎么选**:日常**一个 `TwoTierMemory` 就够**——写入进短期层、`consolidate` 够格的晋升到长期、召回两层统一打分去重,完整的"短期写入→晋升→长期召回"闭环(见 3.1.9.4)。只有当你想要自己控制分层时才单独用 `ShortTermMemory`(只要个在线小组件)或 `LongTermMemory`(只想要一个带衰减的长期事实库)。
+
+##### 3.1.9.4 TwoTierMemory:组合两层 + 晋升
 
 ```rust
 use langchainrust::memory::{TwoTierMemory, MemoryItem, MemoryQuery, PromotionPolicy};
@@ -1492,7 +1515,7 @@ let hits = mem.search(&MemoryQuery::new("user-42", "他喜欢什么语言").k(5)
 
 晋升是 **OR 条件**:重要度达标(写入时就被认定的高价值事实)**或**反复被访问(用出来的高价值事实),任一满足即晋升。重复晋升不会产生重复条目——长期层按 key 合并:保留最早创建时间、累加访问次数、重要度取最大、文本更新为最新、metadata 合并。
 
-##### 3.1.9.11 与 AgentExecutor 接线:回忆在前、抽取在后
+##### 3.1.9.5 与 AgentExecutor 接线:回忆在前、抽取在后
 
 `lc-agents` 提供了 LLM 事实抽取器 `LlmMemoryExtractor`(facade 顶层直接导出),并在执行器上留了一个开关,**默认关闭**:
 
@@ -1515,7 +1538,7 @@ let executor = executor.with_semantic_memory(
 
 `LlmMemoryExtractor` 的容错设计值得知道:模型被要求只回一个 JSON 数组(`{key, text, importance}`),但解析器容忍围栏代码块和前后散文(走 `parse_llm_json`),也接受 `{"memories":[...]}` / `{"items":[...]}` 信封;单条坏数据跳过不致命;缺 importance 默认 0.5;缺 key 时由事实文本归一化派生稳定 key(同一事实抽两次只更新一条);每轮最多收 10 条防失控;assistant 输出为空白时直接短路、不调模型。
 
-##### 3.1.9.12 边界与注意
+##### 3.1.9.6 边界与注意
 
 - **纯内存,没有内置持久化**:三个存储都是进程内结构(`Arc` 可跨任务共享),drop 即遗忘。跨进程/重启保留需要自己实现 `MemoryStore`(接 Mongo 等),或在应用层定期快照。
 - **默认打分是词面匹配不是向量语义**;要嵌入语义请自备 `SemanticScorer`。
@@ -1825,6 +1848,8 @@ let stream = passthrough.transform(input_stream, None).await;
 
 #### 4.1.9 RunnableParallel (扇出/扇入)
 
+同一份输入同时走多条独立的线，各线结果合起来成一个 map（想成岔路全跑、最后汇总）；一条线检索文档、一条线保留原问题就用它。
+
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda, RunnableParallel};
 
@@ -1840,6 +1865,8 @@ let result = parallel.invoke(5, None).await?;
 ```
 
 #### 4.1.10 RunnableBranch (条件路由)
+
+按输入内容从上到下试条件，第一个命中的分支处理它，都不中走默认分支（LCEL 里的 if-else）；退款问题走售后、技术问题走技术就是它。
 
 ```rust
 use langchainrust::{RunnableExt, RunnableLambda, RunnableBranch};
@@ -1864,6 +1891,8 @@ let result = branch.invoke("hi".to_string(), None).await?;
 
 #### 4.1.11 RunnableBinding (配置绑定)
 
+给一个 Runnable 绑死固定的配置/参数，生成的新 Runnable 调用时就不用每次再传这些参数（`bind` 绑 kwargs 如 `temperature`；`with_config` 绑设置如 tag）。
+
 ```rust
 use langchainrust::{RunnableBinding, RunnableConfig};
 
@@ -1881,6 +1910,13 @@ let results = chain.batch(vec![1, 2, 3], None).await?;
 // results = ["Result: 2", "Result: 4", "Result: 6"]
 ```
 
+**这是什么：** 一次给 Runnable **喂一批输入**，逐条执行同一条链，**一次性返回整批结果**（维度：一份输入 → 一份输出；N 份输入 → N 份输出的数组）。等价于把 `invoke` 循环 N 次，但调用更方便。
+
+- 默认按顺序逐条跑。
+- 可通过 `RunnableConfig.max_concurrency` 控制**并发**跑多少条，适合独立、可并行的输入。
+
+**典型用途：** 数据清洗/打分、批量翻译、给一批文档统一生成摘要，需要同时处理多条的场合。
+
 #### 4.1.13 Stream 流式执行
 
 ```rust
@@ -1891,6 +1927,10 @@ while let Some(item) = stream.next().await {
     println!("Token: {}", item?);
 }
 ```
+
+**这是什么：** **边生成边取**——不像 `invoke` 要等整个结果算完才拿到一个完整输出，而是逐个拿到输出片段（对 LLM 就是 token），`stream.next()` 一次取一个。
+
+**典型用途：** 打字机式逐字显示、长文档逐段输出、前端要"先响应用户再慢慢给全文"的场景。注意流式需要底层组件支持；不是所有 Runnable 都能流。配合 `RunnableBranch` / `RunnableWithFallbacks` 也能流式。
 
 #### 4.1.14 RunnableWithFallbacks (降级回退) ✨ v0.10.0
 
@@ -1907,6 +1947,13 @@ let chain = primary.with_fallbacks(vec![fallback]);
 let result = chain.invoke(-5, None).await?;
 // result = 10 (fallback 执行)
 ```
+
+**这是什么：** 给一个 Runnable **兜底**——主 Runnable **失败（报错/panic）时，自动切到备用 Runnable** 继续执行，而不是让调用直接失败。返回的是成功那条分支的结果。
+
+- 主失败 → 自动按顺序试 fallback，全失败才报错。
+- 与 `RunnableBranch`（按输入内容选分支）、`RunnableRetry`（同一份重试）不同：这里"换实现",不重试、不靠内容判断。
+
+**典型用途：** 主模型超时/不可用时自动切备用模型、某个数据源挂了降级到缓存或本地处理。`primary.with_fallbacks(vec![fallback])` 一次可挂多个备用。
 
 #### 4.1.15 RunnableAssign (字段注入) ✨ v0.10.0
 
@@ -2374,6 +2421,12 @@ let answer = chain.predict("What is Rust?").await?;
 
 当文档太多、无法一次性塞入 prompt 时，Document Chain 提供不同的策略来处理多文档场景：
 
+**先澄清两个常见误解：**
+
+1. **"为什么文档会塞不进 prompt？"** 因为 prompt 是发给 LLM 当上下文看的，而每个 LLM 的输入有 **token 上限（上下文窗口）**。文档一多一长、加起来超过上限，模型要么报错、要么只看到一半乱答。文档塞不进的不是程序的内存——程序拼个字符串很简单——而是**模型一次能读的上限**，这是模型架构的硬边界。
+
+2. **"分批塞进去，LLM 又没有记忆，有什么用？"** Document Chain 的关键在于**跨批的记忆根本不靠 LLM 记**，而靠程序把每一批的**压缩结果用文字攒起来、拼进下一批**。以 MapReduce 为例：Map 阶段每篇文档独立调一次 LLM，产出**一句短答案**（存放在 `Vec<String>`），Reduce 阶段再把这几句答案一起拼进一条新 prompt 让 LLM 汇总。模型每次确实都是"没记忆的白板"，但程序每次把上一步的结果写在新的白板上再递给它——这就是"写在纸上的记忆"。核心是**压缩**：10 篇长文档塞不下，但 10 篇各自产出的短答案一定塞得下，信息靠"长文档→短答案"这个压缩过程传递下去。代价是多调几次 LLM（比一次贵），但窗口放不下时，这是唯一能让答案跨文档成立的办法。
+
 | Chain | 策略 | 适用场景 |
 |-------|------|----------|
 | **StuffDocumentsChain** | 所有文档塞入一个 prompt | 文档少、总长度在 token 限制内 |
@@ -2808,6 +2861,8 @@ let executor = AgentExecutor::new(
 
 CRAG、AdaptiveRAG、DeepResearch 支持 `stream()` 方法，逐步返回管道事件，让你可以实时展示 Agent 的执行进度。
 
+> **先澄清：Agent 的"流式"和 LLM 的"流式"是两个东西。** LLM 流式（见 [4.1.13 Stream](#4113-stream-流式执行)）是一个 token 一个 token 蹦出**文本碎片**；Agent 流式发的是**结构化事件**（`AgentStreamEvent`，如 `PipelineStep` 路由决策 / 检索中 / 生成中），最终才给一个 `FinalAnswer`。拿到事件流，前端能实时刷新"正在路由……""检索到 N 条"，而非干等结果。
+
 **CRAG 流式输出：**
 
 ```rust
@@ -2837,6 +2892,8 @@ while let Some(event) = stream.next().await {
 
 **AdaptiveRAG 流式输出：**
 
+AdaptiveRAG 在执行时，先由 LLM 做一次**路由决策**（把查询分进"不检索 / 单次检索 / 多次检索"三档），有分支可选。`stream()` 把这段过程逐步吐成事件：先发一个 `routing` 事件告诉你它做了什么决策，再发检索/生成进度，最后给 `FinalAnswer`——所以你看流式输出，能实时知道"这次查询是走了不检索的闲聊档，还是检索了好几次"，而不只是最后那个答案。
+
 ```rust
 use langchainrust::agents::adaptive_rag::AdaptiveRAG;
 
@@ -2852,6 +2909,8 @@ let stream = agent.stream("Compare tokio vs async-std").await?;
 ```
 
 **DeepResearch 流式输出：**
+
+DeepResearch 把一次调研拆成"规划子题 → 并行搜索 → 综合写报告 → 发现缺口再补搜"这几步，天然是多轮、有进度的。`stream_research()` 把每一阶段逐步吐成事件（`planning` 拆了哪些子题 → `searching` 第几轮搜了几个查询 → `synthesizing` → `gaps_found` 查到还有几个信息缺口 → 再来一轮 → `completed`），最后给 `FinalAnswer`。看流式输出你能实时知道"它拆了几个子题、查到第几轮、还缺哪些信息"，而不只是最后那份报告。
 
 ```rust
 use langchainrust::agents::deep_research::DeepResearchAgent;
@@ -3977,6 +4036,8 @@ println!("dim = {}", embedder.dimension()); // 384(config.hidden_size)
 
 可选能力 trait:实现方为每个 token 返回 `(字节偏移 span, L2 归一化向量)`。它**不在** `Embeddings` 主 trait 里——实现了才有(能力探测),避免给不支持 token 输出的 provider 强加契约。
 
+**它和普通嵌入有什么区别、到底图什么？** 普通嵌入是"一段文字 → 一个向量"(整句浓缩成一个点),所有 provider 都有;token 级嵌入是"一段文字 → 每个 token 各自一个向量 + 它在原文里的字节位置",只有少数长上下文、支持 token 输出的模型做得到(Qwen3-Embedding / BGE-M3 / Jina v3),池化类模型无法实现——这正是它被放在主 trait 外面的原因。它是 [6.2.12 Late Chunking](#6212-late-chunking后分块-v0210) 的前置能力:先按 token 逐个嵌入拿到每个 token 的向量和位置,late chunking 才能沿块边界把它们池化成块向量;没有它,后分块无从谈起。
+
 ```rust
 use langchainrust::embeddings::token_level::{TokenEmbedding, TokenLevelEmbeddings, TokenSpan};
 
@@ -4687,6 +4748,8 @@ let queries = generator.generate("database connection failed");
 | 用户提问与文档表述差距大 | 向量相似度打不准 | 用 HyDE 提高召回 |
 | 担心假设答案带偏检索 | 生成内容质量不稳定 | 打开 `with_include_original_query`，把原始查询一起并入检索 |
 | 召回已够、只求精确 | 检索结果足够相关 | 不需要 HyDE，直接检索 + 重排序 |
+
+**这几行怎么理解？** 上面四种"该用 HyDE"的场景，本质是同一件事：**用户的查询和文档的写法不在一个频道上**，向量相似度打不准。HyDE 的作用就是让 LLM 先把查询"扩成一段像文档的话"，再拿它的嵌入去搜，措辞对齐了、召回就准了。比如搜 "HDFS 性能"，嵌入只认识这 4 个词，而文档里写的是"HDFS 小文件读取在高并发下受限于元数据节点内存与 RPC 开销"——4 个词 vs 一整段专业描述，相似度当然低；HyDE 让 LLM 先写一段像样的假设答案，风格贴近真文档再搜。注意假设答案本身可以错，它只用来"对齐措辞"，返回的还是真实文档。最后一行反过来——**本来就搜得准就别用 HyDE**，白花一次 LLM 调用，直接检索 + 重排序更便宜。
 
 #### 6.7.2 工作方式
 

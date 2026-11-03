@@ -132,7 +132,11 @@ fn format_sources(results: &[SearchResult], max_source_tokens: Option<usize>) ->
                     log::warn!("token counting failed, falling back to byte-length estimate: {e}");
                     entry.len()
                 });
-                if used_tokens + entry_tokens > budget && !truncated_entries.is_empty() {
+                // F-23: cap each source independently — the first (highest-priority)
+                // entry is not exempt, so a single oversized source cannot blow the
+                // model context. An entry that alone exceeds the remaining budget is
+                // skipped rather than injected whole.
+                if used_tokens + entry_tokens > budget {
                     break;
                 }
                 used_tokens += entry_tokens;
@@ -416,6 +420,27 @@ mod tests {
         }];
         let text = format_sources(&results, None);
         assert!(text.contains("https://example.com"));
+    }
+
+    /// F-23: a single (highest-priority) oversized source must be skipped rather
+    /// than injected whole — otherwise one huge snippet can blow the synthesis
+    /// model's context above the source budget.
+    #[test]
+    fn test_format_sources_skips_oversized_first_source() {
+        let results = vec![SearchResult {
+            query: "q1".into(),
+            title: "Source A".into(),
+            snippet:
+                "This is an extremely long snippet that by itself vastly exceeds any small source budget and would previously have been injected wholesale.".into(),
+            url: String::new(),
+        }];
+        // A 1-token budget: the single source alone exceeds it, so (F-23) it must
+        // be dropped, not pushed in whole.
+        let out = format_sources(&results, Some(1));
+        assert!(
+            out.is_empty(),
+            "oversized first source must be skipped, got: {out:?}"
+        );
     }
 
     /// Verify the synthesis prompt contains few-shot example content.

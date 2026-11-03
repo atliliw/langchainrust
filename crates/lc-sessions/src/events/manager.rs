@@ -17,7 +17,7 @@ use lc_schema::Message;
 use tokio::sync::Mutex;
 
 use super::checkpoint::SessionCheckpoint;
-use super::model::{EventPayload, SessionEvent};
+use super::model::{EventPayload, SessionEvent, Turn};
 use super::replay::{
     age_bounded_turns, merge_projections, project, replay_active_session, ProjectedSession,
 };
@@ -103,13 +103,13 @@ pub struct EventSessionManager {
     /// log, which is always correct but never skips work).
     checkpoint: Option<Arc<dyn SessionCheckpoint>>,
 
-    /// 0.22.0 C7 fix: per-session-id striped lock serializing the whole
-    /// turn_count → append → LLM → append → compaction sequence of `chat()`
-    /// (and `record_tool_use`). Without it two concurrent requests compute
-    /// the same next event id and the EventStore's idempotent append silently
-    /// drops the loser's user message. Same discipline as the deprecated
-    /// manager (Q2); the outer map's Mutex guards only the map itself.
-    locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// 0.28.1 F-10: per-session marker of the last event-log turn whose memory
+    /// save landed but whose log append failed. `chat()` records it so a retry
+    /// that reproduces the same `(input, output)` turn skips the redundant
+    /// memory save — otherwise the failed attempt plus the retry would register
+    /// the same sentence twice in memory. Cleared on the retry once the log
+    /// append succeeds.
+    pending_memory_turns: Arc<Mutex<HashMap<String, (String, String)>>>,
 }
 
 /// Default auto-compaction threshold for [`EventSessionManager`] (0.25.0
@@ -138,7 +138,7 @@ impl EventSessionManager {
                 max_age: None,
             }),
             checkpoint: None,
-            locks: Arc::new(Mutex::new(HashMap::new())),
+            pending_memory_turns: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -210,14 +210,16 @@ impl EventSessionManager {
         self.checkpoint.as_ref()
     }
 
-    /// 0.22.0 C7 fix: gets the striped lock for a session id (lazily created
-    /// if absent). Forked managers share the map so a branch and its trunk
-    /// (same session id) stay mutually exclusive too.
+    /// 0.28.1 F-09: gets the striped lock that serializes the session's
+    /// `chat()`/`record_tool_use()` sequence. Delegated to the
+    /// [`EventStore::session_lock`], whose table lives in the store and is
+    /// therefore shared by *every* manager over the same store — including two
+    /// independently-constructed managers (one per request/restart). Forked
+    /// managers also share automatically, since they wrap the same store. A
+    /// shared lock is what keeps concurrent turns from computing the same
+    /// `next_id`, which the idempotent append would silently drop (data loss).
     async fn session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
-        let mut map = self.locks.lock().await;
-        map.entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        self.store.session_lock(session_id, &self.branch)
     }
 
     async fn next_id(&self, session_id: &str) -> Result<u64, SessionError> {
@@ -309,7 +311,7 @@ impl EventSessionManager {
         // Reap lazily-created per-session state (best-effort; the entries may
         // never have been created if the session was only created, not chatted).
         self.session_memories.lock().await.remove(session_id);
-        self.locks.lock().await.remove(session_id);
+        self.pending_memory_turns.lock().await.remove(session_id);
         if history_exists {
             Ok(())
         } else {
@@ -332,7 +334,7 @@ impl EventSessionManager {
     /// sessions that never accumulated cache entries.
     pub async fn release_session_cache(&self, session_id: &str) {
         self.session_memories.lock().await.remove(session_id);
-        self.locks.lock().await.remove(session_id);
+        self.pending_memory_turns.lock().await.remove(session_id);
     }
 
     /// Full history of a session (compat view: projected messages).
@@ -383,9 +385,11 @@ impl EventSessionManager {
         // checkpoint store (snapshots are keyed by branch, so trunk and fork
         // never overwrite each other).
         forked.checkpoint = self.checkpoint.clone();
-        // C7: share the per-session striped locks between the trunk manager
-        // and the fork so concurrent chat on both cannot race the same log.
-        forked.locks = self.locks.clone();
+        // F-09: trunk and fork need no explicit lock sharing — the striped
+        // lock is store-scoped now, so both wrap the same store and serialize
+        // automatically. F-10: share the pending-memory marker so a fork (which
+        // shares the same per-session memory) dedups a retry exactly like trunk.
+        forked.pending_memory_turns = self.pending_memory_turns.clone();
         Ok(forked)
     }
 
@@ -460,13 +464,35 @@ impl EventSessionManager {
         // but a later append fails — is far rarer and self-heals: the next load
         // simply feeds both from memory, and the log turn re-appends once.
         let content = response.content.clone();
+        // F-10: identity of this turn (user input -> assistant output), used to
+        // dedup a memory save when a retry reproduces a turn whose log append
+        // failed (see below).
+        let replay_key = (user_message.clone(), content.clone());
+
+        // 2. Commit memory *before* the event-log appends (§3.2): memory save
+        // is gated on the LLM succeeding, and the log turn is appended only
+        // after memory persists. The old "log first, memory second" order meant
+        // a failed `save_context` left a committed, replayable log turn that a
+        // caller retried into a *duplicate* (each append is a fresh id; there is
+        // no content-level de-duplication). The residual risk — memory committed
+        // but a later append fails — is handled by F-10 below (dedup on retry),
+        // so the rare duplicate that used to land in memory is prevented too.
         if let Some(memory) = &session_memory {
-            let mut mem = memory.lock().await;
-            let inputs = HashMap::from([(self.memory_input_key.clone(), user_message.clone())]);
-            let outputs = HashMap::from([(self.memory_output_key.clone(), content.clone())]);
-            mem.save_context(&inputs, &outputs)
-                .await
-                .map_err(|e| SessionError::Memory(format!("failed to save memory: {e}")))?;
+            // F-10: if a prior attempt committed this exact turn to memory but
+            // its log append failed, re-saving would register the sentence twice.
+            // Detect that replay (same turn identity) and skip the redundant save.
+            let is_retry_after_failed_append = {
+                let pending = self.pending_memory_turns.lock().await;
+                pending.get(session_id) == Some(&replay_key)
+            };
+            if !is_retry_after_failed_append {
+                let mut mem = memory.lock().await;
+                let inputs = HashMap::from([(self.memory_input_key.clone(), user_message.clone())]);
+                let outputs = HashMap::from([(self.memory_output_key.clone(), content.clone())]);
+                mem.save_context(&inputs, &outputs)
+                    .await
+                    .map_err(|e| SessionError::Memory(format!("failed to save memory: {e}")))?;
+            }
         }
 
         // 3. Persist the turn now that both the LLM and memory succeeded. The
@@ -474,8 +500,8 @@ impl EventSessionManager {
         // single store write): an atomic batch either lands both events or
         // neither, so a mid-write store failure can no longer leave an orphan
         // UserMessage with no reply. The two ids are computed up front under the
-        // session's striped lock (C7), so they are consecutive and idempotent
-        // appends still hold on crash replay.
+        // session's striped lock (F-09/C7), so they are consecutive and
+        // idempotent appends still hold on crash replay.
         let first_id = self.next_id(session_id).await?;
         let pair = vec![
             SessionEvent::now(
@@ -497,7 +523,20 @@ impl EventSessionManager {
                 },
             ),
         ];
-        self.store.append_batch(&pair).await?;
+        if let Err(e) = self.store.append_batch(&pair).await {
+            // F-10: memory already committed this turn but the durable log did
+            // not. Remember it so the immediate retry (reproducing the same
+            // turn) dedups the memory save instead of registering the sentence
+            // twice. Cleared once a retry's append succeeds.
+            self.pending_memory_turns
+                .lock()
+                .await
+                .insert(session_id.to_string(), replay_key);
+            return Err(e);
+        }
+        // The log append succeeded — memory and log are reconciled for this
+        // turn; drop any pending-memory marker (no-op on a normal first attempt).
+        self.pending_memory_turns.lock().await.remove(session_id);
 
         // 4. Auto-compaction (deterministic snapshot, no LLM), shared with the
         // idle-session `gc()` path.
@@ -714,9 +753,15 @@ impl EventSessionManager {
 /// returning an empty list (an empty context sent to the LLM is an API 400).
 fn last_n_turns_messages(events: &[SessionEvent], n: usize) -> Result<Vec<Message>, SessionError> {
     let p = project(events)?;
-    let total = p.turns.len();
+    // F-11: a Snapshot is context metadata, not a turn — it must not consume a
+    // turn-window slot. After an auto-compaction the projected turn list ends
+    // with the Snapshot standing in for the compacted prefix; if it were counted
+    // as the newest "turn" it would shrink the window by one and evict the newest
+    // *real* turn, leaving the model only "[context summary]". Count real turns.
+    let real_turns: Vec<&Turn> = p.turns.iter().filter(|t| !is_snapshot_turn(t)).collect();
+    let total = real_turns.len();
     let skip_turns = total.saturating_sub(n);
-    let boundary_turn = p.turns.get(skip_turns);
+    let boundary_turn = real_turns.get(skip_turns);
     match boundary_turn {
         Some(first_kept) => {
             let first_kept_id = first_kept.events.first().map(|e| e.id).unwrap_or(0);
@@ -756,6 +801,16 @@ fn last_n_turns_messages(events: &[SessionEvent], n: usize) -> Result<Vec<Messag
         }
         None => Ok(p.messages),
     }
+}
+
+/// F-11: whether a projected turn is a synthetic `Snapshot` slot rather than a
+/// real conversation turn. `project()` stores a `Snapshot` event as a
+/// single-event turn; that turn must be excluded from turn-window accounting.
+fn is_snapshot_turn(t: &Turn) -> bool {
+    matches!(
+        t.events.first().map(|e| &e.payload),
+        Some(EventPayload::Snapshot { .. })
+    )
 }
 
 #[cfg(test)]
@@ -1069,9 +1124,11 @@ mod tests {
         assert_eq!(received[0][0].content, "这次成功");
     }
 
-    /// Per-session cache eviction: `release_session_cache` frees a session's lazily-created
-    /// memory + lock entries so a long-lived manager does not hold them resident forever,
-    /// while the session and its stored history survive.
+    /// Per-session cache eviction: `release_session_cache` frees a session's
+    /// lazily-created memory entry so a long-lived manager does not hold it
+    /// resident forever, while the session and its stored history survive. (The
+    /// striped lock no longer lives in the manager — F-09 moved it into the
+    /// store — so only the memory cache is evicted here.)
     #[tokio::test]
     async fn release_session_cache_evicts_lazy_state_but_keeps_session() {
         let store = Arc::new(MemoryEventStore::new());
@@ -1083,21 +1140,15 @@ mod tests {
         }));
         let id = mgr.create_session().await.unwrap();
 
-        // First use lazily creates the per-session memory + striped lock entries.
+        // First use lazily creates the per-session memory entry.
         assert!(mgr.session_memory(&id).await.is_some());
-        mgr.session_lock(&id).await;
         assert_eq!(
             mgr.session_memories.lock().await.len(),
             1,
             "memory cache populated on first use"
         );
-        assert_eq!(
-            mgr.locks.lock().await.len(),
-            1,
-            "striped lock created on first use"
-        );
 
-        // Eviction releases the resident entries and is idempotent.
+        // Eviction releases the resident entry and is idempotent.
         mgr.release_session_cache(&id).await;
         mgr.release_session_cache(&id).await;
         assert_eq!(
@@ -1105,7 +1156,6 @@ mod tests {
             0,
             "memory cache released"
         );
-        assert_eq!(mgr.locks.lock().await.len(), 0, "lock cache released");
 
         // The session survives — its stored history is still intact — and the next
         // use lazily recreates a fresh memory instance.
@@ -1663,9 +1713,9 @@ mod tests {
         // The precondition the fix keys off of: a compaction Snapshot landed
         // strictly after the stale checkpoint base.
         assert!(
-            events.iter().any(|e| {
-                e.id > up_to_id && matches!(e.payload, EventPayload::Snapshot { .. })
-            }),
+            events
+                .iter()
+                .any(|e| { e.id > up_to_id && matches!(e.payload, EventPayload::Snapshot { .. }) }),
             "setup must leave a Snapshot after up_to_id={up_to_id}"
         );
 
@@ -1807,7 +1857,9 @@ mod tests {
             dst_branch: &str,
             until_id: Option<u64>,
         ) -> Result<usize, SessionError> {
-            self.inner.fork(session_id, src_branch, dst_branch, until_id).await
+            self.inner
+                .fork(session_id, src_branch, dst_branch, until_id)
+                .await
         }
         async fn latest_id(&self, session_id: &str, branch: &str) -> Result<u64, SessionError> {
             self.inner.latest_id(session_id, branch).await
@@ -1821,7 +1873,12 @@ mod tests {
             branch: &str,
             before_id: u64,
         ) -> Result<(), SessionError> {
-            self.inner.delete_before(session_id, branch, before_id).await
+            self.inner
+                .delete_before(session_id, branch, before_id)
+                .await
+        }
+        fn session_lock(&self, session_id: &str, branch: &str) -> Arc<Mutex<()>> {
+            self.inner.session_lock(session_id, branch)
         }
     }
 
@@ -1837,12 +1894,17 @@ mod tests {
         let llm = MockLlm::new("回复");
 
         let appends_before = store.appends.load(std::sync::atomic::Ordering::SeqCst);
-        let batches_before = store.append_batches.load(std::sync::atomic::Ordering::SeqCst);
+        let batches_before = store
+            .append_batches
+            .load(std::sync::atomic::Ordering::SeqCst);
 
         mgr.chat(&id, &llm, "你好".to_string()).await.unwrap();
 
         assert_eq!(
-            store.append_batches.load(std::sync::atomic::Ordering::SeqCst) - batches_before,
+            store
+                .append_batches
+                .load(std::sync::atomic::Ordering::SeqCst)
+                - batches_before,
             1,
             "a turn must land as a single atomic append_batch"
         );
@@ -1867,7 +1929,9 @@ mod tests {
                 )
             });
         let u = chat_events.next().expect("a user message was appended");
-        let a = chat_events.next().expect("an assistant message was appended");
+        let a = chat_events
+            .next()
+            .expect("an assistant message was appended");
         assert!(
             chat_events.next().is_none(),
             "chat() must append exactly one {{user, assistant}} pair"
@@ -1887,5 +1951,260 @@ mod tests {
             }
             other => panic!("expected in-order user then assistant, got {other:?}"),
         }
+    }
+
+    // ---- F-11: a Snapshot must not occupy a turn-window slot ----------------
+
+    /// F-11 regression: after auto-compaction appends a Snapshot to the log
+    /// tail, a tight turn window must still include the newest *real* turn. The
+    /// Snapshot used to be counted as the newest turn, which shoved the actual
+    /// latest turn out of a `with_max_context_turns(1)` window, leaving only
+    /// "[context summary]" for the model to reason with.
+    #[tokio::test]
+    async fn compaction_snapshot_does_not_evict_the_real_turn_from_the_window() {
+        let llm = MockLlm::new("回复");
+        let store = Arc::new(MemoryEventStore::new());
+        let mgr = EventSessionManager::new(store.clone())
+            .with_auto_compaction(AutoCompaction::new(2).unwrap())
+            .with_max_context_turns(1);
+        let id = mgr.create_session().await.unwrap();
+        for t in 0..5 {
+            mgr.chat(&id, &llm, format!("问题{t}")).await.unwrap();
+        }
+
+        // Precondition: compaction really fired and left a Snapshot marker.
+        let events = store.read(&id, "main", None).await.unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.payload, EventPayload::Snapshot { .. })),
+            "setup must produce a Snapshot"
+        );
+
+        // The last chat ("问题4") projects a window of the one previous real
+        // turn plus the current message. The newest real turn must survive.
+        let received = llm.received().await;
+        let last = received.last().unwrap();
+        let contents: Vec<&str> = last.iter().map(|m| m.content.as_str()).collect();
+        assert!(
+            contents.iter().any(|c| c.contains("问题3")),
+            "the newest real turn (问题3's assistant reply turn) must stay in the window, got {contents:?}"
+        );
+        assert!(
+            contents.iter().any(|c| c.contains("问题4")),
+            "the current user message is present, got {contents:?}"
+        );
+        // The window must not collapse to just a summarized-context line.
+        assert!(
+            !contents.iter().all(|c| c.starts_with("[context summary]")),
+            "window must still hold a real turn, got {contents:?}"
+        );
+    }
+
+    // ---- F-10: a failed log append + retry must not duplicate memory --------
+
+    /// F-10: a store whose `append_batch` fails once (injected), then succeeds.
+    #[derive(Default)]
+    struct FlakyStore {
+        inner: MemoryEventStore,
+        fail_next_batch: std::sync::atomic::AtomicBool,
+    }
+    impl FlakyStore {
+        fn fail_next_append_batch(&self) {
+            self.fail_next_batch
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    #[async_trait]
+    impl EventStore for FlakyStore {
+        async fn append(&self, event: &SessionEvent) -> Result<(), SessionError> {
+            self.inner.append(event).await
+        }
+        async fn append_batch(&self, events: &[SessionEvent]) -> Result<(), SessionError> {
+            if self
+                .fail_next_batch
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(SessionError::StoreError(
+                    "injected append_batch failure".to_string(),
+                ));
+            }
+            self.inner.append_batch(events).await
+        }
+        async fn read(
+            &self,
+            session_id: &str,
+            branch: &str,
+            after: Option<u64>,
+        ) -> Result<Vec<SessionEvent>, SessionError> {
+            self.inner.read(session_id, branch, after).await
+        }
+        async fn read_turns_range(
+            &self,
+            session_id: &str,
+            branch: &str,
+            from_turn: u64,
+            to_turn: u64,
+        ) -> Result<Vec<SessionEvent>, SessionError> {
+            self.inner
+                .read_turns_range(session_id, branch, from_turn, to_turn)
+                .await
+        }
+        async fn fork(
+            &self,
+            session_id: &str,
+            src_branch: &str,
+            dst_branch: &str,
+            until_id: Option<u64>,
+        ) -> Result<usize, SessionError> {
+            self.inner
+                .fork(session_id, src_branch, dst_branch, until_id)
+                .await
+        }
+        async fn latest_id(&self, session_id: &str, branch: &str) -> Result<u64, SessionError> {
+            self.inner.latest_id(session_id, branch).await
+        }
+        async fn clear_session(&self, session_id: &str) -> Result<(), SessionError> {
+            self.inner.clear_session(session_id).await
+        }
+        async fn delete_before(
+            &self,
+            session_id: &str,
+            branch: &str,
+            before_id: u64,
+        ) -> Result<(), SessionError> {
+            self.inner
+                .delete_before(session_id, branch, before_id)
+                .await
+        }
+        fn session_lock(&self, session_id: &str, branch: &str) -> Arc<Mutex<()>> {
+            self.inner.session_lock(session_id, branch)
+        }
+    }
+
+    /// F-10 regression: when the durable log append fails after memory has
+    /// already committed the turn, a retry of the same turn must add the turn to
+    /// memory (and the log) exactly once — the sentence must not land twice.
+    #[tokio::test]
+    async fn failed_append_then_retry_does_not_duplicate_the_memory_turn() {
+        let llm = MockLlm::new("回复");
+        let store = Arc::new(FlakyStore::default());
+        let rec = Arc::new(Mutex::new(RecordingMemory::new("")));
+        let mgr = EventSessionManager::new(store.clone()).with_memory(rec.clone());
+        let id = mgr.create_session().await.unwrap();
+
+        // First attempt: memory commits, but the log append fails.
+        store.fail_next_append_batch();
+        let err = mgr.chat(&id, &llm, "同一句".to_string()).await;
+        assert!(
+            matches!(err, Err(SessionError::StoreError(_))),
+            "the injected append failure must surface"
+        );
+
+        // Retry the same turn: the memory save is deduped, the log append lands.
+        mgr.chat(&id, &llm, "同一句".to_string())
+            .await
+            .expect("the retry succeeds");
+
+        // The sentence landed in memory exactly once (not twice)...
+        let saved = rec.lock().await.saved.lock().await.clone();
+        assert_eq!(saved.len(), 1, "retry must not duplicate the memory turn");
+        assert_eq!(saved[0], ("同一句".into(), "回复".into()));
+
+        // ...and in the durable log exactly once too.
+        let events = store.inner.read(&id, "main", None).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(
+                    &e.payload,
+                    EventPayload::UserMessage { content } if content == "同一句"
+                ))
+                .count(),
+            1,
+            "the log must hold one copy of the turn"
+        );
+    }
+
+    // ---- F-09: store-scoped locks serialise independent managers ------------
+
+    /// F-09: two independently-constructed managers over the SAME store resolve
+    /// to the same per-session lock, so holding one manager's lock blocks the
+    /// other — they cannot race the same log and lose a turn. This is the
+    /// deterministic version of the concurrency guarantee (proves sharing, not
+    /// just "usually serializes").
+    #[tokio::test]
+    async fn two_managers_share_the_same_striped_lock() {
+        let store = Arc::new(MemoryEventStore::new());
+        let mgr_a = EventSessionManager::new(store.clone());
+        let id = mgr_a.create_session().await.unwrap();
+        let mgr_b = EventSessionManager::new(store.clone());
+
+        // While A holds the session's lock, B's lock on the same session must be
+        // held too — both names resolve to ONE underlying store-scoped lock.
+        let lock_a = mgr_a.session_lock(&id).await;
+        let _guard_a = lock_a.lock().await;
+        let lock_b = mgr_b.session_lock(&id).await;
+        assert!(
+            lock_b.try_lock().is_err(),
+            "B's lock must be held while A is in the critical section (locks not shared across managers)"
+        );
+        drop(_guard_a);
+        // A released → B can now acquire the very same lock (they are one object).
+        let _guard_b = lock_b.try_lock().expect("A released the shared lock");
+    }
+
+    /// F-09: two managers concurrently chatting the same session must not lose
+    /// either turn — previously both computed the same next_id and the
+    /// idempotent append silently dropped one. Store-scoped locks serialise the
+    /// turns, so both user messages survive.
+    #[tokio::test]
+    async fn concurrent_chat_across_two_managers_loses_no_turn() {
+        let llm0 = MockLlm::new("r0");
+        let llm1 = MockLlm::new("r1");
+        let store = Arc::new(MemoryEventStore::new());
+        let id = {
+            let mgr = EventSessionManager::new(store.clone());
+            mgr.create_session().await.unwrap()
+        };
+        let mgr_a = EventSessionManager::new(store.clone());
+        let mgr_b = EventSessionManager::new(store.clone());
+        let ida = id.clone();
+        let idb = id.clone();
+        let ta =
+            tokio::spawn(
+                async move { mgr_a.chat(&ida, &llm0, "并发A".to_string()).await.unwrap() },
+            );
+        let tb =
+            tokio::spawn(
+                async move { mgr_b.chat(&idb, &llm1, "并发B".to_string()).await.unwrap() },
+            );
+        let (ra, rb) = tokio::join!(ta, tb);
+        ra.unwrap();
+        rb.unwrap();
+
+        // Both user messages must survive — the shared lock prevents the id
+        // collision that would silently drop one turn.
+        let events = store.read(&id, "main", None).await.unwrap();
+        let users: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match &e.payload {
+                EventPayload::UserMessage { content } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            users.contains(&"并发A"),
+            "turn A must survive under concurrency, got {users:?}"
+        );
+        assert!(
+            users.contains(&"并发B"),
+            "turn B must survive under concurrency, got {users:?}"
+        );
+        assert_eq!(
+            users.len(),
+            2,
+            "no turn may be lost under concurrency, got {users:?}"
+        );
     }
 }

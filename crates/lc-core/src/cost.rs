@@ -283,7 +283,16 @@ pub struct CostTracker {
     scope: Option<String>,
     sink: Option<Arc<dyn MetricsSink>>,
     inner: Mutex<Inner>,
+    /// Cap on the per-call `records` buffer (F-30). Beyond this, the oldest
+    /// entries are evicted FIFO so a shared, long-lived tracker cannot grow
+    /// `records` without bound. Aggregates (`total_cost_usd`, `by_model`,
+    /// `by_scope`) are unaffected — they fold all calls into fixed counters.
+    max_records: usize,
 }
+
+/// Default `records` cap: large enough to never perturb real workloads, low
+/// enough to bound a runaway shared-lifetime tracker.
+pub(crate) const DEFAULT_MAX_RECORDS: usize = 100_000;
 
 impl CostTracker {
     /// Tracker over the given pricing table.
@@ -293,6 +302,29 @@ impl CostTracker {
             scope: None,
             sink: None,
             inner: Mutex::new(Inner::default()),
+            max_records: DEFAULT_MAX_RECORDS,
+        }
+    }
+
+    /// Bounds the retained per-call `records` buffer (F-30): the oldest
+    /// `records.len() - max_records` entries are evicted FIFO once the cap is
+    /// exceeded. Use a per-run `reset()` for a hard drop.
+    pub fn with_max_records(mut self, max_records: usize) -> Self {
+        self.max_records = max_records;
+        self
+    }
+
+    /// Appends one per-call record, evicting oldest entries beyond `max_records`.
+    fn push_record(&self, inner: &mut Inner, record: CostRecord) {
+        inner.records.push(record);
+        if inner.records.len() > self.max_records {
+            let excess = inner.records.len() - self.max_records;
+            inner.records.drain(..excess);
+            log::warn!(
+                target: "lc_core::cost",
+                "cost record buffer exceeded max_records={max_records}: evicting {excess} oldest entries",
+                max_records = self.max_records
+            );
         }
     }
 
@@ -411,7 +443,7 @@ impl CostTracker {
             let scoped = inner.by_scope.entry(scope.map(str::to_string)).or_default();
             scoped.total += cost;
             scoped.llm += cost;
-            inner.records.push(record.clone());
+            self.push_record(&mut inner, record);
         }
 
         if let Some(sink) = &self.sink {
@@ -488,13 +520,16 @@ impl CostTracker {
                 CostType::Tool => scoped.tool += cost_usd,
                 CostType::Embedding => scoped.embedding += cost_usd,
             }
-            inner.records.push(CostRecord {
-                provider: provider.map(str::to_string),
-                model: model.to_string(),
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                cost_usd,
-            });
+            self.push_record(
+                &mut inner,
+                CostRecord {
+                    provider: provider.map(str::to_string),
+                    model: model.to_string(),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    cost_usd,
+                },
+            );
         }
         if let Some(sink) = &self.sink {
             let evt = ObsEvent::Cost(crate::observability::CostEvent {
@@ -845,5 +880,41 @@ mod tests {
         assert_eq!(json["scope"], "run-7");
         assert_eq!(json["total_cost_usd"], 0.75);
         assert_eq!(json["by_model"]["openai/gpt-4o-mini"]["calls"], 1);
+    }
+
+    /// F-30: a shared, long-lived tracker's per-call `records` buffer must not
+    /// grow without bound. With a small `max_records`, growth stops at the cap
+    /// and the oldest entries are evicted (FIFO) while the aggregates still fold
+    /// every call in.
+    #[tokio::test]
+    async fn records_buffer_is_capped_and_evicts_oldest() {
+        let tracker = CostTracker::with_builtin_prices().with_max_records(3);
+
+        // seven calls across two models; first model is "openai/gpt-4o-mini".
+        for _ in 0..4 {
+            tracker
+                .record(Some("openai"), "gpt-4o-mini", 1000, 1000)
+                .await; // 0.75 each
+        }
+        for _ in 0..3 {
+            tracker
+                .record(Some("anthropic"), "claude-3-5-haiku-latest", 1000, 1000)
+                .await; // 4.80 each
+        }
+        assert_eq!(tracker.records().await.len(), 3);
+
+        // Oldest (openai/gpt-4o-mini) entries were evicted; the newest three are
+        // the anthropic calls.
+        let records = tracker.records().await;
+        assert!(
+            records.iter().all(|r| r.model == "claude-3-5-haiku-latest"),
+            "oldest records should be evicted, got: {records:?}"
+        );
+
+        // Aggregates still fold *all* calls (calls not capped).
+        assert_eq!(tracker.record_scoped(None, None, Some("openai"), "gpt-4o-mini", 1000, 1000).await, 0.75);
+        assert_eq!(tracker.report().await.calls, 8);
+        // 4 * 0.75 + 3 * 4.80 (haiku) + 0.75 (final scoped) = 3.0 + 14.4 + 0.75 = 18.15
+        assert!((tracker.total_cost_usd().await - 18.15).abs() < 1e-6);
     }
 }

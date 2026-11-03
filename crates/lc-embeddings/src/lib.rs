@@ -137,6 +137,14 @@ pub enum EmbeddingError {
     #[error("Embedding batch contains an empty vector (provider returned fewer embeddings than requested)")]
     EmptyVectorInBatch,
 
+    /// A configured rate limiter exhausted its token budget before a request could
+    /// be dispatched (a burst-only bucket ran out of its one-time grant).
+    ///
+    /// F-01: surfaced immediately instead of hanging the embed call on a limiter
+    /// that will never refill.
+    #[error("rate limiter exhausted: {0}")]
+    RateLimited(String),
+
     /// A model name is not registered in the [`catalog::ModelCatalog`].
     ///
     /// v0.27.0 T3: an unknown name is a configuration bug, never a cue to fall

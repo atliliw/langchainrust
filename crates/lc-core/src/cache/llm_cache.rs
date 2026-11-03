@@ -20,13 +20,21 @@ pub enum CacheError {
     Serialization(#[from] serde_json::Error),
 }
 
-/// Cached LLM result, with its expiry time
+/// Cached LLM result, with separate absolute-write and LRU timestamps.
+///
+/// F-14: `cached_at` (the absolute write time) drives TTL and is *not* refreshed
+/// on hits, so a frequently-accessed entry still expires after the configured
+/// TTL and never serves stale answers indefinitely. `last_accessed` tracks LRU
+/// order and *is* refreshed on every hit, so eviction still prefers the
+/// least-recently-used entry.
 #[derive(Debug, Clone)]
 pub struct CachedLLMResult {
     /// The LLM result
     pub result: LLMResult,
-    /// When it was cached
+    /// Absolute time the entry was stored (TTL baseline, never sliding on hits).
     pub cached_at: Instant,
+    /// Most-recent access time (LRU order, refreshed on every hit).
+    pub last_accessed: Instant,
 }
 
 /// Cache configuration
@@ -168,11 +176,14 @@ impl LLMCache {
         let result = entry.clone();
         self.hits.fetch_add(1, Ordering::Relaxed);
 
-        // Q7: refresh the LRU timestamp on a hit. Drop the read lock, then take the write lock to update.
+        // F-14: refresh the *LRU* timestamp on a hit (touch `last_accessed`, not
+        // `cached_at`). Keeping the TTL baseline untouched means a key that is hit
+        // every few seconds still dies when its absolute write time exceeds the TTL,
+        // instead of sliding forever. Drop the read lock, then take the write lock to update.
         drop(store);
         let mut store = self.store.write().await;
         if let Some(entry) = store.get_mut(key) {
-            entry.cached_at = Instant::now();
+            entry.last_accessed = Instant::now();
         }
 
         Some(result)
@@ -188,10 +199,12 @@ impl LLMCache {
 
         // check whether eviction is needed
         if self.config.max_entries > 0 && store.len() >= self.config.max_entries {
-            // evict the oldest entry
+            // F-14: evict the least-recently-*accessed* entry (LRU), not the
+            // oldest-written one. `cached_at` now never slides so it no longer
+            // doubles as the LRU key.
             if let Some(oldest_key) = store
                 .iter()
-                .min_by_key(|(_, v)| v.cached_at)
+                .min_by_key(|(_, v)| v.last_accessed)
                 .map(|(k, _)| k.clone())
             {
                 store.remove(&oldest_key);
@@ -203,6 +216,7 @@ impl LLMCache {
             CachedLLMResult {
                 result,
                 cached_at: Instant::now(),
+                last_accessed: Instant::now(),
             },
         );
     }
@@ -382,7 +396,55 @@ mod tests {
         assert!(cache.get("c").await.is_some());
     }
 
-    #[tokio::test]
+    /// F-14: hits refresh the *LRU* timestamp (`last_accessed`) only — the TTL
+/// baseline (`cached_at`, the write time) never slides. A key hit inside the TTL
+/// window must still expire once its absolute write time exceeds the TTL,
+/// instead of being kept alive forever by frequent access.
+#[tokio::test]
+async fn test_frequent_hits_do_not_slide_ttl() {
+    let config = CacheConfig::new().with_ttl(Duration::from_millis(30));
+    let cache = LLMCache::with_config(config);
+
+    cache.put("key".to_string(), make_result("v")).await;
+    let write = cache
+        .store
+        .read()
+        .await
+        .get("key")
+        .cloned()
+        .expect("entry just stored");
+
+    // Hit the key (still inside the TTL window).
+    assert!(cache.get("key").await.is_some(), "within the TTL window");
+
+    // After the hit: the LRU timestamp moved, the write-time TTL baseline did not.
+    let after = cache
+        .store
+        .read()
+        .await
+        .get("key")
+        .cloned()
+        .expect("entry still present");
+    assert_eq!(
+        after.cached_at, write.cached_at,
+        "hits must not refresh the TTL baseline"
+    );
+    assert!(
+        after.last_accessed > write.cached_at,
+        "hits must refresh the LRU timestamp"
+    );
+
+    // Let absolute write-time exceed the TTL by a comfortable margin (60ms over
+    // 30ms; robust even under heavy load). Despite the recent hit, the entry
+    // must expire because the write-time TTL never slid.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    assert!(
+        cache.get("key").await.is_none(),
+        "absolute TTL must still expire despite a recent hit"
+    );
+}
+
+#[tokio::test]
     async fn test_cache_no_ttl() {
         let config = CacheConfig::new().no_ttl();
         let cache = LLMCache::with_config(config);

@@ -411,7 +411,22 @@ fn insert_session(state: &Arc<StreamableState>) -> Result<String, ()> {
     let mut sessions = state.sessions.lock().expect("session lock");
     // Opportunistic TTL sweep (age bound).
     let now = Instant::now();
-    sessions.retain(|_, s| now.duration_since(s.born) < SESSION_TTL);
+    // F-18: a session retired by the TTL must ALSO drop its resource-subscription
+    // interest (keyed by session id in the shared registry). If it leaked, a
+    // long-lived sequence of short sessions could fill the 1-M-subscription
+    // table and shut new clients out with -32011, even though each session was
+    // individually short-lived.
+    let mut expired = Vec::new();
+    sessions.retain(|id, s| {
+        let live = now.duration_since(s.born) < SESSION_TTL;
+        if !live {
+            expired.push(id.clone());
+        }
+        live
+    });
+    for id in expired {
+        unsubscribe_session(state, &id);
+    }
     // P0-6 (H7): cap by COUNT as well. Reject rather than evict, so a burst of
     // `initialize`s cannot force out sessions another (legitimate) in-flight
     // request is still using.
@@ -427,6 +442,15 @@ fn insert_session(state: &Arc<StreamableState>) -> Result<String, ()> {
         },
     );
     Ok(id)
+}
+
+/// Drops a retiring session's resource-subscription interest so the shared
+/// registry does not leak entries for a session the transport no longer
+/// recognizes (F-18). A no-op when no subscription registry is attached.
+fn unsubscribe_session(state: &Arc<StreamableState>, session_id: &str) {
+    if let Some(subs) = state.server.subscriptions() {
+        subs.unsubscribe_all(session_id);
+    }
 }
 
 /// 128-bit opaque hex session id (RFC token charset, unguessable).
@@ -696,6 +720,48 @@ mod tests {
         );
         // Rejecting must not have evicted any existing session.
         assert_eq!(state.sessions.lock().unwrap().len(), MAX_SESSIONS);
+    }
+
+    /// F-18: a session retired by the TTL sweep has its resource-subscription
+    /// interest cleared in the shared registry. Without this, an expired
+    /// session's subscriptions would leak and eventually crowd out live
+    /// subscribers (registry full → new clients get -32011).
+    #[tokio::test]
+    async fn expired_session_sweep_clears_its_subscriptions() {
+        use crate::subscriptions::ResourceSubscriptions;
+        let subs = Arc::new(ResourceSubscriptions::new());
+        let server = Arc::new(
+            crate::MCPServer::new().with_subscription_registry(subs.clone()),
+        );
+        let state = Arc::new(StreamableState {
+            server,
+            sessions: Mutex::new(HashMap::new()),
+        });
+        let sess_a = insert_session(&state).expect("session a");
+        let sess_b = insert_session(&state).expect("session b");
+        subs.subscribe("file:///a.txt", &sess_a).unwrap();
+        subs.subscribe("file:///a.txt", &sess_b).unwrap();
+        assert!(subs.is_subscribed("file:///a.txt", &sess_a));
+
+        // Age session a past the TTL so the next insert sweeps it.
+        {
+            let mut sessions = state.sessions.lock().unwrap();
+            if let Some(s) = sessions.get_mut(&sess_a) {
+                s.born = Instant::now() - SESSION_TTL - Duration::from_secs(1);
+            }
+        }
+        let _sess_c = insert_session(&state).expect("session c triggers the sweep");
+
+        // The swept session's subscription is gone; the live one's remains.
+        assert!(
+            !subs.is_subscribed("file:///a.txt", &sess_a),
+            "expired session's subscription must be dropped on TTL sweep"
+        );
+        assert!(subs.is_subscribed("file:///a.txt", &sess_b));
+        assert!(
+            subs.is_watched("file:///a.txt"),
+            "uri stays watched by the live subscriber"
+        );
     }
 
     /// Loopback TCP pair so a unit test can capture the bytes `write_envelope`

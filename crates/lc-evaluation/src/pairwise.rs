@@ -191,7 +191,11 @@ fn str_to_pick(verdict: &str) -> Result<Pick, EvalError> {
 /// rather than silently defaulting to a tie — so an off-topic LLM reply is not read as "no preference".
 fn parse_pick(raw: &str) -> Option<Pick> {
     let lower = raw.to_lowercase();
-    if lower.contains("平局") || lower.contains("tie") || lower.contains("一样") {
+    // F-13: tie detection is negation-guarded — a negated marker ("不一样" / "不是平局")
+    // asserts a difference, not a tie, so it must not short-circuit into a 0.5. The
+    // English "tie" is also matched as a standalone whole word, not as a substring of
+    // a hyphenated compound like "tie-in" (a connection, not a judge's verdict).
+    if has_tie_marker(&lower) {
         return Some(Pick::Tie);
     }
     // "first"/"former" wordings: any phrasing, take the earliest occurrence position
@@ -211,6 +215,64 @@ fn parse_pick(raw: &str) -> Option<Pick> {
         (None, Some(_)) => Some(Pick::Second),
         (None, None) => None,
     }
+}
+
+/// True when `lower` contains an un-negated tie marker. CJK markers ("平局", "一样")
+/// must not be immediately preceded by `不` (so "不一样" / "不是平局" read as a
+/// difference, not a tie); the English "tie" must be a standalone whole word — not a
+/// hyphenated compound ("tie-in with") and not negated ("not tie").
+fn has_tie_marker(lower: &str) -> bool {
+    for kw in ["平局", "一样"] {
+        let mut from = 0;
+        while let Some(rel) = lower[from..].find(kw) {
+            let idx = from + rel;
+            // an immediately-preceding 不 negates the marker
+            if lower[..idx].chars().next_back() != Some('不') {
+                return true;
+            }
+            from = idx + kw.len();
+        }
+    }
+    whole_word_tie(lower)
+}
+
+/// True when `lower` contains a standalone English "tie" (whole-word, not a
+/// hyphenated compound, not preceded by the negators "not"/"no").
+fn whole_word_tie(lower: &str) -> bool {
+    let bytes = lower.as_bytes();
+    let kw = b"tie";
+    if kw.len() > bytes.len() {
+        return false;
+    }
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    bytes.windows(kw.len()).enumerate().any(|(i, w)| {
+        if w != kw {
+            return false;
+        }
+        // leading word boundary
+        if i > 0 && is_word(bytes[i - 1]) {
+            return false;
+        }
+        // trailing boundary: not an alphanumeric continuation and not the head of a
+        // hyphenated compound ("tie-in")
+        let after = i + kw.len();
+        if after < bytes.len() {
+            let c = bytes[after];
+            if is_word(c) || c == b'-' {
+                return false;
+            }
+        }
+        // an English negator within the preceding word window cancels the marker.
+        // Look back a few whitespace-delimited tokens (not just the immediately
+        // preceding one) so "not a tie" is caught even though "tie" is preceded by
+        // the article "a", while "it is a tie" still reads as a tie.
+        let before = lower[..i].trim_end();
+        let negated = before
+            .rsplit(|c: char| c.is_whitespace())
+            .take(3)
+            .any(|w| w == "not" || w == "no");
+        !negated
+    })
 }
 
 #[cfg(test)]
@@ -352,6 +414,19 @@ mod tests {
         assert_eq!(parse_pick("the latter wins"), Some(Pick::Second));
         // no valid marker = parse failure, must not silently default to a tie
         assert_eq!(parse_pick("我无法判断"), None);
+        // F-13: a negated "一样" asserts a difference, not a tie — falls through to
+        // the first/second comparison (and to None when neither is named).
+        assert_eq!(parse_pick("第二个和第一个不一样"), Some(Pick::Second));
+        assert_eq!(parse_pick("第一个和第二个不一样"), Some(Pick::First));
+        assert_eq!(parse_pick("两个回答完全不一样"), None);
+        // an un-negated 一样 still reads as a tie, keeping the distinction sharp.
+        assert_eq!(parse_pick("第二个和第一个一样好"), Some(Pick::Tie));
+        // F-13: "tie" is a whole word — a hyphenated compound "tie-in" is a connection,
+        // not a judge's verdict, so it must not short-circuit into a tie.
+        assert_ne!(parse_pick("a tie-in with the charter"), Some(Pick::Tie));
+        assert_ne!(parse_pick("not a tie at all"), Some(Pick::Tie));
+        // a standalone english "tie" still reads as a tie.
+        assert_eq!(parse_pick("it is a tie"), Some(Pick::Tie));
     }
 
     /// P0-1: models supporting bind_tools use structured output (verdict: a/b/tie).

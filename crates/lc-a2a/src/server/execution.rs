@@ -14,6 +14,7 @@ use crate::protocol::{
 use crate::store::{StoredTask, TaskStore};
 
 use super::handlers::{publish_artifact, publish_status};
+use super::CancelSignal;
 use super::message::{
     build_chain_input, build_chain_input_from_history, extract_output, is_input_required,
 };
@@ -99,6 +100,48 @@ async fn cas_apply(store: &Arc<dyn TaskStore>, task_id: &str, stored: &StoredTas
     }
 }
 
+/// Number of attempts (including the first) for a task-transition store read.
+const STORE_READ_ATTEMPTS: usize = 3;
+/// Delay between retried store reads.
+const STORE_READ_RETRY_DELAY: Duration = Duration::from_millis(20);
+
+/// Read a task with bounded retries so a transient store failure does not leave
+/// it permanently stuck in a live (`working`) state (F-25).
+///
+/// The transition points in `run_task` used `if let Ok(Some(s)) =
+/// store.get(...)`, which silently swallowed both `Err` and `Ok(None)`: a single
+/// backend read hiccup while moving to `completed` meant the transition was
+/// skipped and the task sat in `working` forever while the client polled. A
+/// bounded retry closes that window; a persistent failure is surfaced via
+/// `tracing` instead of disappearing into the `if let`.
+pub(crate) async fn read_with_retry(
+    store: &Arc<dyn TaskStore>,
+    task_id: &str,
+) -> Option<StoredTask> {
+    for attempt in 0..STORE_READ_ATTEMPTS {
+        match store.get(task_id).await {
+            Ok(Some(s)) => return Some(s),
+            // Task removed/expired; there is nothing left to transition.
+            Ok(None) => return None,
+            Err(e) if attempt + 1 < STORE_READ_ATTEMPTS => {
+                tracing::warn!(
+                    task_id, error = %e, attempt,
+                    "store read failed; retrying the transition read"
+                );
+                tokio::time::sleep(STORE_READ_RETRY_DELAY).await;
+            }
+            Err(e) => {
+                tracing::error!(
+                    task_id, error = %e, attempt,
+                    "store read failed after retries; the task may remain in a live state"
+                );
+                return None;
+            }
+        }
+    }
+    None
+}
+
 /// Execute a task in the background: `submitted -> working ->
 /// completed/failed/input-required`, guarded by the task state machine so it
 /// never clobbers a terminal status (e.g. a task cancelled while the chain
@@ -113,10 +156,10 @@ pub(crate) async fn run_task(
     task_id: &str,
     history: Vec<A2AMessage>,
     event_bus: Option<Arc<broadcast::Sender<TaskPushNotification>>>,
-    cancel: Arc<tokio::sync::Notify>,
+    cancel: Arc<CancelSignal>,
 ) {
     // submitted / input-required -> working
-    if let Ok(Some(mut stored)) = store.get(task_id).await {
+    if let Some(mut stored) = read_with_retry(store, task_id).await {
         if stored.task.status.can_transition_to(&TaskStatus::Working) {
             stored.task.status = TaskStatus::Working;
             stored.touch();
@@ -136,7 +179,7 @@ pub(crate) async fn run_task(
     // marks a status and lets the chain keep burning cycles.
     let outcome = tokio::select! {
         result = chain.invoke(input) => result,
-        _ = cancel.notified() => {
+        _ = cancel.cancelled() => {
             // Already flipped to `cancelled` by tasks/cancel's CAS before this
             // notification fired; do not transition to a live state.
             tracing::debug!("task cancelled while chain in flight");
@@ -146,7 +189,7 @@ pub(crate) async fn run_task(
     match outcome {
         Ok(result) => {
             let output = extract_output(&result);
-            if let Ok(Some(mut stored)) = store.get(task_id).await {
+            if let Some(mut stored) = read_with_retry(store, task_id).await {
                 if stored.task.status.can_transition_to(&TaskStatus::Completed) {
                     stored.task.status = TaskStatus::Completed;
                     stored.result = Some(A2ATaskResult::new(output.clone()));
@@ -168,7 +211,7 @@ pub(crate) async fn run_task(
             if is_input_required(&e) {
                 // P2-3: the chain is asking the client for more information.
                 let prompt = e.to_string();
-                if let Ok(Some(mut stored)) = store.get(task_id).await {
+                if let Some(mut stored) = read_with_retry(store, task_id).await {
                     if stored
                         .task
                         .status
@@ -189,7 +232,7 @@ pub(crate) async fn run_task(
                         }
                     }
                 }
-            } else if let Ok(Some(mut stored)) = store.get(task_id).await {
+            } else if let Some(mut stored) = read_with_retry(store, task_id).await {
                 if stored.task.status.can_transition_to(&TaskStatus::Failed) {
                     stored.task.status = TaskStatus::Failed;
                     stored.error = Some(e.to_string());

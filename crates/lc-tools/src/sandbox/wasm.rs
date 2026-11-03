@@ -49,6 +49,19 @@ const INSTRUCTIONS_PER_MS: u64 = 1_000;
 /// WASI errno we emit when a memory access or fd is invalid.
 const EIO_ERRNO: i32 = 5;
 
+/// Upper bound on bytes a single `fd_write` iovec may copy out of guest memory (F-05).
+///
+/// Guarding only against the guest's declared memory size is not enough: wasm may declare a
+/// multi-GiB linear memory, so a capable guest could still ask the host to allocate ~4 GiB in
+/// one iovec. This absolute cap bounds that allocation regardless of the module's memory type.
+const MAX_FD_WRITE_BYTES: usize = 1 << 20; // 1 MiB per iovec
+
+/// Upper bound on bytes a single `random_get` call may produce (F-32).
+///
+/// Without a cap, one host call with `len` up to `u32::MAX` runs the byte-fill loop ~4 billion
+/// times with zero fuel accounting — free CPU amplification for the guest.
+const MAX_RANDOM_GET_BYTES: usize = 1 << 16; // 64 KiB
+
 /// The interpreter-backed WASM sandbox.
 ///
 /// Construct with [`WasmSandbox::new`]; the engine is built with fuel metering enabled so
@@ -147,6 +160,16 @@ fn register_wasi(linker: &mut wasmi::Linker<WasiState>) -> Result<(), wasmi::err
                     Ok(v) => v as usize,
                     Err(e) => return e,
                 };
+                // F-05 (HIGH): never trust a guest-supplied length to size an allocation.
+                // Previously `vec![0u8; len]` allocated before any bounds check, so a 64 KB
+                // module passing `len ≈ 0xFFFF_FFF0` asked the host for ~4 GiB up front, and
+                // fuel only metered guest instructions, not this memcpy. Bound the request
+                // against the actual guest memory AND an absolute cap before allocating;
+                // an out-of-range length now returns an error instead of OOM-ing the host.
+                let mem_size = mem.current_pages(&mut caller).to_bytes().unwrap_or(0);
+                if len > MAX_FD_WRITE_BYTES || ptr.saturating_add(len) > mem_size {
+                    return EIO_ERRNO;
+                }
                 let mut chunk = vec![0u8; len];
                 if mem.read(&mut caller, ptr, &mut chunk).is_err() {
                     return EIO_ERRNO;
@@ -261,8 +284,17 @@ fn register_wasi(linker: &mut wasmi::Linker<WasiState>) -> Result<(), wasmi::err
             let Some(mem) = caller.get_export("memory").and_then(wasmi::Extern::into_memory) else {
                 return EIO_ERRNO;
             };
+            // F-32 (MED): `len` is guest-controlled up to `u32::MAX`; the byte-fill loop below
+            // runs once per byte with zero fuel accounting, so a single call could ask for ~4 GiB
+            // of host work for free. Cap the request and bound it against the real guest memory
+            // (also rejects a negative `buf` via the wrapping-to-large `saturating_add`).
+            let len = len as usize;
+            let mem_size = mem.current_pages(&mut caller).to_bytes().unwrap_or(0);
+            if len > MAX_RANDOM_GET_BYTES || (buf as usize).saturating_add(len) > mem_size {
+                return EIO_ERRNO;
+            }
             let mut state = caller.data_mut().random_state;
-            for i in 0..len as usize {
+            for i in 0..len {
                 state ^= state << 13;
                 state ^= state >> 7;
                 state ^= state << 17;
@@ -422,6 +454,45 @@ mod tests {
     /// Busy-loop that burns fuel forever → must surface as Timeout.
     const LOOP_WAT: &str = r#"(module (func $_start (loop $l (br $l))) (export "_start" (func $_start)))"#;
 
+    /// F-05: a 1-page (64 KB) module that asks `fd_write` for a `len ≈ 0xFFFF_FFF0` (~4 GiB).
+    /// The iovec len stored as the i32 constant `-16` at offset 4. Before the fix this sized a
+    /// `vec![0u8; len]` before any bounds check → host OOM / giant allocation; now the host must
+    /// reject it up front (returning EIO, which the guest ignores) and the module exits cleanly.
+    const HUGE_FDWRITE_LEN_WAT: &str = r#"
+        (module
+            (import "wasi_snapshot_preview1" "fd_write" (func $fd_write (param i32 i32 i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+            (memory 1)
+            (export "memory" (memory 0))
+            (func $_start
+                (i32.store (i32.const 0) (i32.const 16))
+                (i32.store (i32.const 4) (i32.const -16))  ;; len = 0xFFFFFFF0
+                (call $fd_write (i32.const 1) (i32.const 0) (i32.const 1) (i32.const 32))
+                (drop)
+                (call $proc_exit (i32.const 0))
+            )
+            (export "_start" (func $_start))
+        )
+    "#;
+
+    /// F-32: a module that calls `random_get` for a huge `len` (0x7FFFFFFF ≈ 2 GiB). Without a
+    /// cap the host byte-fill loop would run ~2e9 iterations with zero fuel accounting; the host
+    /// must reject it up front and the module exits cleanly.
+    const HUGE_RANDOM_GET_LEN_WAT: &str = r#"
+        (module
+            (import "wasi_snapshot_preview1" "random_get" (func $random_get (param i32 i32) (result i32)))
+            (import "wasi_snapshot_preview1" "proc_exit" (func $proc_exit (param i32)))
+            (memory 1)
+            (export "memory" (memory 0))
+            (func $_start
+                (call $random_get (i32.const 0) (i32.const 2147483647))
+                (drop)
+                (call $proc_exit (i32.const 0))
+            )
+            (export "_start" (func $_start))
+        )
+    "#;
+
     #[tokio::test]
     async fn runs_wat_module_and_captures_stdout() {
         let sandbox = WasmSandbox::new();
@@ -480,5 +551,31 @@ mod tests {
             Err(SandboxError::Runtime(msg)) => assert!(msg.contains("invalid wasm")),
             other => panic!("expected Runtime, got: {:?}", other),
         }
+    }
+
+    /// F-05: a guest-supplied ~4 GiB write length must be rejected before allocation, so the
+    /// module finishes cleanly and fast instead of OOM-ing (or allocating ~4 GiB on) the host.
+    #[tokio::test]
+    async fn huge_fd_write_len_is_rejected_not_allocated() {
+        let sandbox = WasmSandbox::new();
+        let result = sandbox.run(HUGE_FDWRITE_LEN_WAT, Language::Wasm, 1_000).await;
+        let run = result.expect("module should run (host rejects the oversized write)");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(run.stdout, "");
+        // The bounds check rejects it; if the host had sized a 4 GiB allocation the test would
+        // hang or blow memory here instead of finishing this fast.
+        assert!(run.execution_time_ms < 1_000, "oversized write was slow");
+    }
+
+    /// F-32: a huge `random_get` length must be rejected instead of driving a ~2e9-iteration
+    /// zero-fuel byte loop on the host; the module should finish cleanly and fast.
+    #[tokio::test]
+    async fn huge_random_get_len_is_rejected() {
+        let sandbox = WasmSandbox::new();
+        let result = sandbox.run(HUGE_RANDOM_GET_LEN_WAT, Language::Wasm, 1_000).await;
+        let run = result.expect("module should run (host rejects the oversized random_get)");
+        assert_eq!(run.exit_code, 0);
+        assert_eq!(run.stdout, "");
+        assert!(run.execution_time_ms < 1_000, "oversized random_get was slow");
     }
 }

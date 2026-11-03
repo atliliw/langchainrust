@@ -71,6 +71,27 @@ impl A2AServer {
                 .await;
         }
 
+        // F-06: bound concurrent in-flight executions *before* mutating any
+        // state (a rejected send must not leave a `submitted` task that never
+        // runs). When the budget is exhausted this is rejected instead of
+        // spawning yet another unbounded worker.
+        let in_flight = match self.in_flight.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => {
+                // Release the idempotency reservation claimed above, or a retry
+                // could never re-claim it.
+                if reserved {
+                    if let Some(mid) = &message_id {
+                        self.abort_message_id(mid).await;
+                    }
+                }
+                return A2AResponse::from_error_data(
+                    req.id,
+                    A2AErrorData::new(429, "too many in-flight tasks; try again"),
+                );
+            }
+        };
+
         // Fresh task.
         let task_id = uuid::Uuid::new_v4().to_string();
         let mut task = A2ATask::new(task_id.clone(), message);
@@ -125,7 +146,7 @@ impl A2AServer {
         // B7 point 6: register the task's cancellation handle so `tasks/cancel`
         // can terminate this in-flight execution, not just mark status.
         let cancellations = self.cancellations.clone();
-        let cancel = Arc::new(tokio::sync::Notify::new());
+        let cancel = Arc::new(CancelSignal::new());
         cancellations
             .write()
             .await
@@ -133,6 +154,9 @@ impl A2AServer {
         tokio::spawn(async move {
             run_task(&store, chain, &spawned_id, history, bus, cancel).await;
             cancellations.write().await.remove(&spawned_id);
+            // F-06: held for the worker's lifetime; dropped on completion so the
+            // in-flight slot frees for the next task.
+            drop(in_flight);
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))
@@ -175,6 +199,20 @@ impl A2AServer {
         message_id: Option<String>,
         owner: Option<&str>,
     ) -> A2AResponse {
+        // F-06: bound concurrent in-flight executions (see `handle_tasks_send`).
+        // Rejected here we must also release the `message_id` reservation the
+        // caller claimed before descending into the continuation path.
+        let in_flight = match self.in_flight.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => {
+                self.release_resume_id(&message_id).await;
+                return A2AResponse::from_error_data(
+                    req.id,
+                    A2AErrorData::new(429, "too many in-flight tasks; try again"),
+                );
+            }
+        };
+
         // H3: serialize resumes per task so two concurrent resumes of the same
         // `input-required` task cannot both pass the state check and spawn
         // racing workers. The guard releases the claim on every exit path.
@@ -257,7 +295,7 @@ impl A2AServer {
         // B7 point 6: cancellation handle for the resumed run (see comment in
         // `handle_tasks_send`).
         let cancellations = self.cancellations.clone();
-        let cancel = Arc::new(tokio::sync::Notify::new());
+        let cancel = Arc::new(CancelSignal::new());
         cancellations
             .write()
             .await
@@ -265,6 +303,7 @@ impl A2AServer {
         tokio::spawn(async move {
             run_task(&store, chain, &spawned_id, history, bus, cancel).await;
             cancellations.write().await.remove(&spawned_id);
+            drop(in_flight);
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))
@@ -361,7 +400,7 @@ impl A2AServer {
                 // B7 point 6: propagate the cancellation to the in-flight chain
                 // so execution actually stops (select! drops the invoke future).
                 if let Some(cancel) = self.cancellations.read().await.get(task_id) {
-                    cancel.notify_one();
+                    cancel.cancel();
                 }
                 A2AResponse::ok(req.id, json!({ "task": cancelled_task }))
             }
@@ -409,10 +448,18 @@ impl A2AServer {
                 filter = filter.with_owner(owner);
             }
             if let Some(status) = params.get("status").and_then(Value::as_str) {
-                if let Ok(ts) =
-                    serde_json::from_value::<TaskStatus>(Value::String(status.to_string()))
-                {
-                    filter = filter.with_statuses(vec![ts]);
+                // F-27: an explicitly supplied but unparseable `status` must
+                // not silently narrow to "no filter, return everything" — that
+                // leaks the full task set to a caller who asked for a bogus
+                // status. Reject it as invalid params instead.
+                match serde_json::from_value::<TaskStatus>(Value::String(status.to_string())) {
+                    Ok(ts) => filter = filter.with_statuses(vec![ts]),
+                    Err(_) => {
+                        return A2AResponse::from_error_data(
+                            req.id,
+                            A2AErrorData::invalid_params(format!("Invalid status `{status}`")),
+                        )
+                    }
                 }
             }
         }
@@ -565,6 +612,19 @@ impl A2AServer {
             stored = stored.with_trace_id(trace_id);
         }
 
+        // F-06: bound concurrent in-flight executions (see `handle_tasks_send`).
+        // Acquired before the backing task is written so a rejection leaves no
+        // orphan `working` task behind.
+        let in_flight = match self.in_flight.clone().try_acquire_owned() {
+            Ok(p) => Some(p),
+            Err(_) => {
+                return A2AResponse::from_error_data(
+                    req.id,
+                    A2AErrorData::new(429, "too many in-flight workflows; try again"),
+                )
+            }
+        };
+
         // H2/F4: a client-controlled `workflow_id` must not overwrite a task
         // the caller does not own (P1-4). The CAS below atomically inserts the
         // backing task, or replaces it only when the existing task is
@@ -598,6 +658,7 @@ impl A2AServer {
         let spawned_id = task_id.clone();
         tokio::spawn(async move {
             run_workflow(&store, steps, chains, &spawned_id, event_bus).await;
+            drop(in_flight);
         });
 
         A2AResponse::ok(req.id, json!({ "task": task }))

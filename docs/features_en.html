@@ -527,7 +527,12 @@
         </div>
 
         <div class="sidebar-nav">
-            
+
+                <div class="nav-section">
+                <div class="nav-section-title">Chapter 1 · Quickstart</div>
+                <a href="#quickstart" class="nav-item">🚀 Quickstart</a>
+                </div>
+
                 <div class="nav-section">
                 <div class="nav-section-title">Chapter 2 · Language Models & Prompts</div>
                 <a href="#llm" class="nav-item">💬 LLMs</a>
@@ -639,8 +644,131 @@
                 <p class="doc-desc">Comprehensive overview of LangChainRust modules</p>
             </header>
 
+            <!-- ch1 -->
+            <section class="module chapter" id="ch1"><div class="chapter-head"><h2>Chapter 1 · Quickstart</h2></div><hr class="divider"></section>
+
+<section class="module" id="quickstart" style="animation-delay: 0.1s;">
+                <div class="module-header">
+                    <span class="module-icon">🚀</span>
+                    <h2>1.1 Installation &amp; Feature Flags</h2>
+                </div>
+
+                <div class="card">
+                    <p><strong>Build a complete LLM application from scratch:</strong> first <strong>chat</strong>, then <strong>remember context</strong>, then <strong>retrieve documents</strong>, finally <strong>call tools</strong>. It is one continuous program — each section adds one capability on top of the previous one, so just read straight down.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">toml</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code>[dependencies]
+langchainrust = <span class="str">"0.28.0"</span>
+tokio = { version = <span class="str">"1"</span>, features = [<span class="str">"full"</span>] }</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">bash</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// OpenAI shown; switching providers only changes the env vars (see 2.1)</span>
+export OPENAI_API_KEY=<span class="str">"sk-..."</span>
+export OPENAI_BASE_URL=<span class="str">"https://api.openai.com/v1"</span>   <span class="comment"># optional, defaults to the official endpoint</span></code></pre>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>First chat</h3><p>Build an LLM, pass in system + user messages, get a reply</p></div>
+                    <div class="feature-card"><h3>Prompt templates</h3><p>Template messages with {variable} placeholders, filled at invoke time</p></div>
+                    <div class="feature-card"><h3>LCEL chain</h3><p><code>prompt.pipe(llm).pipe(parser)</code> — one call returns the final answer</p></div>
+                    <div class="feature-card"><h3>Memory</h3><p>RunnableWithMessageHistory wraps read memory → LLM → write back</p></div>
+                    <div class="feature-card"><h3>RAG</h3><p>RAGPipelineBuilder + RagRunnable assemble retrieve + generate</p></div>
+                    <div class="feature-card"><h3>Agent</h3><p>FunctionCallingAgent + AgentExecutor decide and call tools</p></div>
+                </div>
+
+                <h3>First chat (Hello World)</h3>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{BaseChatModel, OpenAIChat, OpenAIConfig};
+<span class="kw">use</span> langchainrust::schema::Message;
+
+<span class="kw">async fn</span> main() -> Result<(), Box<dyn std::error::Error>> {
+    <span class="kw">let</span> llm = OpenAIChat::new(OpenAIConfig {
+        api_key: std::env::var(<span class="str">"OPENAI_API_KEY"</span>)?,
+        base_url: std::env::var(<span class="str">"OPENAI_BASE_URL"</span>)
+            .unwrap_or_else(|_| <span class="str">"https://api.openai.com/v1"</span>.to_string()),
+        model: <span class="str">"gpt-4o-mini"</span>.to_string(),
+        ..Default::default()
+    });
+
+    <span class="kw">let</span> response = llm.chat(
+        vec![
+            Message::system(<span class="str">"You are a concise Rust assistant."</span>),
+            Message::human(<span class="str">"Explain in one sentence what Rust is."</span>),
+        ],
+        <span class="kw">None</span>,
+    ).await?;
+
+    println!(<span class="str">"{}"</span>, response.content);
+    Ok(())
+}</code></pre>
+                </div>
+
+                <h3>Compose a chain with LCEL</h3>
+
+                <div class="card">
+                    <p><code>Runnable</code>s compose with <code>.pipe()</code>: <code>prompt.pipe(llm).pipe(parser)</code> is a complete chain — one call returns the final answer. <code>StrOutputParser</code> extracts <code>content</code> from <code>LLMResult</code>, so the chain's output type becomes <code>String</code>.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{ChatPromptTemplate, Message, OpenAIChat, Runnable, StrOutputParser};
+
+<span class="kw">let</span> prompt = ChatPromptTemplate::from_messages([
+    Message::system(<span class="str">"You are a concise Rust assistant."</span>),
+    Message::human(<span class="str">"{question}"</span>),
+]);
+
+<span class="kw">let</span> chain = prompt.pipe(llm).pipe(StrOutputParser::new());
+
+<span class="kw">let</span> <span class="kw">mut</span> vars = HashMap::new();
+vars.insert(<span class="str">"question"</span>.to_string(), <span class="str">"What is the ownership system?"</span>.to_string());
+<span class="kw">let</span> answer: String = chain.invoke(vars, <span class="kw">None</span>).await?;
+println!(<span class="str">"{answer}"</span>);</code></pre>
+                </div>
+
+                <h3>Add memory &amp; retrieval</h3>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>RunnableWithMessageHistory</h3><p>Wraps "read memory → assemble input → LLM → write back" into one Runnable, so multi-turn chats need no manual history assembly</p></div>
+                    <div class="feature-card"><h3>RAGPipelineBuilder + RagRunnable</h3><p>Assembles "retrieve + generate"; with BM25 local keyword search no vector database is needed</p></div>
+                    <div class="feature-card"><h3>FunctionCallingAgent</h3><p>Reads the model's tool_calls; AgentExecutor executes them, with <code>max_iterations</code> capping the loop</p></div>
+                    <div class="feature-card"><h3>Multi-provider switching</h3><p>All 11 providers implement the same <code>BaseChatModel</code> trait — swapping changes only the <code>XxxConfig</code></p></div>
+                </div>
+
+                <div class="callout info">
+                    <div class="callout-title">Next Steps</div>
+                    <ul>
+                        <li><strong>Different models / streaming / structured output</strong> — LLMs (Chapter 2)</li>
+                        <li><strong>Multi-turn memory &amp; persistence</strong> — Memory (Chapter 3)</li>
+                        <li><strong>Full RAG &amp; retrieval strategies</strong> — RAG · BM25 · Hybrid Retrieval (Chapter 6)</li>
+                        <li><strong>MCP tool ecosystem</strong> — MCP (Chapter 7)</li>
+                        <li><strong>Production guardrails / evaluation / tracing</strong> — Chapter 8</li>
+                    </ul>
+                </div>
+
+                <hr class="divider">
+            </section>
+
             <!-- ch2 -->
-            <section class="module chapter" id="ch2"><div class="chapter-head"><h2>Chapter 2 · Language Models & Prompts</h2></div><hr class="divider"></section>
+            <section class="module chapter" id="ch2"><div class="chapter-head"><h2>Chapter 2 · Language Models &amp; Prompts</h2></div><hr class="divider"></section>
 
 <section class="module" id="llm" style="animation-delay: 0.7s;">
                 <div class="module-header">
@@ -1050,7 +1178,7 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                 </div>
 
                 <div class="card">
-                    <p><strong>RouterLLM</strong> implements BaseChatModel, routing calls across a pool of heterogeneous models with 5 strategies and automatic fallback on failure.</p>
+                    <p><strong>RouterLLM</strong> implements BaseChatModel, routing calls across a pool of heterogeneous models with 6 strategies and automatic fallback on failure. To callers it is an ordinary chat model — a drop-in replacement.</p>
                 </div>
 
                 <table class="data-table">
@@ -1061,10 +1189,46 @@ println!(<span class="str">"{} is {} years old"</span>, person.name, person.age)
                         <tr><td><strong>Fallback</strong></td><td>Primary first, then fallbacks</td><td>Reliability</td></tr>
                         <tr><td><strong>RoundRobin</strong></td><td>Cycle through models</td><td>Load balancing</td></tr>
                         <tr><td><strong>LeastLatency</strong></td><td>Pick lowest EMA latency</td><td>Speed optimization</td></tr>
-                        <tr class="highlight-row"><td><strong>LowestCost</strong></td><td>Pick cheapest model</td><td>Cost optimization</td></tr>
+                        <tr class="highlight-row"><td><strong>LatencyWeighted(beta)</strong> ✨v0.22.4</td><td>Weighted lottery over (1/latency)^beta; untried models optimistically share the best latency; deterministic SplitMix64 draw</td><td>Low latency without "starving" new models</td></tr>
+                        <tr><td><strong>LowestCost</strong></td><td>Pick cheapest model</td><td>Cost optimization</td></tr>
                         <tr><td><strong>InputDirected</strong></td><td>Closure-based selection</td><td>Custom routing</td></tr>
                     </tbody>
                 </table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Shared budget gate</h3><p><code>RouterBudget</code> USD/token gate shareable across routers: pre-deducts an estimate, trips → skip paid slots while free ones stay as backstop, reconciles actual usage after the call. Error name <code>RouterBudgetExceeded</code></p></div>
+                    <div class="feature-card"><h3>Per-model rate limit</h3><p><code>ModelRateLimit</code> admission gate per slot: sliding-window RPS/RPM cap, concurrency cap, FIFO wait queue (<code>with_max_queue</code> / <code>with_wait_timeout</code>); for streaming the permit is held until the body is consumed</p></div>
+                    <div class="feature-card"><h3>Three price inputs</h3><p><code>with_cost</code> (relative) / <code>with_priced_model</code> + <code>ModelPrice</code> (USD per 1K, 0.75/0.25 blended) / <code>with_registry</code> + <code>ModelRegistry::fetch</code> (JSON catalog)</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RouterLLM, RoutingStrategy, RouterBudget, ModelRateLimit, BaseChatModel};
+
+<span class="comment">// Latency-weighted routing (beta=1.0: a 100ms model is ~10x more likely to be primary than a 1000ms one)</span>
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LatencyWeighted(<span class="num">1.0</span>))
+    .with_model(fast_model)
+    .with_model(slow_but_smart_model);
+
+<span class="comment">// Per-model rate limit: overflow waits in queue, then yields/cuts over to backup</span>
+<span class="kw">let</span> limit = ModelRateLimit::per_minute(<span class="num">600</span>)
+    .with_max_concurrent(<span class="num">20</span>)
+    .with_max_queue(<span class="num">32</span>)
+    .with_wait_timeout(Duration::from_secs(<span class="num">2</span>));
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::Fallback)
+    .with_model_rate_limited(primary, limit)
+    .with_model(backup);
+
+<span class="comment">// Shared budget: $5 / 2M tokens across several routers</span>
+<span class="kw">let</span> budget = RouterBudget::with_cost_and_token_limits(<span class="num">5.0</span>, 2_000_000);
+<span class="kw">let</span> router = RouterLLM::new(RoutingStrategy::LowestCost)
+    .with_priced_model(paid, price)
+    .with_model(free_local)
+    .with_budget(budget.clone());</code></pre>
+                </div>
 
                 <hr class="divider">
             </section>
@@ -1179,6 +1343,36 @@ memory.save_context(&inputs, &outputs).await?;
     .with(<span class="str">"triple"</span>, RunnableLambda::new_sync(|x: i32| x * 3));
 <span class="kw">let</span> result = parallel.invoke(<span class="num">5</span>, <span class="kw">None</span>).await?;
 <span class="comment">// result = {"double": 10, "triple": 15}</span></code></pre>
+                </div>
+
+                <h3>Resilience &amp; Control Runnables</h3>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>RunnableWithFallbacks ✨v0.10.0</h3><p>Give a Runnable a fallback — on failure it automatically switches to the backup and keeps going (swaps the implementation; unlike <code>RunnableBranch</code> on content or <code>RunnableRetry</code> which retries the same thing)</p></div>
+                    <div class="feature-card"><h3>RunnableAssign ✨v0.10.0</h3><p><code>RunnableParallel.assign()</code> injects new fields into the output HashMap after the parallel output</p></div>
+                    <div class="feature-card"><h3>RunnableRetry ✨v0.11.0</h3><p><code>with_retry(RetryConfig)</code> wraps any Runnable and retries with exponential backoff on failure</p></div>
+                    <div class="feature-card"><h3>CancellationToken ✨v0.11.0</h3><p>Cross-task shared cancellation flag; <code>cancel()</code> cancels every clone; poll <code>is_cancelled()</code> or <code>await cancelled()</code> to exit gracefully</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{RunnableExt, RunnableLambda};
+<span class="kw">use</span> langchainrust::core::runnables::{RetryConfig, RetryOn, CancellationToken, RunnableConfig};
+
+<span class="comment">// Fallbacks: primary fails → try backups in order</span>
+<span class="kw">let</span> chain = primary.with_fallbacks(vec![fallback.into_runnable_any()]);
+
+<span class="comment">// Retry with exponential backoff, transient errors only (default)</span>
+<span class="kw">let</span> chain = flaky.with_retry(RetryConfig::default());
+
+<span class="comment">// Cancellation: inject into the Runnable config</span>
+<span class="kw">let</span> token = CancellationToken::new();
+<span class="kw">let</span> config = RunnableConfig::default().with_cancellation_token(token.clone());
+<span class="kw">let</span> result = chain.invoke(input, <span class="kw">Some</span>(config)).await?;
+<span class="kw">if</span> token.is_cancelled() { <span class="comment">/* exit gracefully */</span> }</code></pre>
                 </div>
 
                 <h3>Adapters (Bridge Existing Components to LCEL)</h3>
@@ -1856,17 +2050,150 @@ graph.validate()?;
 
 <section class="module" id="embeddings"><div class="module-header"><span class="module-icon">🌱</span><h2>6.2 Embeddings</h2></div>
 <div class="card"><p><strong>Text → fixed-dimension vectors.</strong>Semantically similar text lands closer in vector space — the foundation of semantic search, similarity and RAG.</p></div>
-<table class="data-table"><thead><tr><th>Provider</th><th>Class</th><th>Dim</th></tr></thead><tbody>
-<tr><td>OpenAI</td><td><code>OpenAIEmbeddings</code></td><td>1536</td></tr>
-<tr><td>DeepSeek</td><td><code>DeepSeekEmbeddings</code></td><td>1536</td></tr>
-<tr><td>Qwen</td><td><code>QwenEmbeddings</code></td><td>1536</td></tr>
-<tr><td>Cohere</td><td><code>CohereEmbeddings</code></td><td>custom (multilingual)</td></tr>
-<tr><td>FastEmbed</td><td><code>FastEmbedEmbeddings</code></td><td>384 (local ONNX)</td></tr>
-<tr><td>Candle ✨v0.21.0</td><td><code>CandleEmbeddings</code></td><td>model (local-candle)</td></tr>
-<tr><td>Cohere Vision ✨v0.22.4</td><td><code>CohereVisionEmbeddings</code></td><td>1536 (shared space)</td></tr>
-<tr><td>Qwen Vision ✨v0.22.4</td><td><code>QwenVisionEmbeddings</code></td><td>1024 (shared space)</td></tr>
+<table class="data-table"><thead><tr><th>Provider</th><th>Class</th><th>Dim</th><th>Features</th></tr></thead><tbody>
+<tr><td>OpenAI</td><td><code>OpenAIEmbeddings</code></td><td>1536</td><td>High quality</td></tr>
+<tr><td>DeepSeek</td><td><code>DeepSeekEmbeddings</code></td><td>1536</td><td>Cost-effective</td></tr>
+<tr><td>Qwen</td><td><code>QwenEmbeddings</code></td><td>1536</td><td>Chinese optimized</td></tr>
+<tr><td>Qwen3 ✨v0.21.0</td><td><code>QwenEmbeddings</code> (qwen3-embedding-0.6b/4b/8b)</td><td>1024/2560/4096</td><td>Matryoshka dimensions</td></tr>
+<tr><td>Cohere</td><td><code>CohereEmbeddings</code></td><td>custom</td><td>RAG, multilingual</td></tr>
+<tr><td>FastEmbed</td><td><code>FastEmbedEmbeddings</code></td><td>384</td><td>Local ONNX</td></tr>
+<tr><td>BagOfWords</td><td><code>BagOfWordsEmbeddings</code></td><td>custom</td><td>Pure local bag-of-words</td></tr>
+<tr><td>Mock</td><td><code>MockEmbeddings</code></td><td>custom</td><td>Testing</td></tr>
+<tr><td>Local</td><td><code>LocalEmbeddings</code></td><td>default</td><td>Pure Rust, offline</td></tr>
+<tr><td>Candle ✨v0.21.0</td><td><code>CandleEmbeddings</code></td><td>model-defined</td><td>Pure Rust inference (local-candle)</td></tr>
+<tr><td>Cohere Vision ✨v0.22.4</td><td><code>CohereVisionEmbeddings</code></td><td>1536</td><td>Shared image-text space</td></tr>
+<tr><td>Qwen Vision ✨v0.22.4</td><td><code>QwenVisionEmbeddings</code></td><td>1024</td><td>Shared image-text space</td></tr>
 </tbody></table>
-<div class="feature-card"><h3>Semantic vector space</h3><p>embed / embed_batch; pure-Rust offline: LocalEmbeddings, CandleEmbeddings</p></div>
+
+<h3>6.2.2–6.2.4 OpenAI / DeepSeek / Qwen</h3>
+<div class="card-grid">
+<div class="feature-card"><h3>OpenAIEmbeddings</h3><p><code>text-embedding-ada-002</code>, 1536 dims, <code>embed</code> / <code>embed_batch</code>; highest quality but requires API calls</p></div>
+<div class="feature-card"><h3>DeepSeekEmbeddings</h3><p>1536 dims, lower cost than OpenAI; <code>from_env_result()</code></p></div>
+<div class="feature-card"><h3>QwenEmbeddings</h3><p>1536 dims, better on Chinese; <code>from_env_result()</code></p></div>
+</div>
+
+<h3>6.2.5 Qwen3-Embedding &amp; Matryoshka Dimensions ✨v0.21.0</h3>
+<div class="card">
+<p>The Qwen3 embedding family (<code>qwen3-embedding-0.6b</code> / <code>4b</code> / <code>8b</code>) is registered in <code>QwenEmbeddingsConfig</code> with dimension mappings and supports <strong>matryoshka output</strong>: <code>with_dimensions</code> requests any output dimension between 32 and 4096, and DashScope truncates the vector on the fly — trade storage cost against retrieval precision as needed.</p>
+</div>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">use</span> langchainrust::{QwenEmbeddings, QwenEmbeddingsConfig};
+
+<span class="comment">// Qwen3-Embedding + custom output dimension (with_dimensions returns a Result; 0.6B defaults to 1024)</span>
+<span class="kw">let</span> config = QwenEmbeddingsConfig::new(<span class="str">"sk-..."</span>)
+    .with_model(<span class="str">"qwen3-embedding-0.6b"</span>)
+    .with_dimensions(<span class="num">512</span>)?;
+<span class="kw">let</span> embeddings = Arc::new(QwenEmbeddings::new(config)?);
+assert_eq!(embeddings.dimension(), <span class="num">512</span>);
+
+<span class="comment">// Model defaults apply without with_dimensions: 0.6B=1024 / 4B=2560 / 8B=4096</span>
+<span class="kw">let</span> e8b = QwenEmbeddings::new(QwenEmbeddingsConfig::new(<span class="str">"sk-..."</span>).with_model(<span class="str">"qwen3-embedding-8b"</span>))?;
+assert_eq!(e8b.dimension(), <span class="num">4096</span>);</code></pre>
+</div>
+<div class="card-grid">
+<div class="feature-card"><h3>Backward compatible</h3><p>Default model stays <code>text-embedding-v1</code> (1536); Qwen3 requires an explicit <code>with_model</code></p></div>
+<div class="feature-card"><h3>Validated range</h3><p><code>dimensions</code> validated to 32~4096; matryoshka truncation is a Qwen3-family feature</p></div>
+<div class="feature-card"><h3>Snapshot-tested</h3><p>Request-body tests guarantee <code>dimensions</code> is sent only when set — DeepSeek and others unaffected</p></div>
+</div>
+
+<h3>6.2.6–6.2.7 Mock &amp; Local Embeddings</h3>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="comment">// Mock: fixed-dimension random vectors, zero API calls — testing only</span>
+<span class="kw">let</span> embeddings = Arc::new(MockEmbeddings::new(<span class="num">128</span>));
+<span class="kw">let</span> vector = embeddings.embed(<span class="str">"Test text"</span>).await?;
+
+<span class="comment">// Local: pure Rust (word-frequency hash + L2 normalization), no API calls</span>
+<span class="kw">let</span> emb = LocalEmbeddings::default_dim();
+<span class="kw">let</span> vec = emb.embed_query(<span class="str">"hello world"</span>).await?;</code></pre>
+</div>
+
+<h3>6.2.8–6.2.9 Unified Trait + Retry &amp; Concurrency ✨v0.15.0</h3>
+<div class="card-grid">
+<div class="feature-card"><h3>Unified Embeddings trait</h3><p><code>embed</code> / <code>embed_batch</code> / <code>embed_query</code>; drop-in replaceable, composable into an <code>EmbeddingMatcher</code></p></div>
+<div class="feature-card"><h3>Explicit error semantics</h3><p><code>EmptyInput</code> / <code>EmptyVectorInBatch</code> / <code>BatchMismatch</code> — errors are never silently swallowed</p></div>
+<div class="feature-card"><h3>Retry &amp; jitter</h3><p>Auto retry on 429/5xx (default 3×) with jitter + <code>Retry-After</code> header support</p></div>
+<div class="feature-card"><h3>Batch concurrency</h3><p>Concurrency 8, batch cap 2048; vectors L2-normalized for cosine comparison</p></div>
+</div>
+
+<h3>6.2.10 CandleEmbeddings (Pure-Rust Local Inference) ✨v0.21.0</h3>
+<div class="card"><p>A CPU-only local embedding backend built on Candle — no ONNX Runtime needed. Enable the <code>local-candle</code> feature; BERT-family models are supported (masked weighted mean-pooling, L2 normalization, batch size 16).</p></div>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["local-candle"] }</span>
+<span class="kw">use</span> langchainrust::embeddings::CandleEmbeddings;
+<span class="kw">use</span> langchainrust::Embeddings;
+
+<span class="comment">// Download from Hugging Face Hub (cached locally), or from_dir for a local folder</span>
+<span class="kw">let</span> embedder = CandleEmbeddings::from_hf_hub(<span class="str">"BAAI/bge-small-en-v1.5"</span>)?;
+<span class="kw">let</span> vec = embedder.embed_query(<span class="str">"Rust is a systems programming language."</span>).await?;
+println!(<span class="str">"dim = {}"</span>, embedder.dimension()); <span class="comment">// 384 (config.hidden_size)</span></code></pre>
+</div>
+
+<h3>6.2.11 Token-Level Embeddings (TokenLevelEmbeddings) ✨v0.21.0</h3>
+<div class="card"><p>An optional capability trait: implementors return <code>(byte-offset span, L2-normalized vector)</code> per token. It is deliberately <strong>not</strong> part of the main <code>Embeddings</code> trait — the capability is opt-in (detected by whether it is implemented), so providers without token-level output are never forced into the contract.</p></div>
+<div class="card-grid">
+<div class="feature-card"><h3>One vector per token</h3><p>A regular embedding collapses a whole sentence into a single point; token-level output gives each token a vector plus its byte position in the original text</p></div>
+<div class="feature-card"><h3>Only for token-capable models</h3><p>Qwen3-Embedding / BGE-M3 / Jina v3 support token output; pooling-based models can't — which is why it stays outside the main trait</p></div>
+<div class="feature-card"><h3>Prerequisite for late chunking</h3><p>Without per-token vectors + positions, pooling tokens into chunk vectors along chunk boundaries is impossible</p></div>
+</div>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">pub trait</span> TokenLevelEmbeddings {
+    <span class="kw">async fn</span> embed_tokens(&self, text: &str)
+        -> Result<Vec<TokenEmbedding>, EmbeddingError>;
+}
+
+<span class="comment">// TokenSpan is a byte offset (multibyte-safe):</span>
+<span class="comment">// "你好 world" → tokens[1] = TokenSpan { start: 7, end: 12 } ("world")</span>
+<span class="comment">// The local fastembed (ONNX) path implements this capability</span></code></pre>
+</div>
+
+<h3>6.2.12 Late Chunking ✨v0.21.0</h3>
+<div class="card"><p>The traditional approach — chunk first, embed each chunk separately — loses full-document context per chunk. Late chunking flips it: <strong>embed the whole text once at token level, then mean-pool the token vectors per chunk boundary</strong>, so every chunk carries full-document context. Retrieval quality on long documents typically improves.</p></div>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">use</span> langchainrust::retrieval::late_chunking::{late_chunk, LateChunkConfig};
+
+<span class="comment">// Requires 0 &lt; overlap &lt; size</span>
+<span class="kw">let</span> config = LateChunkConfig::new()
+    .with_chunk_size(<span class="num">1024</span>)     <span class="comment">// bytes, default 1024</span>
+    .with_chunk_overlap(<span class="num">128</span>);  <span class="comment">// bytes, default 128</span>
+config.validate()?;
+
+<span class="comment">// the embedder must implement TokenLevelEmbeddings (e.g. the local ONNX path)</span>
+<span class="kw">let</span> chunks = late_chunk(&embedder, <span class="str">"the whole long document..."</span>, &config).await?;
+<span class="comment">// c.range = (start, end) byte range; c.text = chunk text; c.vector = pooled, L2-normalized</span></code></pre>
+</div>
+<div class="callout warning"><div class="callout-title">⚠️ Caveat</div><p>Late chunking is not a silver bullet — self-contained short documents gain nothing; the model must support token-level output.</p></div>
+
+<h3>6.2.13 Vision Embeddings (One Shared Image-Text Vector Space) ✨v0.22.4</h3>
+<div class="card"><p>Plain <code>Embeddings</code> map only text to vectors; <strong>multimodal embeddings</strong> map images and text into the <strong>same vector space</strong> — that is what makes text-to-image / image-to-text search possible: index product photos, then retrieve them directly with "red sneakers". New in 0.22.4 (no feature gates).</p></div>
+<table class="data-table"><thead><tr><th>Type</th><th>Backend</th><th>Dimension</th><th>Key</th></tr></thead><tbody>
+<tr><td><code>CohereVisionEmbeddings</code></td><td>Cohere Embed v4.0 (images must be inline bytes)</td><td>1536</td><td><code>COHERE_API_KEY</code></td></tr>
+<tr><td><code>QwenVisionEmbeddings</code></td><td>DashScope <code>multimodal-embedding-v1</code> (public URLs allowed, server-side fetch)</td><td>1024</td><td><code>QWEN_API_KEY</code></td></tr>
+<tr><td><code>MockVisionEmbeddings</code></td><td>Deterministic offline backend</td><td>configurable</td><td>none (tests)</td></tr>
+</tbody></table>
+<div class="card-grid">
+<div class="feature-card"><h3>ImageInput</h3><p>Vendor-neutral: <code>from_url</code> / <code>from_data_uri("data:image/png;base64,…")</code> / <code>from_base64(raw, "image/png")</code></p></div>
+<div class="feature-card"><h3>Cohere rejects plain URLs</h3><p>Requires inline bytes — the library will not fetch a caller-supplied URL (that would route image traffic through the vendor's network and dodge SSRF protection)</p></div>
+<div class="feature-card"><h3>Same-model queries</h3><p>Text queries must use the same vision model's <code>embed_text</code>; a text-only <code>Embeddings</code> does not share a vector space</p></div>
+<div class="feature-card"><h3>L2 + aligned batches</h3><p>Backends guarantee L2-normalized vectors and aligned batch counts (a mismatch errors loudly, never silently)</p></div>
+</div>
+<div class="code-block">
+<div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
+<pre><code><span class="kw">use</span> langchainrust::embeddings::{ImageInput, QwenVisionEmbeddings, VisionEmbeddings};
+
+<span class="kw">let</span> vision = QwenVisionEmbeddings::from_env_result()?; <span class="comment">// QWEN_API_KEY</span>
+<span class="kw">let</span> img_vec = vision
+    .embed_image(&amp;ImageInput::from_url(<span class="str">"https://example.com/shoe.jpg"</span>))
+    .await?;
+<span class="kw">let</span> text_vec = vision.embed_text(<span class="str">"red sneakers"</span>).await?;
+<span class="comment">// Both vectors live in one space and are L2-normalized; cosine directly gives cross-modal similarity</span>
+assert_eq!(vision.dimension(), <span class="num">1024</span>);</code></pre>
+</div>
+<div class="notice-box"><p><strong>Note</strong>: The chunking / retrieval wrapper for multimodal RAG lives in 6.3 Multimodal RAG. For any embedding path, a failed call returns an explicit error — no silent degradation.</p></div>
 <hr class="divider"></section>
 
 <section class="module" id="rag" style="animation-delay: 0.5s;">
@@ -1984,6 +2311,61 @@ retriever.add_documents_sync(vec![
                     </tbody>
                 </table>
 
+                <h3>ChunkedBM25Retriever (Parent-Child)</h3>
+
+                <div class="card">
+                    <p><strong>ChunkedBM25Retriever</strong> solves the "small chunk matches but loses context" problem: documents are split into leaf chunks for the BM25 index, and when multiple leaf chunks from the same parent match, they're automatically merged into the full parent document.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>AutoMergingConfig</h3><p><code>with_leaf_size</code> chunk size + <code>with_threshold</code> merge when 50%+ leaves match</p></div>
+                    <div class="feature-card"><h3>is_merged()</h3><p>A hit is either a <code>Leaf</code> or a merged <code>Merged</code> parent</p></div>
+                    <div class="feature-card"><h3>SentenceWindowRetriever ✨v0.24.0</h3><p>Index single sentences; a hit returns a window of N sentences on each side (default <code>window=2</code>, <code>top_k=3</code>; same-source windows dedup to one)</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{ChunkedBM25Retriever, AutoMergingConfig, ChunkedDocumentStore};
+
+<span class="kw">let</span> config = AutoMergingConfig::new()
+    .with_leaf_size(<span class="num">400</span>)      <span class="comment">// Leaf chunk size</span>
+    .with_threshold(<span class="num">0.5</span>);     <span class="comment">// Merge when 50%+ leaves match</span>
+
+<span class="kw">let</span> store = Arc::new(ChunkedDocumentStore::new());
+<span class="kw">let</span> <span class="kw">mut</span> retriever = ChunkedBM25Retriever::with_config(store, config);
+retriever.add_document(Document::new(<span class="str">"Long document..."</span>));
+
+<span class="kw">let</span> results = retriever.search(<span class="str">"keyword"</span>, <span class="num">5</span>);
+<span class="kw">for</span> result <span class="kw">in</span> results {
+    <span class="kw">if</span> result.is_merged() { println!(<span class="str">"Merged: {}"</span>, result.content()); }
+    <span class="kw">else</span> { println!(<span class="str">"Leaf: {}"</span>, result.content()); }
+}</code></pre>
+                </div>
+
+                <h3>Small-to-Big Retrieval (Sentence Windows / Parent Documents) ✨v0.24.0</h3>
+
+                <div class="callout info">
+                    <div class="callout-title">Two unconditional small-to-big retrievers (LlamaIndex tradition)</div>
+                    <p>Match the smallest semantic unit for precision, then feed the model its full surrounding context. Unlike ChunkedBM25Retriever's threshold-gated parent merge, these are unconditional.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::retrieval::RetrieverTrait;
+<span class="kw">use</span> langchainrust::SentenceWindowRetriever;
+
+<span class="kw">let</span> retriever = SentenceWindowRetriever::from_documents(docs)
+    .with_window(<span class="num">2</span>)    <span class="comment">// two sentences on either side of the hit</span>
+    .with_top_k(<span class="num">3</span>);
+<span class="kw">let</span> windows = retriever.retrieve(<span class="str">"Rust async runtime"</span>, <span class="num">3</span>).await?;</code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2091,6 +2473,88 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                         <li><strong>Content Shared</strong>: BM25 and Vector share the same content, avoid duplication</li>
                         <li><strong>AutoMerging</strong>: Parent-Child structure, auto-merge when matched</li>
                     </ul>
+                </div>
+
+                <h3>Weighted Fusion &amp; MMR Diversity ✨v0.23.0</h3>
+
+                <div class="card">
+                    <p>RRF only considers ranks: the two legs have no adjustable weights, and one narrow topic can fill the whole top-k. v0.23.0 added two first-class knobs to <code>UnifiedHybridIndex</code>: weighted linear fusion and MMR (Maximal Marginal Relevance) reranking.</p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>FusionMode::Weighted</h3><p><code>{ bm25_weight, vector_weight }</code> min-max normalizes scores inside the candidate pool before weighting; the λ trade-off keeps the same meaning under both RRF and weighted fusion</p></div>
+                    <div class="feature-card"><h3>retrieve_mmr</h3><p>Greedily picks max (relevance − similarity to already-selected) with a λ dial: λ=1 pure relevance, λ=0 max diversity (0.5–0.7 usual)</p></div>
+                    <div class="feature-card"><h3>Pure mmr() fn</h3><p>Run the algorithm over your own (id, relevance, embedding) triples</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{FusionMode, HybridIndexConfig, UnifiedHybridIndex};
+<span class="kw">use</span> langchainrust::mmr;
+
+<span class="kw">let</span> config = HybridIndexConfig::new()
+    .with_fusion(FusionMode::Weighted { bm25_weight: <span class="num">0.3</span>, vector_weight: <span class="num">0.7</span> });
+<span class="kw">let</span> index = UnifiedHybridIndex::with_config(embeddings, vector_store, <span class="num">1536</span>, config);
+
+<span class="comment">// Pool 20 fused candidates, run one extra embedding pass, return a diversified 5</span>
+<span class="kw">let</span> picks = index.retrieve_mmr(<span class="str">"query"</span>, <span class="num">20</span>, <span class="num">5</span>, <span class="num">0.6</span>).await?;</code></pre>
+                </div>
+
+                <h3>Late Chunking Dual-Leg Injection ✨v0.24.0</h3>
+
+                <div class="card">
+                    <p>v0.21's <code>late_chunk</code> only produced <code>LateChunk</code>s — ingesting them was on you. v0.24.0 plugs them into <strong>both legs</strong> of the hybrid index in one call: pooled vectors go to the vector index while the same chunk texts go into the BM25 / parent-document store.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="kw">use</span> langchainrust::{late_chunk, LateChunkConfig, UnifiedHybridIndex};
+
+<span class="kw">let</span> config = LateChunkConfig::new().with_chunk_size(<span class="num">1024</span>).with_chunk_overlap(<span class="num">128</span>);
+<span class="kw">let</span> chunks = late_chunk(&amp;token_embedder, &amp;document.content, &amp;config).await?;
+
+<span class="comment">// Both legs register under the same ids ({parent_id}::{segment}); re-adding a parent is idempotent</span>
+<span class="kw">let</span> parent_id = index.add_late_chunked_document(document, &amp;chunks).await?;
+
+<span class="comment">// Vector-leg only: the free function late_index_in(&store, &embedder, parent_key, text, &config)</span>
+<span class="comment">// does "token-level embed → pool → ingest" in one step (ids look like {parent_key}:{i})</span></code></pre>
+                </div>
+
+                <h3>Native Hybrid Search (Qdrant Query API) ✨v0.21.0</h3>
+
+                <div class="card">
+                    <p><code>UnifiedHybridIndex</code> fuses with RRF on the client, which requires pulling both candidate lists back into memory. <code>QdrantVectorStore</code> (≥ 1.10) can push <strong>multi-branch recall + fusion</strong> down to the server-side Query API — a single network round trip. The capability is detected via the <code>NativeHybridSearch</code> trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }</span>
+<span class="kw">use</span> langchainrust::vector_stores::{
+    FusionMethod, NativeHybridQuery, NativeHybridSearch, QdrantConfig, QdrantVectorStore,
+};
+
+<span class="kw">let</span> store = QdrantVectorStore::new(
+    QdrantConfig::new(<span class="str">"http://localhost:6334"</span>, <span class="str">"my-collection"</span>).with_vector_size(<span class="num">1536</span>),
+).await?;
+assert!(store.supports_native_hybrid());
+
+<span class="kw">let</span> query = NativeHybridQuery::new(
+    vec![dense_vec, sparse_vec],   <span class="comment">// ≥ 2 query vectors, same dimension</span>
+    <span class="num">10</span>,                            <span class="comment">// final top-10</span>
+)?
+.with_fusion(FusionMethod::Rrf)    <span class="comment">// or FusionMethod::Dbsf</span>
+.with_prefetch_limit(<span class="num">50</span>);          <span class="comment">// per-branch recall, default max(limit*2, 10)</span>
+
+<span class="kw">let</span> results = store.native_hybrid_search(&amp;query).await?; <span class="comment">// server-side fusion</span></code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2469,6 +2933,50 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                     <p><code>resources/list</code> / <code>resources/read</code> / <code>prompts/list</code> / <code>prompts/get</code> / <code>completion/complete</code> are wired (v0.18.0): registering a provider returns the corresponding structure; unregistered primitives return <code>method_not_found</code>. <code>elicitation/create</code> / <code>sampling/createMessage</code> are server→host initiation methods that require an injected host callback; without one they return an explicit error. <code>Roots</code> remains type-only.</p>
                 </div>
 
+                <h3>Three Client Tracks ✨v0.22.4</h3>
+
+                <div class="card">
+                    <p>As of 0.22.4 lc-mcp ships <strong>three client tracks</strong> — pick by the shape of the peer; tools from all three are adapted to <code>BaseTool</code> through the same <code>MCPToolAdapter</code>. 0.22.0 removed the old handshake-based <code>MCPClient</code>; 0.22.4 brought the two <strong>official-protocol</strong> tracks back (interoperability verified 4/4 against the official TypeScript SDK 1.30.0 and Python SDK, both directions).</p>
+                </div>
+
+                <table class="data-table"><thead><tr><th>Track</th><th>Client</th><th>When to Use</th></tr></thead><tbody>
+<tr><td><strong>Stateless</strong> (since v0.22.0)</td><td><code>StatelessMcpClient</code></td><td>The framework's own single-request HTTP POST protocol — no handshake, no session; talks to <code>MCPServer::serve_http</code></td></tr>
+<tr><td><strong>Official stdio</strong> (since v0.22.4)</td><td><code>StdioMcpClient</code></td><td>Spawns a local subprocess and runs the full initialize handshake — Claude Desktop / Cursor ecosystem</td></tr>
+<tr><td><strong>Official Streamable HTTP</strong> (since v0.22.4)</td><td><code>StreamableMcpClient</code></td><td>Remote Streamable HTTP servers from the official SDKs — session id, JSON/SSE content negotiation, optional OAuth 2.1 token provider</td></tr>
+</tbody></table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>VersionPolicy</h3><p><code>Degrade</code> (default — pin library version and continue) vs <code>Reject</code> (strict, fails handshake with -32005; under stdio the subprocess is shut down too)</p></div>
+                    <div class="feature-card"><h3>Fail-closed approval (A16)</h3><p><code>MCPToolAdapter</code> defaults to <code>ToolExecutionPolicy::RequireApproval</code> — with no allowance configured, a call is rejected before it is sent to the server (<code>ToolError::PermissionDenied</code>)</p></div>
+                    <div class="feature-card"><h3>Three ways to allow</h3><p>① <code>allow_unattended_execution()</code> full trust; ② <code>with_sandbox</code> parameter-level allowlist via <code>ServerSandbox</code> ParamRule / EgressPolicy; ③ <code>with_approver</code> runtime human gate</p></div>
+                    <div class="feature-card"><h3>Official server transport</h3><p><code>MCPServer::serve_streamable_http(listener)</code> — handshake, session-id assignment, 202 notifications, Bearer challenge, so official SDK clients connect directly</p></div>
+                </div>
+
+                <h3>OAuth 2.1 Protected Remote Servers ✨v0.22.4</h3>
+
+                <div class="card">
+                    <p>Official Streamable HTTP servers commonly authorize as OAuth 2.1 <strong>resource servers</strong> (RFC 9728). lc-mcp provides the machine parts of the flow; the parts needing a human (opening the consent page, receiving the redirect callback) stay with the embedding application.</p>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// 1. A 401 with WWW-Authenticate: Bearer resource_metadata → OAuthChallenge::parse extracts metadata address, realm, scopes
+// 2. discover_protected_resource(url) / discover_authorization_server(metadata_url) → RFC 9728 / 8414 discovery
+// 3. The app runs authorization code + PKCE in a browser (caller keeps verifier, computes code_challenge)
+// 4. OAuthTokenClient::new(token_endpoint, client_id): exchange_authorization_code / refresh / client_credentials
+// 5. Implement BearerTokenProvider; on 401 the transport calls invalidate(token) exactly once and retries</span>
+<span class="kw">use</span> langchainrust::mcp::{StreamableMcpClient, StaticBearerToken};
+
+<span class="comment">// Fixed token (PAT / dev sidecar): one invalidate-and-retry on 401</span>
+<span class="kw">let</span> client = StreamableMcpClient::connect_with_token_provider(
+    <span class="str">"https://mcp.example.com/mcp"</span>,
+    Arc::new(StaticBearerToken(<span class="str">"pat-xxx"</span>.to_string())),
+).await?;</code></pre>
+                </div>
+
                 <hr class="divider">
             </section>
 
@@ -2481,6 +2989,36 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <div class="feature-card"><h3>Task state machine</h3><p>submitted → working → completed / failed / input-required / cancelled / rejected / auth-required / expired — 9 states with legal transition checks</p></div>
 <div class="feature-card"><h3>Positioning</h3><p>A2A handles "Agent↔Agent communication", MCP handles "Agent↔tool/data-source connection"; the two are usually combined</p></div>
 </div>
+
+<h3>Key Behaviors &amp; Boundaries</h3>
+
+<div class="card-grid">
+<div class="feature-card"><h3>Server surface</h3><p><code>A2AServer</code> plugs into any HTTP framework (axum / actix / warp); the <code>axum</code> feature ships a batteries-included server (<code>serve</code> / <code>serve_on</code>). Three endpoints: agent-card.json, <code>POST /</code>, SSE <code>GET /events</code></p></div>
+<div class="feature-card"><h3>Auth &amp; identity</h3><p><code>with_auth_token</code> Bearer with constant-time compare on both POST and SSE (0.20 hole fixed); as of 0.25.0 ownership only trusts server-issued identity (<code>trust_metadata_owner=false</code> default)</p></div>
+<div class="feature-card"><h3>Idempotency &amp; owner isolation</h3><p>A <code>message_id</code> makes tasks/send idempotent; non-owners calling get/cancel are rejected (-32003)</p></div>
+<div class="feature-card"><h3>TaskStore trait</h3><p>Pluggable backend; default <code>InMemoryTaskStore</code> LRU 10,000 + TTL. The crate ships only the in-memory backend — bring your own DB (override <code>compare_and_update</code> with a real atomic conditional write)</p></div>
+<div class="feature-card"><h3>Workflows</h3><p><code>tasks/runWorkflow</code> ordered steps, hard cap 50, background execution</p></div>
+<div class="feature-card"><h3>Resilient client</h3><p><code>ResilientA2AClient</code>: transport retries → SSE reconnect → overall wait deadline → backup-agent chain</p></div>
+</div>
+
+<table class="data-table"><thead><tr><th>Capability</th><th>Status</th></tr></thead><tbody>
+<tr><td><code>tasks/send</code> (background, 9-state machine, message_id idempotency, owner isolation)</td><td>Implemented</td></tr>
+<tr><td><code>tasks/get</code> / <code>tasks/cancel</code> / <code>tasks/list</code></td><td>Implemented</td></tr>
+<tr><td>Multi-turn resume (<code>input-required</code> → resume with taskId)</td><td>Implemented (<code>resume_task</code>)</td></tr>
+<tr><td><code>tasks/runWorkflow</code> ordered workflows</td><td>Implemented</td></tr>
+<tr><td>SSE task push (<code>with_streaming</code> + <code>GET /events</code>)</td><td>Implemented</td></tr>
+<tr><td>Static Bearer auth (constant-time, declared on card)</td><td>Implemented (<code>with_auth_token</code>)</td></tr>
+<tr><td>Agent Card discovery + v1.0.1 <code>supportedInterfaces</code> multi-transport declaration &amp; negotiation</td><td>Implemented ✨ v0.22.0</td></tr>
+<tr><td>Card signing JWS HS256 (RFC 8785-lite canonicalization)</td><td>Implemented ✨ v0.22.0</td></tr>
+<tr><td>Enterprise kit: registry/discovery · federation gateway · resilience · rate limiting · trust · scale</td><td>Implemented ✨ v0.13.0</td></tr>
+<tr><td>Distributed tracing (metadata <code>trace_id</code> + W3C <code>traceparent</code>)</td><td>Implemented</td></tr>
+<tr><td>gRPC binding</td><td class="high">⛔ Card enum value only, no implementation (postponed since 0.22.0)</td></tr>
+<tr><td>ES256 asymmetric signing / full JCS</td><td class="high">⛔ Planned for 0.22.1; still not landed as of 0.22.4</td></tr>
+<tr><td>OAuth / OIDC</td><td class="high">⛔ Static Bearer only out of the box; federation needs a gateway in front</td></tr>
+<tr><td>TLS termination</td><td class="high">⛔ Not provided at the application layer — terminate at a reverse proxy / gateway</td></tr>
+</tbody></table>
+
+<div class="notice-box"><p><strong>Note (public bind, B7)</strong>: <code>serve</code> binds loopback only; exposing a non-loopback address requires <code>serve_with(ServeConfig)</code> with a bearer token or explicit <code>insecure_public = true</code>, and CORS allows only <code>http://localhost</code> / <code>http://127.0.0.1</code> by default.</p></div>
 <hr class="divider"></section>
 
 
@@ -2493,6 +3031,20 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <div class="feature-card"><h3>Built-in validators</h3><p>MaxLengthGuardrail (input length) / ForbiddenWordsGuardrail (blocked words) / SensitiveInfoGuardrail (API keys, emails, credit cards; extendable via with_keywords)</p></div>
 <div class="feature-card"><h3>Type-separated results ✨v0.15.0</h3><p>InputGuardrailResult (Pass/Block only) vs OutputGuardrailResult (Pass/Block/Modify) enforced by the type system</p></div>
 <div class="feature-card"><h3>Guardable ✨v0.15.0</h3><p>Any runnable unit can be wrapped: AgentExecutor implements it directly, BaseChain adapts via ChainGuardable, and there's GuardedAgent::from_chain</p></div>
+</div>
+
+<div class="card-grid">
+<div class="feature-card"><h3>Streaming guardrails ✨v0.15.0</h3><p><code>StreamingOutputGuardrail</code> + <code>GuardedAgent::invoke_stream</code>: incremental keyword checks + a 24-char sliding window (cross-chunk cuts can't slip through) + a full-output recheck; block carries its reason, a <code>rewrite</code> rail can repair before the chunk is dropped</p></div>
+<div class="feature-card"><h3>PII redaction ✨v0.22.4</h3><p><code>PiiRedactionGuardrail</code> rewrites identifiers to fixed labels instead of cutting the whole answer — Email / Phone / NationalId (GB 11643 checksum) / CreditCard (Luhn) / IpV4, offline regex, zero model calls</p></div>
+<div class="feature-card"><h3>Schema output guardrail ✨v0.22.4</h3><p><code>SchemaOutputGuardrail</code> pins output to a JSON Schema: lenient incremental validation during streaming, strict final check at stream end; every block reason ends with a fillable JSON skeleton</p></div>
+<div class="feature-card"><h3>Retrieval rail ✨v0.21.0</h3><p><code>RetrievalRail</code> batch-scans RAG documents for injection patterns (shared with PromptInjectionHook): <code>Flag</code> (tag metadata) / <code>Redact</code> (replace content) / <code>Drop</code> (remove); wrap via <code>GuardedRetriever</code></p></div>
+<div class="feature-card"><h3>AI disclosure ✨v0.21.0</h3><p><code>disclose(&amp;audit, &amp;config, &quot;system&quot;, ...)</code> aligned with EU AI Act Article 50 — renders the notice + writes an audit; a failed disclosure only logs a warning</p></div>
+<div class="feature-card"><h3>Audit persistence ✨v0.15.0</h3><p><code>AuditSink</code> + <code>FileAuditSink</code> (JSON Lines, append-only) persist violations; <code>violations</code> bounded (MAX_VIOLATIONS=1000)</p></div>
+</div>
+
+<div class="callout info">
+<div class="callout-title">PiiKind detection (longest-most-specific first)</div>
+<p><code>Email → a@b.com → [REDACTED_EMAIL]</code> · <code>Phone (CN mobile) → [REDACTED_PHONE]</code> · <code>NationalId (18-digit, GB 11643 checksum) → [REDACTED_NATIONAL_ID]</code> · <code>CreditCard (Luhn) → [REDACTED_CREDIT_CARD]</code> · <code>IPv4 → [REDACTED_IP]</code>. Streaming uses a hold-back window (default 48 chars) so identifiers split across chunks can't leak; <code>with_hold_back(n)</code> trades latency vs safety.</p>
 </div>
 <hr class="divider"></section>
 
@@ -2526,7 +3078,15 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
 <tr><td>RAG</td><td><code>Faithfulness</code> (splits claims, verifies each)</td></tr>
 <tr><td>RAGAS ✨v0.22.4</td><td><code>ContextPrecision</code> / <code>ContextRecall</code> / <code>AnswerRelevancy</code></td></tr>
 </tbody></table>
-<div class="feature-card"><h3>EvalRunner</h3><p>Runs evaluators over a Dataset into a Report; loads sets from JSONL; trace → golden → regression gate</p></div>
+<div class="feature-card"><h3>EvalRunner</h3><p>Runs evaluators over a Dataset into a Report; loads sets from JSONL; per-example fault tolerance (a single failure lands in <code>Report::failures</code>, never sinks the run)</p></div>
+
+<div class="card-grid">
+<div class="feature-card"><h3>LLMAsJudge ✨v0.15.0</h3><p>LLM scores on a 0–10 scale with a customizable rubric (<code>with_rubric</code>) and max score (<code>with_max_score</code>)</p></div>
+<div class="feature-card"><h3>PairwiseJudge ✨v0.15.0</h3><p>Arena mode: returns <code>Verdict::{AWins, BWins, Tie}</code>; A/B order is swapped and run twice, both calls concurrent, only an agreed winner counts (position-bias mitigation)</p></div>
+<div class="feature-card"><h3>RAGAS metrics ✨v0.22.4</h3><p><code>ContextPrecision</code> (ranking quality) / <code>ContextRecall</code> (attributable fraction of the reference) / <code>AnswerRelevancy</code> (on-topic, reverse-generates N questions); all LLM-judge-driven, concurrency capped at 4</p></div>
+<div class="feature-card"><h3>Faithfulness</h3><p>Splits the prediction into atomic claims and verifies each against the reference, detecting fabrication — most useful for RAG; <code>with_llm_split(true)</code>, concurrent <code>join_all</code> verification</p></div>
+<div class="feature-card"><h3>Trace → Golden → Regression gate ✨v0.24.0</h3><p>Production recordings convert to golden JSONL via lc-testkit; a candidate report is compared metric-by-metric against a baseline — a drop beyond tolerance turns CI red; paired sign test + tail percentiles separate real regression from noise</p></div>
+</div>
 <hr class="divider"></section>
 
 <section class="module" id="testing" style="animation-delay: 0.86s;">
@@ -2551,6 +3111,53 @@ cargo test --test function_calling_agent -- --include-ignored
 
 <span class="comment"># Run ReAct Agent tests</span>
 cargo test --test integration_agent_react -- --include-ignored</code></pre>
+                </div>
+
+                <h3>Test Coverage Scope</h3>
+
+                <table class="data-table"><thead><tr><th>Level</th><th>Location</th><th>Covered By</th></tr></thead><tbody>
+<tr><td>Unit tests</td><td>Inside each crate</td><td>Pure logic: parsers, caches, eviction policies, state transitions</td></tr>
+<tr><td>Integration tests</td><td>The facade crate (<code>langchainrust</code>) tests directory</td><td>Cross-module assembly, external behavior</td></tr>
+<tr><td>Doc tests (doctest)</td><td>Code examples in public API docs</td><td>Examples are runnable, APIs really exist</td></tr>
+</tbody></table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>How to run</h3><p><code>cargo test</code> at root / <code>cargo test --workspace</code> / <code>cargo test -p langchainrust</code> for a single crate</p></div>
+                    <div class="feature-card"><h3>Unit tests</h3><p><code>#[cfg(test)]</code> modules, no network / real models; cover positive and negative cases (cache keys, parsing, LRU eviction)</p></div>
+                    <div class="feature-card"><h3>Integration tests</h3><p>Treat the lib as an external user; prefer mock implementations; assert behavior explicitly, not just "no panic"</p></div>
+                </div>
+
+                <h3>Offline Record/Replay Testing (lc-testkit) ✨v0.16.0</h3>
+
+                <div class="card">
+                    <p><code>lc-testkit</code> is a standalone record/replay harness (not re-exported through the facade; add it as a dev-dependency). <code>RecordingProvider</code> wraps any <code>BaseChatModel</code>, calls it once for real, and appends each exchange to a JSONL file; <code>ReplayProvider</code> replays them offline and deterministically — keyless CI can still test chains.</p>
+                </div>
+
+                <table class="data-table"><thead><tr><th>Strategy</th><th>Matching</th><th>When to use</th></tr></thead><tbody>
+<tr><td><code>Fifo</code> (default)</td><td>dequeues in recording order</td><td>sequential replay, simple cases</td></tr>
+<tr><td><code>ByToolName</code></td><td>request-side tool name hits</td><td>parallel multi-tool, route by tool</td></tr>
+<tr><td><code>Exact</code> ✨v0.18.0</td><td>full message signature matched strictly</td><td>parallel reordering; no match → <code>TestkitError::ReplayNoMatch</code> (no silent FIFO fallback)</td></tr>
+</tbody></table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Record → replay</h3><p><code>RecordingProvider::new(real_llm, "fixtures/….jsonl")</code> records; <code>ReplayProvider::from_file</code> replays byte-stable, zero network</p></div>
+                    <div class="feature-card"><h3>Golden dataset bridge ✨v0.24.0</h3><p>Recordings convert straight into an evaluation dataset: last human message → input, assistant text → reference, tool results in rank order → contexts (RAGAS-scaleable)</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// Cargo.toml: [dev-dependencies] lc-testkit = "0.24.0"</span>
+<span class="comment">// Record: one real call, written to a fixture file on success</span>
+<span class="kw">let</span> recorded = RecordingProvider::new(real_llm, <span class="str">"fixtures/llm_chain_f01.jsonl"</span>)?;
+
+<span class="comment">// Replay: zero network, FIFO, byte-stable</span>
+<span class="kw">let</span> llm = ReplayProvider::from_file(<span class="str">"fixtures/llm_chain_f01.jsonl"</span>)?
+    .with_strategy(ReplayStrategy::Exact);
+<span class="kw">let</span> chain = LLMChain::new(llm, <span class="str">"Answer in one sentence: {question}"</span>);
+<span class="kw">let</span> result = chain.invoke(inputs).await?;</code></pre>
                 </div>
 
                 <hr class="divider">
@@ -2604,6 +3211,48 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                         </tr>
                     </tbody>
                 </table>
+
+                <h3>MongoDB Storage (shared across processes) ✨v0.15.0</h3>
+
+                <div class="card">
+                    <p>MongoDB storage solves two problems: persisting the <strong>document store</strong> so the "parent document + child chunks" relationship of long documents is <strong>shared across processes and survives restarts</strong>, and persisting <strong>conversation memory</strong> so multi-turn memory is shared across multiple instances. Two distinct objects with different purposes:</p>
+                </div>
+
+                <table class="data-table"><thead><tr><th>Object</th><th>Family</th><th>What it stores</th></tr></thead><tbody>
+<tr><td><code>MongoChunkedDocumentStore</code></td><td>Document store (DocumentStore family)</td><td>Document text + parent/child chunk relationships</td></tr>
+<tr><td><code>MongoPersistentMemory</code></td><td>Persistent memory (memory family)</td><td>Conversation history / compressed summaries</td></tr>
+</tbody></table>
+
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Document-store workflow</h3><p><code>create_indexes()</code> builds query indexes → <code>add_parent_document(doc, 500)</code> chunks and stores children → <code>get_chunks_for_parent</code> retrieves child chunks by parent ID</p></div>
+                    <div class="feature-card"><h3>Persistent memory</h3><p>Composes <code>ConversationSummaryBufferMemory</code> with its own token budget; multiple instances on the same DB share the same memory</p></div>
+                    <div class="feature-card"><h3>Key behaviors</h3><p>Same <code>ChunkedDocumentStoreTrait</code> interface; stores text not vectors; optimistic locking prevents "last write clobbers first write"; <code>set_session_id_async</code> binds a session; <code>_blocking</code> sync methods for BM25 paths</p></div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <span class="code-lang">rust</span>
+                        <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    </div>
+                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }</span>
+<span class="kw">use</span> langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
+
+<span class="kw">let</span> config = MongoStoreConfig::new(
+    <span class="str">"mongodb://localhost:27017"</span>,   <span class="comment">// connection string</span>
+    <span class="str">"langchainrust_db"</span>              <span class="comment">// database name</span>
+);
+<span class="kw">let</span> store = MongoChunkedDocumentStore::new(config).await?;
+store.create_indexes().await?;
+
+<span class="comment">// Same interface as the in-memory implementation</span>
+<span class="kw">let</span> (parent_id, chunk_ids) = store.add_parent_document(doc, <span class="num">500</span>).await?;
+<span class="kw">let</span> chunks = store.get_chunks_for_parent(&amp;parent_id).await?;</code></pre>
+                </div>
+
+                <div class="callout info">
+                    <div class="callout-title">How to Choose</div>
+                    <p>Multi-instance / must-survive-restarts → MongoDB. Single machine, small data → SQLite. Distributed share / existing Redis → Redis. Vectors never live here — text goes in the doc store, vectors in a companion vector store.</p>
+                </div>
 
                 <h3>Redis Storage</h3>
 
@@ -2722,7 +3371,7 @@ store.add_documents(vec![
 <section class="module" id="whats-new-050" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">✨</span>
-                    <h2>A.1 v0.5.0+ New Features</h2>
+                    <h2>Appendix.1 v0.5.0+ New Features</h2>
                 </div>
 
                 <div class="card">
@@ -2845,7 +3494,7 @@ println!(<span class="str">"{}"</span>, report.summary);
 <section class="module" id="retrieval-agent" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🔄</span>
-                    <h2>A.2 RAG Agent</h2>
+                    <h2>Appendix.2 RAG Agent</h2>
                 </div>
 
                 <div class="card">
@@ -2891,7 +3540,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="corrective-rag" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🛡️</span>
-                    <h2>A.3 Corrective RAG</h2>
+                    <h2>Appendix.3 Corrective RAG</h2>
                 </div>
 
                 <div class="card">
@@ -2914,7 +3563,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="adaptive-rag" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🎯</span>
-                    <h2>A.4 Adaptive RAG</h2>
+                    <h2>Appendix.4 Adaptive RAG</h2>
                 </div>
 
                 <div class="card">
@@ -2937,7 +3586,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="langsmith" style="animation-delay: 0.82s;">
                 <div class="module-header">
                     <span class="module-icon">🧪</span>
-                    <h2>A.5 LangSmith Tracing</h2>
+                    <h2>Appendix.5 LangSmith Tracing</h2>
                 </div>
 
                 <div class="card">
@@ -2977,7 +3626,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="unified-015" style="animation-delay: 0.83s;">
                 <div class="module-header">
                     <span class="module-icon">🧩</span>
-                    <h2>A.6 Unified v0.15.0 <span class="badge new">v0.15.0</span></h2>
+                    <h2>Appendix.6 Unified v0.15.0 <span class="badge new">v0.15.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3003,7 +3652,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="v018-complete" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🚀</span>
-                    <h2>A.7 Capability Completion v0.18.0 <span class="badge new">v0.18.0</span></h2>
+                    <h2>Appendix.7 Capability Completion v0.18.0 <span class="badge new">v0.18.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3029,7 +3678,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="v027-new" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">🧩</span>
-                    <h2>A.8 Gap Close-out v0.27.0 <span class="badge new">v0.27.0</span></h2>
+                    <h2>Appendix.8 Gap Close-out v0.27.0 <span class="badge new">v0.27.0</span></h2>
                 </div>
 
                 <div class="card">
@@ -3051,7 +3700,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="whats-new-030" style="animation-delay: 0.84s;">
                 <div class="module-header">
                     <span class="module-icon">✨</span>
-                    <h2>A.9 v0.3.0 New Features</h2>
+                    <h2>Appendix.9 v0.3.0 New Features</h2>
                 </div>
 
                 <div class="card">
@@ -3080,7 +3729,7 @@ let result = chain.invoke(HashMap::from([
 <section class="module" id="module-structure" style="animation-delay: 0.88s;">
                 <div class="module-header">
                     <span class="module-icon">📦</span>
-                    <h2>A.10 Module Structure</h2>
+                    <h2>Appendix.10 Module Structure</h2>
                 </div>
 
                 <div class="code-block">
@@ -3149,7 +3798,7 @@ crates/
 <section class="module" id="api-reference" style="animation-delay: 0.9s;">
                 <div class="module-header">
                     <span class="module-icon">📖</span>
-                    <h2>A.11 API Reference</h2>
+                    <h2>Appendix.11 API Reference</h2>
                 </div>
 
                 <h3>Agent Constructors</h3>
@@ -3230,7 +3879,7 @@ crates/
 <section class="module" id="best-practices" style="animation-delay: 0.8s;">
                 <div class="module-header">
                     <span class="module-icon">💡</span>
-                    <h2>A.12 Best Practices</h2>
+                    <h2>Appendix.12 Best Practices</h2>
                 </div>
 
                 <div class="card-grid">

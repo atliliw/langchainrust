@@ -80,9 +80,20 @@ pub fn reciprocal_rank_fusion(
 ) -> Vec<RetrievedDocument> {
     let mut rrf_scores: HashMap<String, (f64, Document)> = HashMap::new();
 
+    // F-07: fold each leg by document id before fusing. A parent surfaced by
+    // several chunks (which all carry its parent id) must contribute only its
+    // best (highest) rank once per leg — otherwise per-chunk 1/(k+rank)
+    // accumulation makes a "chunk-heavy" parent systematically out-rank a
+    // single genuinely relevant snippet.
+    let mut seen_bm25: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     // Process BM25 results
     for (rank, doc) in bm25_results.iter().enumerate() {
         let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
+        if !seen_bm25.insert(doc_id.clone()) {
+            // Already counted this parent at a better (earlier) rank.
+            continue;
+        }
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores
@@ -94,8 +105,12 @@ pub fn reciprocal_rank_fusion(
     }
 
     // Process vector results
+    let mut seen_vector: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (rank, doc) in vector_results.iter().enumerate() {
         let doc_id = doc.id.clone().unwrap_or_else(|| doc_content_hash(doc));
+        if !seen_vector.insert(doc_id.clone()) {
+            continue;
+        }
         let rrf_contribution = 1.0 / (k as f64 + (rank + 1) as f64);
 
         rrf_scores
@@ -212,5 +227,43 @@ mod tests {
         let hash_c = doc_content_hash(&doc_c);
         assert_ne!(hash_a1, hash_c, "不同内容应产生不同哈希");
         assert_eq!(hash_a1.len(), 16, "应为 64 位哈希的 16 位十六进制表示");
+    }
+
+    /// F-07: a parent yielded by several chunks (all sharing its parent id)
+    /// must contribute only its best per-leg rank once. Here parent "A" matches
+    /// through 3 bm25 chunks while parent "B" is a single high-relevance chunk;
+    /// before the fix A accumulated 1/(61)+1/(62)+1/(63) ≈ 0.0484 and swamped B
+    /// (≈ 0.032). After the per-leg fold A counts only rank 1 once, so B's
+    /// bm25+vector hits rank it first.
+    #[test]
+    fn test_rrf_folds_multi_chunk_parent_by_highest_rank() {
+        let bm25_results = vec![
+            Document::new("A chunk one").with_id("A"),
+            Document::new("A chunk two").with_id("A"),
+            Document::new("A chunk three").with_id("A"),
+            Document::new("B's only chunk (high relevance)").with_id("B"),
+        ];
+        let vector_results = vec![Document::new("B's only chunk").with_id("B")];
+
+        let results = reciprocal_rank_fusion(bm25_results, vector_results, 60);
+
+        // B: bm25 rank 4 (1/64) + vector rank 1 (1/61) ≈ 0.032.
+        // A: bm25 rank 1 counted once (1/61) ≈ 0.016, no vector hit.
+        assert_eq!(
+            results[0].document.id.as_deref(),
+            Some("B"),
+            "the single-block relevant parent must rank above the multi-chunk parent"
+        );
+        // And the fold is a single contribution, not three summed.
+        let a = results
+            .iter()
+            .find(|r| r.document.id.as_deref() == Some("A"))
+            .expect("A must still be present");
+        let once = 1.0 / 61.0;
+        assert!(
+            (a.score - once).abs() < 1e-12,
+            "A must contribute its best rank a single time, got {}",
+            a.score
+        );
     }
 }
