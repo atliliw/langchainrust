@@ -291,6 +291,7 @@ impl OpenAICompatibleConfig {
             temperature: self.temperature,
             max_tokens: self.max_tokens,
             reasoning_effort: None,
+            top_logprobs: None,
             top_p: self.top_p,
             frequency_penalty: None,
             presence_penalty: None,

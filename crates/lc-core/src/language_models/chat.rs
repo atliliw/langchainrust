@@ -229,6 +229,72 @@ where
         .map_err(PredictToolsError::Chat)
 }
 
+/// One alternative token and its log-probability, as reported by a
+/// provider's `top_logprobs` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TokenAlternative {
+    /// The candidate token.
+    pub token: String,
+    /// Natural-log probability the provider assigned to it.
+    pub logprob: f64,
+}
+
+/// One generated token together with its log-probability and, when requested,
+/// the provider's top-k alternatives.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TokenLogprob {
+    /// The token actually generated.
+    pub token: String,
+    /// Natural-log probability of the generated token.
+    pub logprob: f64,
+    /// Top-k alternatives (`top_logprobs`), empty when not requested.
+    #[serde(default)]
+    pub top_logprobs: Vec<TokenAlternative>,
+}
+
+/// Result of a chat call that requested log-probabilities.
+///
+/// Deliberately separate from [`LLMResult`] so adding logprobs does not change
+/// the ubiquitous result type (and every one of its construction sites).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LogprobResult {
+    /// Generated text (concatenated tokens).
+    #[serde(default)]
+    pub content: String,
+    /// Model identifier.
+    #[serde(default)]
+    pub model: String,
+    /// Token usage, when reported.
+    #[serde(default)]
+    pub token_usage: Option<TokenUsage>,
+    /// Tool calls requested by the model, if any.
+    #[serde(default)]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// Per-token log-probabilities.
+    #[serde(default)]
+    pub token_logprobs: Vec<TokenLogprob>,
+}
+
+/// Chat models that can return token log-probabilities.
+///
+/// Kept as a separate trait so providers without logprob support (Anthropic,
+/// most local servers) are unaffected, and `LLMResult` stays unchanged. A
+/// verifier can depend on this trait and fall back to a judge when the model
+/// does not implement it.
+#[async_trait]
+pub trait LogprobChatModel: Send + Sync {
+    /// Provider error type.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Chat with `top_logprobs` alternatives requested for each token.
+    async fn chat_with_logprobs(
+        &self,
+        messages: Vec<Message>,
+        top_logprobs: usize,
+        config: Option<RunnableConfig>,
+    ) -> Result<LogprobResult, Self::Error>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

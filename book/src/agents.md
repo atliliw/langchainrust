@@ -71,6 +71,47 @@ adjusts it later; values below 1 clamp to 1) — if the model never emits
 first, with a `<<<NEXT>>>` delimiter fallback (`parse_supervisor_decision`), so weaker
 models still work with an envelope prompt (`supervisor_envelope`).
 
+## Subagent: Context Isolation
+
+The orchestrators above share one message history: a worker sees everything the
+parent saw. For long tasks that is the bottleneck — every tool observation and
+failed attempt stays in the parent context. `SubagentTool` takes the other
+approach: each call builds a fresh child `AgentExecutor` with an empty history,
+passes only the `task` text, and returns only `{status, summary}`.
+
+```rust
+use std::sync::Arc;
+use langchainrust::{AgentExecutor, SubagentConfig, SubagentTool};
+
+// The factory owns the child's tools, budget and approval handler.
+let factory = Arc::new(|depth: usize| {
+    Ok(Arc::new(AgentExecutor::new(Arc::new(child_agent), child_tools)))
+});
+
+let tool = SubagentTool::new(
+    SubagentConfig::new("researcher", "Delegate a self-contained research sub-task")
+        .with_max_depth(2),
+    factory,
+);
+
+let parent = AgentExecutor::new(parent_agent, vec![Arc::new(tool)]);
+let answer = parent
+    .invoke("Summarize the latest RAG reranking work".to_string())
+    .await?;
+```
+
+Invariants:
+
+| Invariant | Meaning |
+|---|---|
+| Context isolation | The child starts empty and receives only `task` |
+| Summary only | The return value is `{status, summary}`; no `intermediate_steps` |
+| Depth cap | `depth >= max_depth` returns `ToolError::ExecutionFailed` |
+| No privilege escalation | Tool subset / budget / approval are fixed by the factory |
+
+The factory receives `depth + 1`, so a recursive subagent can wire
+`SubagentTool::with_depth(depth)` itself; without that wiring `max_depth` cannot fire.
+
 ## Parallel Tool Calls
 
 When a model emits several tool calls in one turn, the executor runs them **concurrently**

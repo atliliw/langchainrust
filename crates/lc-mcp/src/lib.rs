@@ -114,11 +114,13 @@ pub use prompts::{
     PromptMessage, PromptProvider,
 };
 pub use protocol::{
-    negotiate_protocol_version, notification_message, ClientIdentity, InputRequired, JsonRpcId,
-    MCPError, MCPRequest, MCPResponse, MrtrAnswer, MrtrQuestion, MrtrRoundTrip, MrtrRoundTripState,
-    ProtocolInfo, RequestMeta, VersionPolicy, MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST,
+    cacheable_result, complete_result, negotiate_protocol_version, notification_message,
+    ClientIdentity, InputRequired, JsonRpcId, MCPError, MCPRequest, MCPResponse, MrtrAnswer,
+    MrtrQuestion, MrtrRoundTrip, MrtrRoundTripState, ProtocolInfo, RequestMeta, VersionPolicy,
+    CACHE_SCOPE_PUBLIC, DEFAULT_LIST_TTL_MS, MCP_ERROR_REQUEST_TIMEOUT, MCP_ERROR_SESSION_LOST,
     MCP_ERROR_UNAUTHORIZED, MCP_ERROR_VERSION_UNSUPPORTED, MCP_METHOD_HEADER, MCP_NAME_HEADER,
-    MCP_VERSION, MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
+    MCP_VERSION, MCP_VERSION_STATELESS, RESULT_TYPE_COMPLETE, RESULT_TYPE_INPUT_REQUIRED,
+    SUPPORTED_PROTOCOL_VERSIONS,
 };
 pub use resources::{
     ListResourcesResult, ReadResourceParams, ReadResourceResult, Resource, ResourceContent,

@@ -58,6 +58,10 @@ pub struct OpenAIConfig {
     /// family. Accepted values: `"minimal" | "low" | "medium" | "high"`. `None`
     /// omits the field and lets the provider use its default.
     pub reasoning_effort: Option<String>,
+    /// Request per-token log-probabilities with this many alternatives
+    /// (`logprobs: true` + `top_logprobs: n`). Used by logprob-based verifiers;
+    /// `None` keeps the request byte-identical to the non-logprob path.
+    pub top_logprobs: Option<usize>,
     /// Nucleus sampling probability mass.
     pub top_p: Option<f32>,
     /// Frequency penalty applied to repeated tokens.
@@ -127,6 +131,7 @@ impl Default for OpenAIConfig {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            top_logprobs: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,
@@ -184,6 +189,12 @@ impl OpenAIConfig {
     /// Set base URL
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
         self.base_url = url.into();
+        self
+    }
+
+    /// Requests per-token log-probabilities with `n` alternatives.
+    pub fn with_top_logprobs(mut self, n: usize) -> Self {
+        self.top_logprobs = Some(n);
         self
     }
 

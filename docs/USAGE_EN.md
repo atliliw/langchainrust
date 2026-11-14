@@ -126,6 +126,10 @@ This document provides detailed usage instructions. For a quick overview, see [R
     - SSRF Protection
   - [5.6 ComputerUseTool](#56-computerusetool--v041)
   - [5.7 Deep Research Agent](#57-deep-research-agent)
+  - [5.8 Subagent](#58-subagent--v0300)
+    - Difference from the orchestrators
+    - SubagentTool / SubagentFactory
+    - Four invariants and the depth cap
 - **Chapter 6 · Retrieval & Knowledge**
   - [6.1 Document Loaders](#61-document-loaders)
     - HTMLLoader
@@ -170,9 +174,14 @@ This document provides detailed usage instructions. For a quick overview, see [R
     - ConnectionManager
     - SamplingGuard
     - MCPGateway
+    - MCP 2026-07-28 compliance fields (resultType / ttlMs / cacheScope)
   - [7.2 A2A Agent Protocol](#72-a2a-agent-protocol--v041)
     - v1.0.1: Multi-Transport Declaration (supportedInterfaces)
     - Card Signing (JWS HS256)
+  - [7.3 OpenAI-compatible server](#73-openai-compatible-server--v0300)
+    - ChatBackend / ModelBackend
+    - /v1/models and /v1/chat/completions
+    - SSE streaming
 - **Chapter 8 · Safety, Observability & Quality**
   - [8.1 Guardrails](#81-guardrails)
     - Guardable
@@ -192,6 +201,8 @@ This document provides detailed usage instructions. For a quick overview, see [R
     - LLMAsJudge
     - PairwiseJudge
     - Trace → Golden → Regression Gate
+    - Verifier / best-of-N (logprob)
+    - Judge reliability (order swap / κ)
   - [8.5 Testing](#85-testing)
 - **Chapter 9 · Data Persistence**
   - [9.1 MongoDB Storage](#91-mongodb-storage)
@@ -227,7 +238,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
+langchainrust = "0.30.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -3559,7 +3570,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 It is an opt-in feature (pulls in tokio-tungstenite):
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.30.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3678,6 +3689,51 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 
 
 > **Related capabilities:** [Code Interpreter Sandbox (see appendix)](#附录17-code-interpreter-sandbox)
+
+### 5.8 Subagent ✨ v0.30.0
+
+#### 5.8.1 Concept: Why a Subagent
+
+The existing orchestrators (`Supervisor` / `FanOutFanIn` / `SequentialPipeline`) change **roles inside one shared message history**: the sub-role sees everything the parent saw. The bottleneck for long tasks is not a missing role — it is **context pollution**: a sub-task's tool observations and failure traces stay in the parent context, making every later turn slower and more expensive.
+
+`SubagentTool` handles a different dimension: each call builds a **fresh, empty-context** `AgentExecutor`, passes only the `task` text, and returns only `{"status":"ok","summary":"..."}`. Intermediate steps never enter the parent's message list.
+
+#### 5.8.2 Minimal usage
+
+```rust
+use std::sync::Arc;
+use langchainrust::agents::{AgentBuilder, AgentExecutor, SubagentConfig, SubagentTool};
+
+// The factory builds a fresh child executor per call; the child's tool
+// subset, budget and approval handler are decided here.
+let factory = Arc::new(|depth: usize| {
+    Ok(Arc::new(AgentExecutor::new(Arc::new(child_agent), child_tools)))
+});
+
+let tool = SubagentTool::new(
+    SubagentConfig::new("researcher", "Delegate a self-contained research sub-task")
+        .with_max_depth(2),
+    factory,
+);
+
+let parent = AgentBuilder::new()
+    .llm(llm)
+    .tool(tool)
+    .build()?;
+```
+
+The parent model sees an ordinary tool whose argument is `{"task": "..."}`.
+
+#### 5.8.3 The four invariants
+
+| Invariant | Meaning |
+|---|---|
+| Context isolation | The child starts from an empty message list; only `task` is passed in |
+| Summary-only | The return value is only `{status, summary}`, with no `intermediate_steps` |
+| Depth cap | `depth >= max_depth` returns `ToolError::ExecutionFailed`, never a panic |
+| No privilege escalation | Tool subset / budget / approval belong to the executor built by the factory |
+
+> Note: `SubagentFactory` is `Fn(depth) -> Result<Arc<AgentExecutor>, AgentError>`. A recursive subagent must wire `SubagentTool::with_depth(depth)` in its factory for `max_depth` to take effect.
 
 ## Chapter 6 · Retrieval & Knowledge
 
@@ -3967,7 +4023,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.28.0", features = ["local-candle"] }
+langchainrust = { version = "0.30.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4182,7 +4238,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["chromadb"] }
+langchainrust = { version = "0.30.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4573,7 +4629,7 @@ If you only need the vector leg, the free function (available since v0.23.0) `la
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5325,6 +5381,22 @@ let server = MCPServer::new()
 The server→host direction (`sampling::create_message` / `elicitation::create`) is initiated by the Server and executed by the Host: `MCPServer` provides the initiating methods (`create_message` / `create_elicitation`) that call an injected host callback (`with_sampling_handler` / `with_elicitation_handler`); without a callback they return an explicit error, never silent. Real interaction depends on the host UI/model environment — the user wires it via callbacks (tests cover the initiating path with injected mocks).
 
 
+#### 7.1.x MCP 2026-07-28 compliance fields ✨ v0.30.0
+
+The latest revision makes three result-envelope fields mandatory; v0.30.0 implements them:
+
+| Field | Where | Behavior |
+|---|---|---|
+| `resultType` | Every successful result | `"complete"` for ordinary results; `"input_required"` for MRTR interim results. Results from older servers that omit it are accepted as `complete` |
+| `ttlMs` | `tools/list` / `resources/list` / `resources/read` / `prompts/list` | Defaults to 60_000 ms |
+| `cacheScope` | Same as above | Defaults to `"public"` (the registries are process-wide static data) |
+
+`tools/list` and `server/discover` also sort tools by name **before** pagination, keeping client caches and prompt-cache hit rates stable.
+
+> If per-tenant/per-user tool filtering is added later, `cacheScope` must become `"private"` — otherwise shared caches would leak across users.
+
+---
+
 ### 7.2 A2A Agent Protocol ✨ v0.4.1
 
 #### 7.2.1 Concept: What Is A2A
@@ -5414,8 +5486,8 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
-lc-a2a = { version = "0.28.0", features = ["axum"] }
+langchainrust = "0.30.0"
+lc-a2a = { version = "0.30.0", features = ["axum"] }
 ```
 
 ```rust
@@ -5480,7 +5552,7 @@ while let Some(event) = stream.next().await {
 **WebSocket transport (`ws` feature, 0.27.0 #186)**: a second transport alongside SSE. With the `ws` feature on, the server exposes `GET /ws`, sharing the **exact same auth and per-connection filtering** as `/events` — bearer auth, the B7 cross-tenant `notification_visible` guard, and the `?taskId=` restriction all apply identically, and each filtered `TaskPushNotification` is serialized into **one text frame** for that connection. On the client, `connect_ws` / `send_task_streaming_ws` mirror `connect_sse` / `send_task_streaming`, and `A2AWebSocketStream::next()` answers protocol pings to keep an idle subscription alive while skipping pongs and binary frames. The two transports carry identical semantics; pick per deployment (WS suits a long-lived connection that does not want HTTP/SSE buffering):
 
 ```toml
-lc-a2a = { version = "0.28.0", features = ["ws"] }   # the server also needs the axum feature to serve
+lc-a2a = { version = "0.30.0", features = ["ws"] }   # the server also needs the axum feature to serve
 ```
 
 ```rust
@@ -5647,6 +5719,46 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 
 
 > **Related capabilities:** [MCP Protocol Primitives (see appendix)](#附录16-mcp-protocol-primitives)
+
+### 7.3 OpenAI-compatible server ✨ v0.30.0
+
+#### 7.3.1 Concept: Let existing SDKs and UIs connect directly
+
+MCP and A2A solve **agent ↔ agent / agent ↔ tool**; many existing applications only speak OpenAI's `/v1/chat/completions`. The `openai-server` feature fills that gap with an axum `Router` backed by any `ChatBackend` (an agent, a chain, or a bare chat model).
+
+```toml
+langchainrust = { version = "0.30.0", features = ["openai-server"] }
+```
+
+```rust
+use std::sync::Arc;
+use langchainrust::agents::{openai_compat_router, ModelBackend};
+
+let backend = Arc::new(ModelBackend::new(Arc::new(llm)));
+let app = openai_compat_router(backend, "my-agent");
+
+// axum::serve(listener, app).await?;
+```
+
+#### 7.3.2 Endpoints
+
+| Method | Path | Behavior |
+|---|---|---|
+| GET | `/v1/models` | Returns the configured model id |
+| POST | `/v1/chat/completions` | `stream: false` returns JSON; `stream: true` returns SSE followed by `[DONE]` |
+
+#### 7.3.3 Custom backend
+
+```rust
+#[async_trait::async_trait]
+impl ChatBackend for MyAgentBackend {
+    async fn complete(&self, messages: Vec<Message>) -> Result<LLMResult, String> { ... }
+    async fn stream_chat(&self, messages: Vec<Message>)
+        -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, String>> + Send>>, String> { ... }
+}
+```
+
+Current limits: the `tool` role and `tool_calls` response fields are not mapped yet; `temperature` / `max_tokens` are accepted but do not override the backend per request — sampling belongs to the backend configuration.
 
 ## Chapter 8 · Safety, Observability & Quality
 
@@ -5994,7 +6106,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.30.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -6012,7 +6124,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 **One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["otlp"] }
+langchainrust = { version = "0.30.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -6343,6 +6455,54 @@ What `ReportComparison` contains:
 
 **Tail metrics**: `report.percentile("evaluator", 0.05)` is the P5 of that evaluator's per-example scores (the worst-decile quality tail — the samples dragging the mean down), `0.95` / `0.99` the best case; for latency-style scores `0.95` is the latency tail. The underlying `percentile` is a nearest-rank implementation that handles `NaN` without panicking (see `runner::percentile`).
 
+#### 8.4.8 Verifier / best-of-N (logprob) ✨ v0.30.0
+
+A judge gives a coarse "is it good?" label; a verifier gives a **fine-grained, comparable** score usable for generating several candidates and picking the best.
+
+```rust
+use langchainrust::evaluation::{best_of_n, LogprobVerifier};
+
+let verifier = LogprobVerifier::new(openai_chat)   // requires a logprob-capable provider
+    .with_max_score(9)
+    .with_top_logprobs(5);
+
+let candidates = vec![candidate_a, candidate_b, candidate_c];
+let result = best_of_n(&verifier, "task description", &candidates).await?;
+println!("best = {} (score {})", result.best, result.scores[result.best_index].score);
+```
+
+`LogprobVerifier` expands the first score-bearing token into its `top_logprobs` distribution and takes the expectation instead of the argmax — two candidates that both emit `9` can score differently because their distributions differ.
+
+For providers without logprobs (e.g. Anthropic), `JudgeVerifier` degrades to parsing a single integer and reports a fixed `confidence` of `0.25`, so callers do not over-trust it.
+
+#### 8.4.9 Judge reliability ✨ v0.30.0
+
+```rust
+use langchainrust::evaluation::{
+    cohen_kappa, order_swap_consistent, reliability_report, same_family, Verdict,
+};
+
+// A winner must survive both A/B and B/A.
+let winner = order_swap_consistent(Verdict::AWins, Verdict::BWins); // AWins
+
+// Chance-corrected agreement.
+let kappa = cohen_kappa(&[true, false, true], &[true, false, false]);
+
+// Self-preference risk.
+assert!(same_family("gpt-5", "gpt-4o"));
+assert!(!same_family("gpt-5", "claude-3"));
+
+// Aggregate.
+let report = reliability_report(&original, &swapped);
+```
+
+| Function | Purpose |
+|---|---|
+| `order_swap_consistent` | Double-order swap; disagreement becomes a tie |
+| `cohen_kappa` | Chance-corrected agreement; `None` for degenerate samples |
+| `same_family` | Leading model-name prefix, flags same-family self-judging |
+| `reliability_report` | Aggregates `agreement` / `kappa` / `ties` |
+
 ---
 
 
@@ -6491,7 +6651,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }
 ```
 
 #### 9.1.3 Usage
@@ -6566,14 +6726,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["redis-storage"] }
+langchainrust = { version = "0.30.0", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }
 ```
 
 #### 9.2.3 RedisDocumentStore
@@ -6906,7 +7066,7 @@ Backend capability boundaries (v0.22.4):
 The execution budget is enforced with **wasm fuel** (`timeout_ms × 1000` instructions, at least 1000) instead of a racy wall-clock thread, and exhaustion maps **deterministically** to `SandboxError::Timeout`. Any language other than `Language::Wasm` yields `SandboxError::UnsupportedLanguage`.
 
 ```toml
-lc-tools = { version = "0.28.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.30.0", features = ["sandbox-wasm"] }
 # The `langchainrust` facade does not forward this feature yet, so enable it on lc-tools;
 # cargo feature unification still lets you import the type from the facade:
 # langchainrust::tools::sandbox::WasmSandbox

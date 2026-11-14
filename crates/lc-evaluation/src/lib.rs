@@ -28,13 +28,22 @@ mod criteria;
 mod export;
 mod faithfulness;
 mod pairwise;
+pub mod judge_reliability;
 pub mod price;
 mod ragas;
 mod results;
 mod rules;
 mod runner;
+pub mod verifier;
 
+pub use judge_reliability::{
+    cohen_kappa, order_swap_consistent, reliability_report, same_family, ReliabilityReport,
+};
 pub use price::{OverallCost, Price, PriceBook, TokenUsage};
+pub use verifier::{
+    best_of_n, score_from_logprobs, BestOfNResult, JudgeVerifier, LogprobVerifier, ScoreSource,
+    VerificationScore, Verifier,
+};
 
 #[cfg(test)]
 mod test_support;

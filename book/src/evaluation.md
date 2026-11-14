@@ -159,3 +159,49 @@ A metric regresses when its mean drops by strictly more than the tolerance —
 `delta < -tolerance`, so a boundary move of exactly `-0.02` still passes. `ReportComparison`
 also lists per-evaluator `MetricDelta`s plus `added` / `dropped` evaluator names, so a
 candidate that silently stops running an evaluator is visible in the same table.
+
+## Verifier / Best-of-N
+
+A judge answers "is this good?"; a verifier answers "how strongly does this satisfy the
+criteria?" with a score fine-grained enough to compare candidates.
+
+```rust
+use langchainrust::evaluation::{best_of_n, LogprobVerifier};
+
+let verifier = LogprobVerifier::new(openai_chat)  // requires a logprob-capable provider
+    .with_max_score(9)
+    .with_top_logprobs(5);
+
+let candidates = vec![candidate_a, candidate_b, candidate_c];
+let result = best_of_n(&verifier, "task description", &candidates).await?;
+```
+
+`LogprobVerifier` expands the first score-bearing token into its `top_logprobs`
+distribution and takes the expectation instead of the argmax. For providers without
+logprobs (Anthropic, most local servers), `JudgeVerifier` parses a single integer and
+reports `confidence = 0.25` so callers do not over-trust it.
+
+## Judge Reliability
+
+Judge output needs position-bias and chance correction before it can gate a release:
+
+```rust
+use langchainrust::evaluation::{
+    cohen_kappa, order_swap_consistent, reliability_report, same_family, Verdict,
+};
+
+// A winner must survive both A/B and B/A.
+let winner = order_swap_consistent(Verdict::AWins, Verdict::BWins); // AWins
+
+// Chance-corrected agreement.
+let kappa = cohen_kappa(&[true, false, true], &[true, false, false]);
+
+// Same-family self-preference risk.
+assert!(same_family("gpt-5", "gpt-4o"));
+assert!(!same_family("gpt-5", "claude-3"));
+
+let report = reliability_report(&original, &swapped);
+```
+
+`cohen_kappa` returns `None` for empty, mismatched or degenerate (single-label)
+samples. `reliability_report` aggregates `agreement`, `kappa` and `ties`.

@@ -126,6 +126,10 @@
     - SSRF 防护
   - [5.6 ComputerUseTool](#56-computerusetool--v041)
   - [5.7 Deep Research（深度研究智能体）](#57-deep-research深度研究智能体)
+  - [5.8 Subagent（子智能体）](#58-subagent子智能体--v0300)
+    - 与 Orchestrator 的区别
+    - SubagentTool / SubagentFactory
+    - 四条不变量与深度上限
 - **第六章 · 检索与知识**
   - [6.1 文档加载器](#61-文档加载器)
     - HTMLLoader
@@ -170,9 +174,14 @@
     - ConnectionManager
     - SamplingGuard
     - MCPGateway
+    - MCP 2026-07-28 合规字段（resultType / ttlMs / cacheScope）
   - [7.2 A2A 智能体协议](#72-a2a-智能体协议--v041)
     - v1.0.1：多传输声明（supportedInterfaces）
     - 卡片签名（JWS HS256）
+  - [7.3 OpenAI 兼容 server](#73-openai-兼容-server--v0300)
+    - ChatBackend / ModelBackend
+    - /v1/models 与 /v1/chat/completions
+    - SSE 流式
 - **第八章 · 安全、可观测与质量**
   - [8.1 Guardrails](#81-guardrails)
     - Guardable
@@ -192,6 +201,8 @@
     - LLMAsJudge
     - PairwiseJudge
     - trace → golden → 回归门禁
+    - Verifier / best-of-N（logprob）
+    - Judge 可靠性（顺序交换 / κ）
   - [8.5 测试](#85-测试)
 - **第九章 · 数据持久化**
   - [9.1 MongoDB 存储](#91-mongodb-存储)
@@ -227,7 +238,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
+langchainrust = "0.30.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -834,7 +845,7 @@ let answer = assistant.run_once("Translate: Hello").await?;
 
    ```rust
    use langchainrust::StructuredOutputExt;
-
+   
    let schema = serde_json::json!({
        "type": "object",
        "properties": { "city": {"type":"string"}, "population": {"type":"integer"} },
@@ -3602,7 +3613,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 它是 opt-in feature（拉入 tokio-tungstenite）：
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.30.0", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -3722,6 +3733,51 @@ let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(tool)];
 
 
 > **相关能力延伸:** [代码解释器沙箱（见附录）](#附录17-代码解释器沙箱)
+
+### 5.8 Subagent（子智能体）✨ v0.30.0
+
+#### 5.8.1 概念引入：为什么需要子智能体
+
+现有编排器（`Supervisor` / `FanOutFanIn` / `SequentialPipeline`）是**同一份消息历史里换角色**：子角色能看到父角色的一切。长任务真正的瓶颈不是角色不够，而是**上下文污染**——子任务的工具观察、失败轨迹会一直留在父上下文里，越跑越慢、越跑越贵。
+
+`SubagentTool` 解决的是另一个维度：每次调用新建一个**空上下文**的 `AgentExecutor`，只传入 `task` 文本，只回传 `{"status":"ok","summary":"..."}`。子 agent 的中间步骤永远不进入父消息序列。
+
+#### 5.8.2 最小用法
+
+```rust
+use std::sync::Arc;
+use langchainrust::agents::{AgentBuilder, AgentExecutor, SubagentConfig, SubagentTool};
+
+// factory 每次调用都构造一个全新的子 executor；
+// 工具子集、预算、审批都在这里决定。
+let factory = Arc::new(|depth: usize| {
+    Ok(Arc::new(AgentExecutor::new(Arc::new(child_agent), child_tools)))
+});
+
+let tool = SubagentTool::new(
+    SubagentConfig::new("researcher", "Delegate a self-contained research sub-task")
+        .with_max_depth(2),
+    factory,
+);
+
+let parent = AgentBuilder::new()
+    .llm(llm)
+    .tool(tool)
+    .build()?;
+```
+
+父模型看到的是一个普通工具，参数为 `{"task": "..."}`。
+
+#### 5.8.3 四条不变量
+
+| 不变量 | 含义 |
+|---|---|
+| 上下文隔离 | 子 agent 从空消息数组起步，只继承 `task` |
+| 只回摘要 | 返回值只有 `{status, summary}`，不含 `intermediate_steps` |
+| 深度上限 | `depth >= max_depth` 返回 `ToolError::ExecutionFailed`，不 panic |
+| 权限不提升 | 工具子集 / 预算 / 审批由 factory 构造的 executor 决定 |
+
+> 注意：`SubagentFactory` 的签名是 `Fn(depth) -> Result<Arc<AgentExecutor>, AgentError>`。递归子 agent 由 factory 用 `SubagentTool::with_depth(depth)` 自行接线，`max_depth` 才能真正生效。
 
 ## 第六章 · 检索与知识
 
@@ -4013,7 +4069,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.28.0", features = ["local-candle"] }
+langchainrust = { version = "0.30.0", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4228,7 +4284,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["chromadb"] }
+langchainrust = { version = "0.30.0", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4616,7 +4672,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5371,6 +5427,22 @@ let server = MCPServer::new()
 server→host 方向的 `sampling::create_message` / `elicitation::create` 由 Server 发起、Host 执行: `MCPServer` 提供发起方法(`create_message` / `create_elicitation`),需注入回调(`with_sampling_handler` / `with_elicitation_handler`);未注入回调时返回明确错误,不静默。真实交互依赖宿主 UI/模型环境,由使用者经回调接入(测试用注入 mock 覆盖)。
 
 
+#### 7.1.x MCP 2026-07-28 合规字段 ✨ v0.30.0
+
+最新规范对结果信封有三个硬要求，v0.30.0 已补齐：
+
+| 字段 | 位置 | 行为 |
+|---|---|---|
+| `resultType` | 每个成功结果 | 普通结果 `"complete"`；MRTR 中间结果 `"input_required"`。缺字段的旧 server 结果按 `complete` 接受 |
+| `ttlMs` | `tools/list` / `resources/list` / `resources/read` / `prompts/list` | 默认 60_000 毫秒 |
+| `cacheScope` | 同上 | 默认 `"public"`（当前注册表是进程级静态数据） |
+
+`tools/list` 与 `server/discover` 还会在分页切片**之前**按工具名排序，保证客户端缓存和 prompt cache 的命中稳定。
+
+> 如果将来给工具列表加按租户/用户过滤，必须把 `cacheScope` 改成 `"private"`，否则共享缓存会串数据。
+
+---
+
 ### 7.2 A2A 智能体协议 ✨ v0.4.1
 
 #### 7.2.1 概念引入：A2A 是什么
@@ -5459,8 +5531,8 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
-lc-a2a = { version = "0.28.0", features = ["axum"] }
+langchainrust = "0.30.0"
+lc-a2a = { version = "0.30.0", features = ["axum"] }
 ```
 
 ```rust
@@ -5524,7 +5596,7 @@ while let Some(event) = stream.next().await {
 **WebSocket 传输（`ws` feature，0.27.0 #186）**：SSE 之外新增一条等价传输。服务端开 `ws` feature 后暴露 `GET /ws`，与 `/events` **共用同一套鉴权与逐连接过滤**——bearer 认证、B7 跨租户 `notification_visible`、`?taskId=` 限定全部一致，每条过滤后的 `TaskPushNotification` 序列化成**一个文本帧**发给该连接。客户端 `connect_ws` / `send_task_streaming_ws` 与 `connect_sse` / `send_task_streaming` 一一对应，`A2AWebSocketStream::next()` 自动回协议 ping 保活、跳过 pong/二进制帧。两条传输语义相同，按部署挑（不想被 HTTP/SSE 缓冲的场景选 WS）：
 
 ```toml
-lc-a2a = { version = "0.28.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
+lc-a2a = { version = "0.30.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
 ```
 
 ```rust
@@ -5688,6 +5760,46 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 
 
 > **相关能力延伸:** [MCP 协议原语（见附录）](#附录16-mcp-协议原语)
+
+### 7.3 OpenAI 兼容 server ✨ v0.30.0
+
+#### 7.3.1 概念引入：让现有 SDK/UI 直接接上
+
+MCP 和 A2A 解决的是 **agent ↔ agent / agent ↔ tool**；但大量现有应用只会说 OpenAI 的 `/v1/chat/completions`。`openai-server` feature 把这层入口补上：一个 axum `Router`，后面可以挂任何 `ChatBackend`（agent、chain 或裸 chat model）。
+
+```toml
+langchainrust = { version = "0.30.0", features = ["openai-server"] }
+```
+
+```rust
+use std::sync::Arc;
+use langchainrust::agents::{openai_compat_router, ModelBackend};
+
+let backend = Arc::new(ModelBackend::new(Arc::new(llm)));
+let app = openai_compat_router(backend, "my-agent");
+
+// axum::serve(listener, app).await?;
+```
+
+#### 7.3.2 端点
+
+| 方法 | 路径 | 行为 |
+|---|---|---|
+| GET | `/v1/models` | 返回配置的模型 id |
+| POST | `/v1/chat/completions` | `stream: false` 返回 JSON；`stream: true` 返回 SSE + `[DONE]` |
+
+#### 7.3.3 自定义 backend
+
+```rust
+#[async_trait::async_trait]
+impl ChatBackend for MyAgentBackend {
+    async fn complete(&self, messages: Vec<Message>) -> Result<LLMResult, String> { ... }
+    async fn stream_chat(&self, messages: Vec<Message>)
+        -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, String>> + Send>>, String> { ... }
+}
+```
+
+本版限制：未映射 `tool` role / `tool_calls` 响应字段；`temperature` / `max_tokens` 接受但不逐请求覆盖，采样参数归 backend 配置。
 
 ## 第八章 · 安全、可观测与质量
 
@@ -6034,7 +6146,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.30.0", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -6052,7 +6164,7 @@ let manager = CallbackManager::new()
 **OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
 
 ```toml
-langchainrust = { version = "0.28.0", features = ["otlp"] }
+langchainrust = { version = "0.30.0", features = ["otlp"] }
 ```
 
 ```rust
@@ -6129,7 +6241,7 @@ let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await; // USD
 1. **`ModelPrice`——单价**。单位统一是 **USD / 1000 token**,输入输出分开报:
    ```rust
    use langchainrust::{ModelPrice, PricingTable, CostTracker};
-
+   
    let p = ModelPrice::new(2.5, 10.0);          // $2.5/1K in, $10/1K out
    p.cost_of(1000, 500);                         // 2.5 + 5.0 = 7.5(纯函数)
    ModelPrice::free();                           // 本地/开源模型,0 也是合法价格
@@ -6152,10 +6264,10 @@ let cost = tracked.estimate_cost(&ModelPricing::gpt4o_mini()).await; // USD
            .with_scope("session-user-42")         // 报表/事件里带的标签
            .with_metrics_sink(sink),              // 可选:每笔再导出一个 ObsEvent::Cost
    );
-
+   
    let usd = tracker.record(Some("openai"), "gpt-4o", 1000, 500).await; // 返回本次费用
    tracker.record_usage(Some("openai"), "gpt-4o", &token_usage).await;  // 或直接吃 TokenUsage
-
+   
    let total = tracker.total_cost_usd().await;   // 预算门读的就是这个数
    let report = tracker.report().await;          // CostReport:总调用/token/费用 +
                                                  // by_model 按 "openai/gpt-4o" 分模型汇总
@@ -6381,6 +6493,54 @@ assert!(!cmp.is_regressed(), "检测到指标回归:\n{}", cmp.to_table());
 
 **尾部指标**:`report.percentile("evaluator", 0.05)` 是某评估器逐例得分的 P5(最差一端的质量尾,拖低均值的就是它),`0.95` / `0.99` 是最佳尾;对延迟类指标 `0.95` 即延迟尾。底层 `percentile` 是 nearest-rank 实现,处理 `NaN` 不 panic(见 `runner::percentile`)。
 
+#### 8.4.8 Verifier / best-of-N（logprob）✨ v0.30.0
+
+Judge 给的是「好不好」的粗标签；Verifier 给的是**细粒度、可比较**的分数，能用于生成多个候选后选优。
+
+```rust
+use langchainrust::evaluation::{best_of_n, LogprobVerifier};
+
+let verifier = LogprobVerifier::new(openai_chat)   // 需要 provider 支持 logprobs
+    .with_max_score(9)
+    .with_top_logprobs(5);
+
+let candidates = vec![candidate_a, candidate_b, candidate_c];
+let result = best_of_n(&verifier, "task description", &candidates).await?;
+println!("best = {} (score {})", result.best, result.scores[result.best_index].score);
+```
+
+`LogprobVerifier` 会把模型输出的第一个分数 token 展开成 `top_logprobs` 分布，取期望值而不是 argmax——两个都输出 `9` 的候选，可以因为分布不同而得到不同分数。
+
+没有 logprob 的 provider（如 Anthropic）用 `JudgeVerifier` 降级：解析单个整数，`confidence` 固定为 `0.25`，提醒调用方不要过度信任。
+
+#### 8.4.9 Judge 可靠性 ✨ v0.30.0
+
+```rust
+use langchainrust::evaluation::{
+    cohen_kappa, order_swap_consistent, reliability_report, same_family, Verdict,
+};
+
+// 只有同时赢下 A/B 和 B/A 才算赢
+let winner = order_swap_consistent(Verdict::AWins, Verdict::BWins); // AWins
+
+// 扣掉随机碰巧一致后的 κ
+let kappa = cohen_kappa(&[true, false, true], &[true, false, false]);
+
+// 同族自评风险
+assert!(same_family("gpt-5", "gpt-4o"));
+assert!(!same_family("gpt-5", "claude-3"));
+
+// 汇总
+let report = reliability_report(&original, &swapped);
+```
+
+| 函数 | 作用 |
+|---|---|
+| `order_swap_consistent` | 双序交换；不一致判平局 |
+| `cohen_kappa` | 机会校正一致率；退化样本返回 `None` |
+| `same_family` | 取模型名前缀，标出同族自评 |
+| `reliability_report` | 汇总 `agreement` / `kappa` / `ties` |
+
 ---
 
 <a id="mongodb-storage"></a>
@@ -6531,7 +6691,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }
 ```
 
 #### 9.1.3 用法
@@ -6606,14 +6766,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["redis-storage"] }
+langchainrust = { version = "0.30.0", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }
 ```
 
 #### 9.2.3 RedisDocumentStore
@@ -6944,7 +7104,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
 执行预算用 **wasm fuel 计量**（`timeout_ms × 1000` 条指令，至少 1000）而不是墙上时钟线程，超限**确定性**地映射成 `SandboxError::Timeout`；`Language::Wasm` 之外的语言一律 `SandboxError::UnsupportedLanguage`。
 
 ```toml
-lc-tools = { version = "0.28.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.30.0", features = ["sandbox-wasm"] }
 # 门面 langchainrust 目前未转发该 feature,所以要在 lc-tools 上开;
 # cargo 特性合并后,类型照旧从门面取:langchainrust::tools::sandbox::WasmSandbox
 ```

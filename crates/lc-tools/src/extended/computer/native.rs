@@ -406,7 +406,7 @@ mod tests {
     //     --features computer-native --lib -- --ignored native_real_desktop_smoke
     #[cfg(feature = "computer-native")]
     #[tokio::test]
-    #[ignore]
+    #[ignore = "drives the real local desktop (screenshot + pointer); run by hand on an interactive session, never in CI"]
     async fn native_real_desktop_smoke() {
         use lc_core::{tools::ToolError, BaseTool};
         let t = super::super::ComputerUseTool::new_native(4, 4);

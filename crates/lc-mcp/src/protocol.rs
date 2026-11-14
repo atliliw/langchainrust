@@ -27,6 +27,51 @@ pub const MCP_METHOD_HEADER: &str = "Mcp-Method";
 /// HTTP header carrying the MCP protocol namespace on stateless POSTs.
 pub const MCP_NAME_HEADER: &str = "Mcp-Name";
 
+/// 2026-07-28 SEP-2322: every result carries a `resultType`; ordinary
+/// (finished) results use `"complete"`.
+pub const RESULT_TYPE_COMPLETE: &str = "complete";
+
+/// 2026-07-28 SEP-2322: an interim multi-round-trip (MRTR) result uses
+/// `"input_required"`.
+pub const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
+
+/// 2026-07-28 SEP-2549: default freshness hint (milliseconds) for cacheable
+/// list/read results.
+pub const DEFAULT_LIST_TTL_MS: u64 = 60_000;
+
+/// 2026-07-28 SEP-2549: cache scope for process-wide static registries.
+/// The current server tool/resource/prompt registries are not per-user, so
+/// shared intermediaries may cache their listings.
+pub const CACHE_SCOPE_PUBLIC: &str = "public";
+
+/// Injects `resultType: "complete"` into an object result that does not
+/// already carry one, per 2026-07-28 SEP-2322.
+///
+/// Non-object results (arrays / scalars) are returned unchanged: MCP results
+/// are objects in practice, and the spec's field is object-scoped.
+pub fn complete_result(mut result: Value) -> Value {
+    if let Value::Object(ref mut map) = result {
+        map.entry("resultType")
+            .or_insert_with(|| Value::String(RESULT_TYPE_COMPLETE.to_string()));
+    }
+    result
+}
+
+/// Injects `ttlMs` / `cacheScope` into an object result that does not already
+/// carry them, per 2026-07-28 SEP-2549.
+///
+/// Existing fields are preserved verbatim, so a provider that supplies its own
+/// freshness hint wins over the default.
+pub fn cacheable_result(mut result: Value) -> Value {
+    if let Value::Object(ref mut map) = result {
+        map.entry("ttlMs")
+            .or_insert_with(|| json!(DEFAULT_LIST_TTL_MS));
+        map.entry("cacheScope")
+            .or_insert_with(|| Value::String(CACHE_SCOPE_PUBLIC.to_string()));
+    }
+    result
+}
+
 /// JSON-RPC error code for authorization failures on the stateless track
 /// (maps to HTTP 401 at the transport boundary).
 pub const MCP_ERROR_UNAUTHORIZED: i32 = -32001;
@@ -117,7 +162,18 @@ pub struct InputRequired {
 impl InputRequired {
     /// Extracts an `input_required` payload from a successful result, if the
     /// result is one.
+    ///
+    /// 2026-07-28 SEP-2322 adds a required `resultType` marker. A result that
+    /// explicitly says `"complete"` is never treated as an MRTR interim result,
+    /// even if a stray `input_required` payload is present. A result with no
+    /// marker keeps the pre-2026-07-28 behaviour (our own test servers and
+    /// older peers omit it), so compatibility is preserved.
     pub fn from_result(result: &Value) -> Option<Self> {
+        if let Some(result_type) = result.get("resultType").and_then(Value::as_str) {
+            if result_type != RESULT_TYPE_INPUT_REQUIRED {
+                return None;
+            }
+        }
         let ir = result.get("input_required")?;
         serde_json::from_value(ir.clone()).ok()
     }
@@ -779,5 +835,90 @@ mod tests {
 
         let with_params = notification_message("notifications/x", Some(json!({"a": 1})));
         assert_eq!(with_params["params"]["a"], 1);
+    }
+
+    // ---- 2026-07-28 SEP-2322: resultType ------------------------------------
+
+    #[test]
+    fn complete_result_injects_complete_for_object() {
+        assert_eq!(
+            complete_result(json!({})),
+            json!({"resultType": RESULT_TYPE_COMPLETE})
+        );
+        assert_eq!(
+            complete_result(json!({"tools": []})),
+            json!({"tools": [], "resultType": RESULT_TYPE_COMPLETE})
+        );
+    }
+
+    #[test]
+    fn complete_result_preserves_existing_result_type() {
+        let already = json!({"resultType": RESULT_TYPE_INPUT_REQUIRED, "x": 1});
+        assert_eq!(complete_result(already.clone()), already);
+    }
+
+    #[test]
+    fn complete_result_leaves_non_object_untouched() {
+        assert_eq!(complete_result(json!(["a"])), json!(["a"]));
+        assert_eq!(complete_result(json!("text")), json!("text"));
+        assert_eq!(complete_result(Value::Null), Value::Null);
+    }
+
+    #[test]
+    fn input_required_recognized_by_result_type() {
+        let result = json!({
+            "resultType": RESULT_TYPE_INPUT_REQUIRED,
+            "input_required": {
+                "requestState": "s1",
+                "questions": [{"id": "q1", "prompt": "confirm?"}]
+            }
+        });
+        let ir = InputRequired::from_result(&result).expect("recognised by resultType");
+        assert_eq!(ir.request_state, "s1");
+        assert_eq!(ir.questions.len(), 1);
+    }
+
+    #[test]
+    fn legacy_input_required_still_recognized() {
+        // Pre-2026-07-28 peers omit `resultType`; the payload alone still works.
+        let result = json!({
+            "input_required": {
+                "requestState": "s1",
+                "questions": []
+            }
+        });
+        assert!(InputRequired::from_result(&result).is_some());
+    }
+
+    #[test]
+    fn complete_result_is_not_treated_as_input_required() {
+        // An explicitly "complete" result must win over a stray payload.
+        let result = json!({
+            "resultType": RESULT_TYPE_COMPLETE,
+            "input_required": {"requestState": "s1", "questions": []}
+        });
+        assert!(InputRequired::from_result(&result).is_none());
+    }
+
+    // ---- 2026-07-28 SEP-2549: ttlMs / cacheScope -----------------------------
+
+    #[test]
+    fn cacheable_result_injects_ttl_and_scope() {
+        let v = cacheable_result(json!({"tools": []}));
+        assert_eq!(v["ttlMs"], json!(DEFAULT_LIST_TTL_MS));
+        assert_eq!(v["cacheScope"], json!(CACHE_SCOPE_PUBLIC));
+        assert_eq!(v["tools"], json!([]));
+    }
+
+    #[test]
+    fn cacheable_result_preserves_existing_fields() {
+        let v = cacheable_result(json!({"ttlMs": 1, "cacheScope": "private"}));
+        assert_eq!(v["ttlMs"], json!(1));
+        assert_eq!(v["cacheScope"], json!("private"));
+    }
+
+    #[test]
+    fn cacheable_result_leaves_non_object_untouched() {
+        assert_eq!(cacheable_result(json!([1, 2])), json!([1, 2]));
     }
 }

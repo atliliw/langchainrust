@@ -20,8 +20,8 @@ use super::completion::{CompletionProvider, CompletionRequest};
 use super::elicitation::{ElicitationHandler, ElicitationRequest, ElicitationResponse};
 use super::prompts::PromptProvider;
 use super::protocol::{
-    JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_VERSION, MCP_VERSION_STATELESS,
-    SUPPORTED_PROTOCOL_VERSIONS,
+    cacheable_result, complete_result, JsonRpcId, MCPError, MCPRequest, MCPResponse, MCP_VERSION,
+    MCP_VERSION_STATELESS, SUPPORTED_PROTOCOL_VERSIONS,
 };
 use super::resources::{ReadResourceResult, ResourceProvider};
 use super::tasks::TaskProvider;
@@ -468,11 +468,11 @@ impl MCPServer {
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
-                    result: Some(json!({
+                    result: Some(complete_result(json!({
                         "protocolVersion": protocol_version,
                         "capabilities": capabilities,
                         "serverInfo": { "name": self.server_name, "version": self.server_version }
-                    })),
+                    }))),
                     error: None,
                 }
             }
@@ -482,7 +482,7 @@ impl MCPServer {
             "ping" => MCPResponse {
                 jsonrpc: "2.0".to_string(),
                 id: Some(req.id),
-                result: Some(json!({})),
+                result: Some(complete_result(json!({}))),
                 error: None,
             },
             "tools/list" => {
@@ -496,11 +496,15 @@ impl MCPServer {
                 let offset = cursor
                     .and_then(|c| c.parse::<usize>().ok())
                     .unwrap_or(0);
-                let tools: Vec<MCPToolDefinition> = self
+                let mut tools: Vec<MCPToolDefinition> = self
                     .tools
                     .iter()
                     .map(|t| Self::tool_definition(t.as_ref()))
                     .collect();
+                // 2026-07-28 minor #3: deterministic order so clients can cache
+                // listings and prompt-cache hit rates stay stable. Sort *before*
+                // pagination so `nextCursor` keeps pointing at the same slot.
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
                 // The `cursor` is client-controlled, so clamp it to the tool
                 // list *before* any arithmetic: a hostile `usize::MAX` cursor
                 // must never overflow `offset + TOOL_PAGE_SIZE` (a panic in
@@ -519,7 +523,7 @@ impl MCPServer {
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
-                    result: Some(result),
+                    result: Some(complete_result(cacheable_result(result))),
                     error: None,
                 }
             }
@@ -554,22 +558,25 @@ impl MCPServer {
                 if self.log_sink.is_some() {
                     capabilities["logging"] = json!({});
                 }
-                let tools: Vec<MCPToolDefinition> = self
+                let mut tools: Vec<MCPToolDefinition> = self
                     .tools
                     .iter()
                     .map(|t| Self::tool_definition(t.as_ref()))
                     .collect();
+                // Keep `server/discover` and `tools/list` in the same order
+                // (2026-07-28 minor #3).
+                tools.sort_by(|a, b| a.name.cmp(&b.name));
                 let tools_val =
                     serde_json::to_value(&tools).unwrap_or_else(|_| Value::Array(vec![]));
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
-                    result: Some(json!({
+                    result: Some(complete_result(json!({
                         "protocolVersion": MCP_VERSION_STATELESS,
                         "capabilities": capabilities,
                         "serverInfo": { "name": self.server_name, "version": self.server_version },
                         "tools": tools_val
-                    })),
+                    }))),
                     error: None,
                 }
             }
@@ -606,7 +613,7 @@ impl MCPServer {
                     Ok(result) => {
                         let result =
                             serde_json::to_value(result).unwrap_or(Value::Null);
-                        Self::ok_response(req.id, result)
+                        Self::ok_response(req.id, cacheable_result(result))
                     }
                     Err(e) => Self::error_response(req.id, e),
                 }
@@ -632,7 +639,7 @@ impl MCPServer {
             Ok(contents) => {
                 let result =
                     serde_json::to_value(ReadResourceResult { contents }).unwrap_or(Value::Null);
-                Self::ok_response(req.id, result)
+                Self::ok_response(req.id, cacheable_result(result))
             }
             Err(e) => Self::error_response(req.id, e),
         }
@@ -652,7 +659,7 @@ impl MCPServer {
                 match provider.list_prompts_page(cursor).await {
                     Ok(result) => {
                         let result = serde_json::to_value(result).unwrap_or(Value::Null);
-                        Self::ok_response(req.id, result)
+                        Self::ok_response(req.id, cacheable_result(result))
                     }
                     Err(e) => Self::error_response(req.id, e),
                 }
@@ -846,11 +853,15 @@ impl MCPServer {
     }
 
     /// Builds a success response.
+    ///
+    /// Every successful result carries `resultType: "complete"` (2026-07-28
+    /// SEP-2322); callers may pre-wrap with [`cacheable_result`] for list/read
+    /// results that also need `ttlMs` / `cacheScope`.
     fn ok_response(id: JsonRpcId, result: Value) -> MCPResponse {
         MCPResponse {
             jsonrpc: "2.0".to_string(),
             id: Some(id),
-            result: Some(result),
+            result: Some(complete_result(result)),
             error: None,
         }
     }
@@ -964,7 +975,7 @@ impl MCPServer {
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
-                    result: Some(result_val),
+                    result: Some(complete_result(result_val)),
                     error: None,
                 }
             }
@@ -1428,6 +1439,7 @@ pub(crate) async fn read_http_request(sock: &mut tokio::net::TcpStream) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CACHE_SCOPE_PUBLIC, DEFAULT_LIST_TTL_MS, RESULT_TYPE_COMPLETE};
     use crate::completion::{CompletionResult, CompletionValue};
     use crate::elicitation::ElicitationAction;
     use crate::prompts::{
@@ -1525,6 +1537,94 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "echo");
         assert_eq!(tools[0]["inputSchema"]["type"], "object");
+    }
+
+    /// A tool whose name is chosen by the test, used for ordering assertions.
+    struct NamedTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl BaseTool for NamedTool {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "named test tool"
+        }
+        fn args_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object"}))
+        }
+        async fn run(&self, input: String) -> Result<String, ToolError> {
+            Ok(input)
+        }
+    }
+
+    /// 2026-07-28 SEP-2322 / SEP-2549: list results carry `resultType`,
+    /// `ttlMs`, and `cacheScope`.
+    #[tokio::test]
+    async fn test_tools_list_carries_result_type_and_cache_fields() {
+        let server = server_with_echo();
+        let resp = server
+            .handle_request(MCPRequest::new(1, "tools/list", None))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        assert_eq!(result["resultType"], json!(RESULT_TYPE_COMPLETE));
+        assert_eq!(result["ttlMs"], json!(DEFAULT_LIST_TTL_MS));
+        assert_eq!(result["cacheScope"], json!(CACHE_SCOPE_PUBLIC));
+    }
+
+    /// 2026-07-28 minor #3: `tools/list` order is deterministic and independent
+    /// of registration order.
+    #[tokio::test]
+    async fn test_tools_list_sorted_by_name() {
+        let server = MCPServer::new()
+            .with_tool(Arc::new(NamedTool("zeta")))
+            .with_tool(Arc::new(NamedTool("alpha")))
+            .with_tool(Arc::new(NamedTool("mike")));
+        let resp = server
+            .handle_request(MCPRequest::new(1, "tools/list", None))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        let names: Vec<&str> = result["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha", "mike", "zeta"]);
+    }
+
+    /// `server/discover` uses the same deterministic tool order.
+    #[tokio::test]
+    async fn test_discover_tools_sorted() {
+        let server = MCPServer::new()
+            .with_tool(Arc::new(NamedTool("zeta")))
+            .with_tool(Arc::new(NamedTool("alpha")));
+        let resp = server
+            .handle_request(MCPRequest::new(1, "server/discover", None))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        assert_eq!(result["resultType"], json!(RESULT_TYPE_COMPLETE));
+        let names: Vec<&str> = result["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["alpha", "zeta"]);
+    }
+
+    /// Error responses never carry `resultType`.
+    #[tokio::test]
+    async fn test_error_response_has_no_result_type() {
+        let server = server_with_echo();
+        let resp = server
+            .handle_request(MCPRequest::new(1, "does/not/exist", None))
+            .await;
+        assert!(resp.is_error());
+        assert!(resp.result.is_none());
     }
 
     /// #79: `tools/list` paginates — every tool is reachable across pages and
@@ -2122,7 +2222,15 @@ mod tests {
             ))
             .await;
         assert!(!resp.is_error(), "{:?}", resp.error);
-        assert!(resp.result.unwrap() == json!({}));
+        // 2026-07-28 SEP-2322: successful results carry `resultType`; this
+        // handler has no other payload.
+        let result = resp.result.unwrap();
+        assert_eq!(result["resultType"], json!(RESULT_TYPE_COMPLETE));
+        assert_eq!(
+            result.as_object().map(|m| m.len()),
+            Some(1),
+            "logging/setLevel result must only carry resultType"
+        );
         assert!(
             server.emit_log(LogLevel::Info, Some("tools"), json!(1)).is_none(),
             "below threshold must be filtered"

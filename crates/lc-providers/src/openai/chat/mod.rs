@@ -176,6 +176,11 @@ impl OpenAIChat {
             body["reasoning_effort"] = json!(effort);
         }
 
+        if let Some(n) = self.config.top_logprobs {
+            body["logprobs"] = json!(true);
+            body["top_logprobs"] = json!(n);
+        }
+
         if let Some(top_p) = self.config.top_p {
             body["top_p"] = json!(top_p);
         }
@@ -567,6 +572,90 @@ impl BaseChatModel for OpenAIChat {
     }
 }
 
+#[async_trait]
+impl lc_core::language_models::LogprobChatModel for OpenAIChat {
+    type Error = OpenAIError;
+
+    async fn chat_with_logprobs(
+        &self,
+        messages: Vec<Message>,
+        top_logprobs: usize,
+        _config: Option<RunnableConfig>,
+    ) -> Result<lc_core::language_models::LogprobResult, Self::Error> {
+        let url = format!("{}/chat/completions", self.config.base_url);
+        let mut messages = messages;
+        crate::media::resolve_message_media(&mut messages, crate::media::MediaPolicy::OpenAi)
+            .await
+            .map_err(|e| OpenAIError::Api(e.to_string()))?;
+
+        let mut body = self.build_request_body(messages, false);
+        body["logprobs"] = json!(true);
+        body["top_logprobs"] = json!(top_logprobs);
+
+        let response = self
+            .http_api
+            .post_json_with(&url, &body, self.request_options()?)
+            .await
+            .map_err(Self::map_http_error)?;
+
+        let chat_response: OpenAIChatResponse =
+            serde_json::from_str(&response.body).map_err(|e| OpenAIError::Parse(e.to_string()))?;
+        let choice = chat_response
+            .choices
+            .first()
+            .ok_or_else(|| OpenAIError::Api("No choices in response".to_string()))?;
+
+        let token_logprobs: Vec<lc_core::language_models::TokenLogprob> = choice
+            .logprobs
+            .as_ref()
+            .and_then(|l| l.content.as_ref())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|e| lc_core::language_models::TokenLogprob {
+                        token: e.token.clone(),
+                        logprob: e.logprob,
+                        top_logprobs: e
+                            .top_logprobs
+                            .as_ref()
+                            .map(|tops| {
+                                tops.iter()
+                                    .map(|t| lc_core::language_models::TokenAlternative {
+                                        token: t.token.clone(),
+                                        logprob: t.logprob,
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Prefer the token stream (it is the source of the logprobs); fall
+        // back to `message.content` when a gateway omits logprob entries.
+        let joined: String = token_logprobs.iter().map(|t| t.token.as_str()).collect();
+        let content = if joined.is_empty() {
+            choice.message.content.clone().unwrap_or_default()
+        } else {
+            joined
+        };
+
+        Ok(lc_core::language_models::LogprobResult {
+            content,
+            model: chat_response.model.clone(),
+            token_usage: chat_response.usage.as_ref().map(|u| TokenUsage {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: u.total_tokens,
+                ..TokenUsage::default()
+            }),
+            tool_calls: choice.message.tool_calls.clone(),
+            token_logprobs,
+        })
+    }
+}
+
 impl OpenAIChat {
     pub(crate) async fn chat_internal(
         &self,
@@ -942,6 +1031,36 @@ struct OpenAIChoice {
     index: i32,
     message: OpenAIMessage,
     finish_reason: Option<String>,
+    /// Present only when the request asked for `logprobs`.
+    #[serde(default)]
+    logprobs: Option<OpenAILogprobs>,
+}
+
+/// OpenAI's per-choice logprob envelope.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OpenAILogprobs {
+    /// Per-token entries (may be absent for empty completions).
+    #[serde(default)]
+    content: Option<Vec<OpenAITokenLogprob>>,
+}
+
+/// One token's logprob plus optional top-k alternatives.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OpenAITokenLogprob {
+    token: String,
+    logprob: f64,
+    #[serde(default)]
+    top_logprobs: Option<Vec<OpenAITopLogprob>>,
+}
+
+/// One alternative token in `top_logprobs`.
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct OpenAITopLogprob {
+    token: String,
+    logprob: f64,
 }
 
 #[derive(Debug, Deserialize)]

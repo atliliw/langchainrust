@@ -15,7 +15,7 @@ use super::price::UsageLedger;
 use super::{EvalError, PairwiseEvaluator, Score};
 
 /// Pairwise comparison result
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Answer A is better
     AWins,

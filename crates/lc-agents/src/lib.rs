@@ -61,6 +61,10 @@ pub mod resume;
 pub mod retry;
 pub mod streaming;
 mod structured;
+/// Subagent support: a child agent runs in a fresh context and returns only a
+/// structured summary (context isolation), unlike the shared-history
+/// orchestrators.
+pub mod subagent;
 pub mod task;
 pub mod types;
 
@@ -94,7 +98,13 @@ pub use plan_execute::{PlanExecuteAgent, PlanExecuteError};
 pub use policy::{ToolPolicy, ToolRisk};
 pub use react::ReActAgent;
 pub use resume::{FileResumeStore, MemoryResumeStore, PendingApproval, ResumeError, ResumeStore};
+/// OpenAI-compatible HTTP surface (`/v1/models`, `/v1/chat/completions`).
+#[cfg(feature = "openai-server")]
+pub mod server;
+#[cfg(feature = "openai-server")]
+pub use server::{openai_compat_router, ChatBackend, ModelBackend};
 pub use retry::RetryConfig;
+pub use subagent::{SubagentConfig, SubagentFactory, SubagentTool};
 // B8 (v0.22.4): framework-neutral SSE framing is always exported; the axum
 // serving pieces come in under the `sse-server` feature.
 pub use streaming::{

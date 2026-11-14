@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-11-14
+
+"Harness × verification × interop" release: closes the MCP 2026-07-28
+compliance gap, clears two known defects, and adds the three capabilities the
+2026 agent stack expects — context-isolated subagents, logprob-based verifiers
+with judge-reliability accounting, and an OpenAI-compatible HTTP server.
+
+### Added
+
+- **Subagent (`lc-agents`)**: `SubagentTool` runs a child `AgentExecutor` in a fresh context and returns only `{"status":"ok","summary":"..."}` — no intermediate steps cross the boundary. `max_depth` (default 2) caps recursion; the factory owns the child's tool subset, budget and approval handler. Distinct from the orchestrators, which share one history and change roles.
+- **Verifier / logprob (`lc-core` / `lc-providers` / `lc-evaluation`)**: new `LogprobChatModel` trait plus `TokenLogprob` / `LogprobResult` (kept separate from `LLMResult` so its 100+ construction sites stay untouched). `OpenAIConfig::with_top_logprobs(n)` sends `logprobs` / `top_logprobs`; `OpenAIChat` implements the trait. `lc-evaluation::verifier` provides `Verifier`, `LogprobVerifier` (expectation over the score-token distribution), `JudgeVerifier` (degradation path, confidence 0.25) and `best_of_n` (deterministic tie-breaking).
+- **Judge reliability (`lc-evaluation`)**: `order_swap_consistent` (a winner must survive A/B and B/A), `cohen_kappa`, `same_family` (self-preference flag) and `reliability_report`.
+- **OpenAI-compatible server (`lc-agents`, `openai-server` feature)**: axum router for `GET /v1/models` and `POST /v1/chat/completions` (JSON and SSE with `[DONE]`), with `ChatBackend` / `ModelBackend` so an agent, chain or bare model can be served unchanged.
+- **MCP 2026-07-28 compliance (`lc-mcp`)**: successful results carry the required `resultType` (`complete` / `input_required`); list/read results carry `ttlMs` + `cacheScope`; `tools/list` and `server/discover` sort tools by name before pagination. Older peers that omit the fields are treated as `complete`.
+
+### Fixed
+
+- **`lc-rag` `late_chunked_document_wires_both_legs`**: the test mixed a 2-dim token embedder with a 32-dim store; F-28 made that a hard error. The mock is now dimension-configurable and matches the store.
+- **`lc-langgraph` resume signature drift**: `examples/durable_checkpoint.rs` and `tests/checkpoint_durable_resume.rs` called `create_resume_execution` with one argument after the signature gained `checkpoint_id: Option<&str>`.
+- **`lc-mcp` response assertions**: the `logging/setLevel` test asserted an empty result; it now asserts `resultType == "complete"` and that it is the only field.
+
+### Changed
+
+- **`#[ignore]` audit**: 18 ignored tests across 7 crates classified (17 external-dependency, 1 platform); the single bare `#[ignore]` gained a reason string. No test was deleted.
+- **`lc-evaluation::pairwise::Verdict` is now `Copy`** (non-breaking).
+
 ## [0.28.0] - 2026-10-26
 
 "Three-angle health close-out" release: examined against the source line-by-line through three lenses — **soundness × convenience × pragmatism** — polishing existing capabilities from "runs" to "usable, reliable, easy to integrate". There are no big new capabilities this release — it is all **close-out and fixing**: it fills the one remaining pool gap in the umbrella's unified `LcError`, fixes `ContextManager::clear()`'s no-op semantics, embeds when-to-use guidance into the default `AgentBuilder` path, and locks down a facade "3-line main path" smoke test. Baseline is the already-released v0.27.0; this is an incremental fix + API-surface convergence. Details: `docs/internal/v0.28.0/EXECUTION_PLAN.md`.

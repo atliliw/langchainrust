@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
+langchainrust = "0.30.0"
 ```
 
 ## Feature Flags
@@ -13,7 +13,7 @@ LangChainRust uses feature flags to keep the default build lean:
 
 ```toml
 [dependencies.langchainrust]
-version = "0.28.0"
+version = "0.30.0"
 features = ["qdrant-integration"]  # Optional features
 ```
 
@@ -28,6 +28,7 @@ features = ["qdrant-integration"]  # Optional features
 | `pgvector-storage` | PGVector vector store |
 | `local-embeddings` | ONNX Runtime local embeddings |
 | `fastembed` | FastEmbed local embeddings (ONNX) |
+| `openai-server` | OpenAI-compatible HTTP server (`/v1/models`, `/v1/chat/completions`) |
 
 ## Individual Crates
 
@@ -35,9 +36,9 @@ You can also use individual crates directly:
 
 ```toml
 [dependencies]
-lc-core = "0.24.0"
-lc-providers = "0.24.0"
-lc-agents = "0.24.0"
+lc-core = "0.30.0"
+lc-providers = "0.30.0"
+lc-agents = "0.30.0"
 ```
 
 ## Environment Variables

@@ -339,6 +339,7 @@ mod tests {
             model: "glm-5.2".to_string(),
             temperature: Some(0.0),
             max_tokens: Some(500),
+            top_logprobs: None,
             top_p: None,
             frequency_penalty: None,
             presence_penalty: None,

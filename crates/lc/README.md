@@ -19,9 +19,9 @@ A LangChain-inspired Rust framework for building LLM applications.
 |-----------|-------------|
 | **LLM** | OpenAI / Ollama / DeepSeek / Moonshot / Zhipu / Qwen / Anthropic Claude / Gemini + Multimodal Vision + Assistants API (with requires_action tool dispatch) |
 | **Embeddings** | OpenAI / DeepSeek / Qwen / Local (ort ONNX Runtime, feature gate) / Mock |
-| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / **Supervisor dynamic sub-agent routing (v0.24.0)** / parallel tool calls (bounded concurrency) |
+| **Agents** | ReActAgent / FunctionCallingAgent / Plan-Execute / Handoffs (multi-agent handoff) / Streaming Function Calling / **Supervisor dynamic sub-agent routing (v0.24.0)** / parallel tool calls (bounded concurrency) / **Subagent (v0.30.0: fresh-context child agent, summary-only return, depth cap)** |
 | **A2A** | Agent-to-Agent protocol, AgentCard/Task/Message + Server (with task persistence) + Client over SSE, plus a **WebSocket transport (v0.27.0, `ws` feature: `GET /ws` sharing `/events`' auth and filtering)** and **`sendSubscribe` subscription context (v0.27.0: `id`/`contextId` on the request, optional `context_id` on push frames)** |
-| **MCP** | Model Context Protocol Client + Server (stdio + Streamable HTTP, stateless track, OAuth 2.1), full 6 primitives, MCP tool adapter to BaseTool |
+| **MCP** | Model Context Protocol Client + Server (stdio + Streamable HTTP, stateless track, OAuth 2.1), full 6 primitives, MCP tool adapter to BaseTool; **2026-07-28 compliance (v0.30.0: required `resultType`, `ttlMs`/`cacheScope`, deterministic `tools/list` order)** |
 | **Memory** | Buffer / Window / Summary / SummaryBuffer / Persistent / VectorStore (semantic retrieval) / ContextWindow (Truncate + Summarize) |
 | **Sessions** | Multi-turn event-sourced lifecycle (`EventSessionManager` + `EventStore`, fork-from-any-point), pluggable storage |
 | **Chains** | LLMChain / SequentialChain / ConversationChain / RouterChain / RetrievalQA / ConversationRetrieval / Stuff / Refine / MapReduce + Chain streaming |
@@ -42,6 +42,9 @@ A LangChain-inspired Rust framework for building LLM applications.
 | **Prompts** | PromptTemplate / ChatPromptTemplate / FewShotPromptTemplate |
 | **Callbacks** | StdOut / LangSmith / FileHandler / OpenTelemetry |
 | **Evaluation** | ExactMatch / StringDistance / EmbeddingSimilarity / LLMAsJudge / PairwiseJudge / ContainsKeyword / RegexMatch / LengthCheck / Bleu / Faithfulness + RAGAS metrics; v0.24 adds trace→golden dataset bridging (lc-testkit) and `compare_reports` regression gating |
+| **Verifier (v0.30.0)** | `Verifier` trait + `LogprobVerifier` (expectation over score-token logprobs) + `JudgeVerifier` fallback + `best_of_n` candidate selection; OpenAI-compatible providers expose `logprobs` via `LogprobChatModel` |
+| **Judge reliability (v0.30.0)** | `order_swap_consistent` / `cohen_kappa` / `same_family` / `reliability_report` — position-bias, chance-corrected agreement and self-preference accounting |
+| **OpenAI-compatible server (v0.30.0)** | `openai-server` feature: axum router for `GET /v1/models` + `POST /v1/chat/completions` (JSON and SSE), backend abstracted by `ChatBackend` |
 | **Advanced RAG** | CorrectiveRAG (self-correcting) / AdaptiveRAG (adaptive retrieval) / GraphRAG (knowledge graph) |
 | **Model Routing** | RouterLLM with 6 strategies (Fallback / RoundRobin / LeastLatency / LatencyWeighted / LowestCost / InputDirected) |
 | **Deep Research** | Multi-round deep research agent with sub-topic decomposition, parallel search, deduplication, and citation reporting |
@@ -133,17 +136,18 @@ Full documentation: [Usage Guide](https://github.com/atliliw/langchainrust/blob/
 
 ```toml
 [dependencies]
-langchainrust = "0.28.0"
+langchainrust = "0.30.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Optional features
-langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }  # MongoDB storage
-langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.28.0", features = ["redis-storage"] }         # Redis storage
-langchainrust = { version = "0.28.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
-langchainrust = { version = "0.28.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
-langchainrust = { version = "0.28.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
-langchainrust = { version = "0.28.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }  # MongoDB storage
+langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.30.0", features = ["redis-storage"] }         # Redis storage
+langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }        # SQLite storage (+ SQLTool)
+langchainrust = { version = "0.30.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.30.0", features = ["local-embeddings"] }      # Local ONNX embeddings (requires ort)
+langchainrust = { version = "0.30.0", features = ["opentelemetry"] }         # OpenTelemetry tracing
+langchainrust = { version = "0.30.0", features = ["openai-server"] }         # OpenAI-compatible HTTP server (v0.30.0)
 # PineconeStore / FileVectorStore require no feature flag, available by default
 ```
 

@@ -8,6 +8,7 @@ mod multimodal;
 
 pub use base::BaseLanguageModel;
 pub use chat::{
-    predict_tools, BaseChatModel, LLMResult, PredictToolsError, StreamChunk, TokenUsage,
+    predict_tools, BaseChatModel, LLMResult, LogprobChatModel, LogprobResult, PredictToolsError,
+    StreamChunk, TokenAlternative, TokenLogprob, TokenUsage,
 };
 pub use multimodal::{MultimodalError, MultimodalModel};

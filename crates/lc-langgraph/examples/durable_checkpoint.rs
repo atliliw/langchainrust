@@ -100,7 +100,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- Phase 3: a freshly built graph resumes from the durable state -----
     let resumed_graph = build_graph(&db_path)?;
     let execution = resumed_graph
-        .create_resume_execution("n3")
+        .create_resume_execution("n3", None)
         .await
         .expect("a checkpoint to resume from");
     println!(

@@ -1253,9 +1253,22 @@ mod tests {
             .is_empty());
     }
 
-    /// Deterministic whitespace token embedder (2-dim vectors) — enough to run
-    /// the real `late_chunk` / `pool_tokens` math without a token-level model.
-    struct FauxTokenEmbedder;
+    /// Deterministic whitespace token embedder — enough to run the real
+    /// `late_chunk` / `pool_tokens` math without a token-level model.
+    ///
+    /// The dimension is configurable so the pooled chunk vectors match the
+    /// vector store's dimension: `small_index` builds a 32-dim store, and
+    /// F-28 made a mismatch a hard error instead of a silent drop.
+    struct FauxTokenEmbedder {
+        dim: usize,
+    }
+
+    impl FauxTokenEmbedder {
+        fn new(dim: usize) -> Self {
+            assert!(dim > 0, "token embedding dimension must be non-zero");
+            Self { dim }
+        }
+    }
 
     impl lc_embeddings::token_level::TokenLevelEmbeddings for FauxTokenEmbedder {
         async fn embed_tokens(
@@ -1273,9 +1286,13 @@ mod tests {
                     .unwrap_or(cursor);
                 let end = start + word.len();
                 cursor = end;
+                // One-hot at `i % dim`, so tokens stay distinguishable while
+                // the vector width matches the store.
+                let mut vector = vec![0.0f32; self.dim];
+                vector[i % self.dim] = 1.0;
                 out.push(TokenEmbedding {
                     span: TokenSpan::new(start, end),
-                    vector: vec![i as f32, 1.0],
+                    vector,
                 });
             }
             Ok(out)
@@ -1296,7 +1313,7 @@ mod tests {
         let config = LateChunkConfig::new()
             .with_chunk_size(20)
             .with_chunk_overlap(3);
-        let chunks = crate::late_chunking::late_chunk(&FauxTokenEmbedder, text, &config)
+        let chunks = crate::late_chunking::late_chunk(&FauxTokenEmbedder::new(32), text, &config)
             .await
             .unwrap();
         assert!(

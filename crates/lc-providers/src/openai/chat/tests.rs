@@ -961,4 +961,27 @@ mod tests_prompt_cache_and_raw_schema {
             "strict normalization must run on the raw schema"
         );
     }
+
+    #[test]
+    fn logprob_request_body_sets_fields() {
+        let chat = OpenAIChat::new(
+            OpenAIConfig::new("k")
+                .with_model("gpt-5")
+                .with_top_logprobs(5),
+        );
+        let body = chat.build_request_body(vec![Message::human("hi")], false);
+        assert_eq!(body["logprobs"], json!(true));
+        assert_eq!(body["top_logprobs"], json!(5));
+    }
+
+    #[test]
+    fn logprob_fields_omitted_by_default() {
+        let chat = OpenAIChat::new(OpenAIConfig::new("k").with_model("gpt-5"));
+        let body = chat.build_request_body(vec![Message::human("hi")], false);
+        assert!(
+            body.get("logprobs").is_none(),
+            "default requests must stay byte-identical"
+        );
+        assert!(body.get("top_logprobs").is_none());
+    }
 }

@@ -123,7 +123,7 @@ async fn durable_interrupt_resume_time_travel_and_occ() {
         SqliteCheckpointer::<AgentState>::new(&db_path, THREAD).expect("reopen sqlite");
     let resumed_graph = stamped_chain().with_checkpointer(cp_process2);
     let execution = resumed_graph
-        .create_resume_execution("n3")
+        .create_resume_execution("n3", None)
         .await
         .expect("resume execution builds from the durable checkpoint");
     assert_eq!(

@@ -440,6 +440,20 @@ let client = StatelessMcpClient::connect("http://localhost:8080/mcp");
 assert_eq!(client.meta().protocol_version, "2026-07-28");
 ```
 
+### 2026-07-28 Compliance Fields
+
+The latest revision makes three result-envelope fields mandatory; v0.30.0 implements them:
+
+| Field | Where | Behavior |
+|---|---|---|
+| `resultType` | Every successful result | `"complete"` for ordinary results; `"input_required"` for MRTR interim results |
+| `ttlMs` | `tools/list`, `resources/list`, `resources/read`, `prompts/list` | Defaults to `60_000` ms |
+| `cacheScope` | Same as above | Defaults to `"public"` (process-wide static registries) |
+
+Older peers that omit the fields are still accepted as `complete`. `tools/list` and
+`server/discover` sort tools by name before pagination, keeping client caches and
+prompt-cache hit rates stable.
+
 ## Protocol Details
 
 - **Version**: `2026-07-28` (stateless single-track)

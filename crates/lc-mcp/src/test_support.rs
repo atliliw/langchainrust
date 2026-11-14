@@ -145,6 +145,9 @@ pub async fn start_fake_stateless_server(mode: StatelessMode) -> FakeStatelessSe
                             };
                             if needs_input {
                                 serde_json::json!({
+                                    // 2026-07-28 SEP-2322: interim MRTR results
+                                    // carry the explicit marker.
+                                    "resultType": crate::protocol::RESULT_TYPE_INPUT_REQUIRED,
                                     "input_required": {
                                         "requestState": "state-1",
                                         "questions": [

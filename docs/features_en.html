@@ -523,7 +523,7 @@
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="sidebar-logo">LangChain<span style="color: var(--accent-secondary)">Rust</span></div>
-            <div class="sidebar-subtitle">v0.28.0 • Features</div>
+            <div class="sidebar-subtitle">v0.30.0 • Features</div>
         </div>
 
         <div class="sidebar-nav">
@@ -567,6 +567,7 @@
                 <a href="#tools" class="nav-item">🔧 Tools</a>
                 <a href="#computer-use" class="nav-item new">🖱️ ComputerUseTool v0.4.1</a>
                 <a href="#deep-research" class="nav-item">🔬 Deep Research</a>
+                <a href="#subagent" class="nav-item new">🧩 Subagent v0.30.0</a>
                 </div>
 
                 <div class="nav-section">
@@ -590,6 +591,7 @@
                 <div class="nav-section-title">Chapter 7 · Protocols & Interop</div>
                 <a href="#mcp-full" class="nav-item">🔌 MCP Primitives</a>
                 <a href="#a2a" class="nav-item new">🌐 A2A Agent Protocol v0.4.1</a>
+                <a href="#openai-server" class="nav-item new">🔌 OpenAI-Compatible Server v0.30.0</a>
                 </div>
 
                 <div class="nav-section">
@@ -663,7 +665,7 @@
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
                     <pre><code>[dependencies]
-langchainrust = <span class="str">"0.28.0"</span>
+langchainrust = <span class="str">"0.30.0"</span>
 tokio = { version = <span class="str">"1"</span>, features = [<span class="str">"full"</span>] }</code></pre>
                 </div>
 
@@ -2033,6 +2035,23 @@ graph.validate()?;
                 <hr class="divider">
             </section>
 
+            <section class="module" id="subagent" style="animation-delay: 0.84s;">
+                <div class="module-header">
+                    <span class="module-icon">🧩</span>
+                    <h2>5.8 Subagent <span class="badge new">v0.30.0</span></h2>
+                </div>
+                <div class="card">
+                    <p><strong>A subagent is an isolated context.</strong>The orchestrators change roles inside one shared history; <code>SubagentTool</code> builds a fresh, empty-context child <code>AgentExecutor</code> per call, passes only <code>task</code>, and returns only <code>{status, summary}</code> — the child's tool observations and failures never pollute the parent.</p>
+                </div>
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Context isolation</h3><p>The child starts from an empty message list; only the task text is inherited</p></div>
+                    <div class="feature-card"><h3>Summary only</h3><p>Returns only {status, summary}; no intermediate_steps cross the boundary</p></div>
+                    <div class="feature-card"><h3>Depth cap</h3><p>max_depth defaults to 2; exceeding it returns an explicit error, never a panic</p></div>
+                    <div class="feature-card"><h3>No privilege escalation</h3><p>Tool subset / budget / approval belong to the executor built by the factory</p></div>
+                </div>
+                <hr class="divider">
+            </section>
+
             <!-- RouterLLM -->
 
 
@@ -2121,7 +2140,7 @@ assert_eq!(e8b.dimension(), <span class="num">4096</span>);</code></pre>
 <div class="card"><p>A CPU-only local embedding backend built on Candle — no ONNX Runtime needed. Enable the <code>local-candle</code> feature; BERT-family models are supported (masked weighted mean-pooling, L2 normalization, batch size 16).</p></div>
 <div class="code-block">
 <div class="code-header"><span class="code-lang">rust</span><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>
-<pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["local-candle"] }</span>
+<pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.30.0", features = ["local-candle"] }</span>
 <span class="kw">use</span> langchainrust::embeddings::CandleEmbeddings;
 <span class="kw">use</span> langchainrust::Embeddings;
 
@@ -2537,7 +2556,7 @@ index.add_document(Document::new(<span class="str">"Document content"</span>)).a
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
-                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["qdrant-integration"] }</span>
+                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }</span>
 <span class="kw">use</span> langchainrust::vector_stores::{
     FusionMethod, NativeHybridQuery, NativeHybridSearch, QdrantConfig, QdrantVectorStore,
 };
@@ -2926,6 +2945,7 @@ assert!(store.supports_native_hybrid());
                     <div class="feature-card"><h3>Namespacing / Discovery</h3><p>ToolNamespace multi-server isolation, ToolDiscovery batch discovery, ToolSpec timeout policy</p></div>
                     <div class="feature-card"><h3>Security</h3><p>SamplingGuard sampling recursion guard (depth + token budget + timeout), ServerSandbox param & egress policy</p></div>
                     <div class="feature-card"><h3>Gateway</h3><p>MCPGateway aggregates servers under one entry, TenantGateway multi-tenant, ToolOrchestrator DAG orchestration</p></div>
+                    <div class="feature-card"><h3>2026-07-28 compliance ✨v0.30.0</h3><p>Successful results carry resultType (complete / input_required); list/read carry ttlMs + cacheScope; tools/list and server/discover sort by name before pagination</p></div>
                 </div>
 
                 <div class="callout">
@@ -3023,6 +3043,23 @@ assert!(store.supports_native_hybrid());
 
 
             <!-- ch8 -->
+            <section class="module" id="openai-server" style="animation-delay: 0.90s;">
+                <div class="module-header">
+                    <span class="module-icon">🔌</span>
+                    <h2>7.3 OpenAI-compatible server <span class="badge new">v0.30.0</span></h2>
+                </div>
+                <div class="card">
+                    <p><strong>Let existing SDKs and UIs connect directly.</strong>MCP/A2A cover agent↔agent and agent↔tool; the <code>openai-server</code> feature adds the "people and existing apps connect directly" entry: an axum Router backed by any <code>ChatBackend</code>.</p>
+                </div>
+                <div class="card-grid">
+                    <div class="feature-card"><h3>Endpoints</h3><p>GET /v1/models + POST /v1/chat/completions (JSON and SSE)</p></div>
+                    <div class="feature-card"><h3>Backend abstraction</h3><p>ChatBackend trait; ModelBackend adapts any BaseChatModel</p></div>
+                    <div class="feature-card"><h3>Streaming</h3><p>stream: true → SSE chunks followed by [DONE]</p></div>
+                    <div class="feature-card"><h3>Scope</h3><p>tool role / tool_calls not mapped yet; sampling belongs to the backend configuration</p></div>
+                </div>
+                <hr class="divider">
+            </section>
+
             <section class="module chapter" id="ch8"><div class="chapter-head"><h2>Chapter 8 · Security, Observability & Quality</h2></div><hr class="divider"></section>
 
 <section class="module" id="guardrails"><div class="module-header"><span class="module-icon">🛡️</span><h2>8.1 Guardrails</h2></div>
@@ -3086,6 +3123,8 @@ assert!(store.supports_native_hybrid());
 <div class="feature-card"><h3>RAGAS metrics ✨v0.22.4</h3><p><code>ContextPrecision</code> (ranking quality) / <code>ContextRecall</code> (attributable fraction of the reference) / <code>AnswerRelevancy</code> (on-topic, reverse-generates N questions); all LLM-judge-driven, concurrency capped at 4</p></div>
 <div class="feature-card"><h3>Faithfulness</h3><p>Splits the prediction into atomic claims and verifies each against the reference, detecting fabrication — most useful for RAG; <code>with_llm_split(true)</code>, concurrent <code>join_all</code> verification</p></div>
 <div class="feature-card"><h3>Trace → Golden → Regression gate ✨v0.24.0</h3><p>Production recordings convert to golden JSONL via lc-testkit; a candidate report is compared metric-by-metric against a baseline — a drop beyond tolerance turns CI red; paired sign test + tail percentiles separate real regression from noise</p></div>
+<div class="feature-card"><h3>Verifier / best-of-N ✨v0.30.0</h3><p>LogprobVerifier takes the expectation over the score-token distribution; JudgeVerifier degrades without logprobs; best_of_n picks the winner and keeps the earliest on ties</p></div>
+<div class="feature-card"><h3>Judge reliability ✨v0.30.0</h3><p>order_swap_consistent (A/B and B/A), cohen_kappa (chance-corrected), same_family (self-preference flag)</p></div>
 </div>
 <hr class="divider"></section>
 
@@ -3234,7 +3273,7 @@ cargo test --test integration_agent_react -- --include-ignored</code></pre>
                         <span class="code-lang">rust</span>
                         <button class="copy-btn" onclick="copyCode(this)">Copy</button>
                     </div>
-                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.28.0", features = ["mongodb-persistence"] }</span>
+                    <pre><code><span class="comment">// Cargo.toml: langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }</span>
 <span class="kw">use</span> langchainrust::{MongoChunkedDocumentStore, MongoStoreConfig, ChunkedDocumentStoreTrait};
 
 <span class="kw">let</span> config = MongoStoreConfig::new(
@@ -3735,7 +3774,7 @@ let result = chain.invoke(HashMap::from([
                 <div class="code-block">
                     <pre style="color: var(--primary-text); font-size: 0.85rem;"><code>
 crates/
-├── lc/                  # Facade crate (package name: langchainrust, v0.28.0)
+├── lc/                  # Facade crate (package name: langchainrust, v0.30.0)
 ├── lc-shared/           # Shared types (ToolCall, Document, TextSplitter)
 ├── lc-schema/           # Data structures (Message with multimodal attrs / ToolCall, ImageContent, AudioContent, FileContent)
 ├── lc-core/             # Core abstractions
@@ -3932,7 +3971,7 @@ crates/
                     <a href="../README.md">README</a>
                     <a href="https://docs.rs/langchainrust">API Docs</a>
                 </div>
-                <p class="copyright">LangChainRust v0.28.0 | MIT License</p>
+                <p class="copyright">LangChainRust v0.30.0 | MIT License</p>
             </footer>
         </div>
     </main>

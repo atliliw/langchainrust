@@ -7,6 +7,7 @@
 - [RAG & Retrieval](./rag.md)
 - [LangGraph](./langgraph.md)
 - [MCP Protocol](./mcp.md)
+- [OpenAI-Compatible Server](./openai-server.md)
 - [Vector Stores](./vector-stores.md)
 - [Embeddings](./embeddings.md)
 - [Memory](./memory.md)
