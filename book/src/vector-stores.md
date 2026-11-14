@@ -77,3 +77,7 @@ let doc = Document::new("Hello, world!")
 let store = VectorStoreBuilder::in_memory().build().await?;
 let store = VectorStoreBuilder::file_backed("./vectors.json", 1536).build().await?;
 ```
+
+## See also
+
+- [Full usage guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)

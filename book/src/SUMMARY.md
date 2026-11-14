@@ -9,6 +9,7 @@
 - [LangGraph](./langgraph.md)
 - [MCP Protocol](./mcp.md)
 - [OpenAI-Compatible Server](./openai-server.md)
+- [Language Clients (Python / TypeScript)](./sdks.md)
 - [Vector Stores](./vector-stores.md)
 - [Embeddings](./embeddings.md)
 - [Memory](./memory.md)

@@ -71,3 +71,7 @@ use langchainrust::runnables::{RetryConfig, RunnableExt};
 
 let llm_with_retry = llm.with_retry(RetryConfig::new(3));
 ```
+
+## See also
+
+- [Full usage guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)

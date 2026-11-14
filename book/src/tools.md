@@ -69,3 +69,8 @@ use langchainrust::tools::ComputerUseTool;
 let tool = ComputerUseTool::new_anthropic("sk-...", 1920, 1080);
 // Actions: screenshot, click, type, scroll, key_press, wait
 ```
+
+## See also
+
+- [Tool macro](tool-macro.md) — derive a typed tool in one attribute
+- [Full usage guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md)

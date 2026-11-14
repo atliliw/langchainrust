@@ -78,6 +78,20 @@ print(client.chat.completions.create(
 ))
 ```
 
+## 3. TypeScript: the same endpoint
+
+```bash
+npm install langchainrust
+# or, from this repository: npm install ./sdks/typescript
+```
+
+```ts
+import { Client } from "langchainrust";
+
+const c = new Client("http://127.0.0.1:8080", "gpt-4o-mini");
+console.log((await c.chat("What is Rust?")).content);
+```
+
 ## Troubleshooting
 
 | Symptom | Fix |

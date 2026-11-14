@@ -11,6 +11,6 @@ if echo "$msg" | grep -qP '[\x{4e00}-\x{9fff}]'; then
     echo ""
     echo "   Your message: $msg"
     echo ""
-    echo "   To fix: git commit --amend"
+    echo "   To fix: git commit    --amend"
     echo ""
 fi
