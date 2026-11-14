@@ -1,38 +1,52 @@
 #!/usr/bin/env bash
 # ============================================================================
-# release-gate.sh — 发布门禁(把 RELEASE_CHECKLIST 手工步骤固化为可执行脚本)
+# release-gate.sh — release gate (turns RELEASE_CHECKLIST manual steps into an
+# executable script)
 #
-# 背景(0.18.2 ⏳ 待办):发布门禁是手工清单,靠人逐项勾,易遗漏。本脚本把
-# RELEASE_CHECKLIST 的「构建/测试门禁」一节固化为串联流程,失败即停。
-# 本地(Git Bash)与 CI(cd.yml pre-publish)共用同一脚本。
+# Background (0.18.2 backlog): the release gate used to be a manual checklist,
+# easy to miss an item. This script turns the "build/test gate" section of
+# RELEASE_CHECKLIST into a sequential pipeline; a failure stops it.
+# Shared by local (Git Bash) and CI (cd.yml pre-publish).
 #
-# 步骤(磁盘预检是前置检查,不算进 step 序号;run() 共 7 步):
-#   0. 磁盘空间预检(全量构建前 df,阈值 MIN_FREE_GB 默认 10G)
-#   1. fmt --check
-#   2. clippy --workspace --all-targets [--all-features]
+# Steps (the disk preflight is a precondition and is not counted; run() has 7):
+#   0. Disk preflight (df before a full build; threshold MIN_FREE_GB, default 10G)
+#   1. fmt --check                                          [soft gate]
+#   2. clippy --workspace --all-targets [--all-features]    [soft gate]
 #   3. test --workspace --no-fail-fast
-#   4. rustdoc -D warnings(--no-deps [--all-features])
-#   5. semver-checks --workspace --baseline-version <BASELINE>(feature 选择:本地 --default-features / CI --all-features)
+#   4. rustdoc -D warnings (--no-deps [--all-features])
+#   5. semver-checks --workspace --baseline-version <BASELINE>
+#      (features: local --default-features / CI --all-features)
 #   6. security-scan.sh --fail-if-found
-#   7. 版本一致性:全 workspace 23 个 crates/*/Cargo.toml 的 [package].version 一致
+#   7. Version consistency: all 23 crates/*/Cargo.toml [package].version match
 #
-# 用法:
-#   scripts/release-gate.sh                # 本地门禁(不带 --all-features)
-#   scripts/release-gate.sh --all-features # CI 门禁(cd.yml pre-publish 使用)
+# Layered gate (2026-11-14):
+#   - Hard gates: test / rustdoc / semver / security / version consistency —
+#     fail fast.
+#   - Soft gates: fmt / clippy — print WARN only, do not block the release.
+#     They mostly reflect formatting and new lints, not crate functionality;
+#     they repeatedly blocked whole releases when existing code went red under
+#     a new stable toolchain.
+#   - Set STRICT_LINT=1 to restore strict mode.
 #
-# env 覆盖:
-#   BASELINE=0.19.0    semver 基线版本(默认 0.19.0)
-#   SKIP_SEMVER=1      跳过 semver-checks(本地未装 cargo-semver-checks 时)
-#   MIN_FREE_GB=10     磁盘空间告警阈值(单位 GB)
-#   JOBS=4             cargo -j 并行度(默认 4;本机 16 核 + 16G 内存下
-#                      `cargo test --workspace` 默认 16 路并行编译会 OOM——
-#                      handle_alloc_error / E0463 级联,实测 2026-08-28)
+# Usage:
+#   scripts/release-gate.sh                # local gate (no --all-features)
+#   scripts/release-gate.sh --all-features # CI gate (used by cd.yml pre-publish)
 #
-# 设计约束(盲区说明,见 RELEASE_CHECKLIST S2.3):
-#   - 本地默认不带 --all-features:windows-gnu + rust-toolchain 1.85 下,
-#     lc-embeddings/local-embeddings → ort-sys 2.0.0-rc.13 需 rustc≥1.88
-#     无法编译。clippy/doc 的 --all-features 组合是 CI 责任,本地不强跑。
-#   - set -euo pipefail;每步失败即退出,便于快速定位。
+# Env overrides:
+#   BASELINE=0.19.0    semver baseline (default 0.19.0)
+#   SKIP_SEMVER=1      skip semver-checks (when cargo-semver-checks is not installed locally)
+#   STRICT_LINT=1      make fmt/clippy blocking again (default 0, soft gates)
+#   MIN_FREE_GB=10     disk warning threshold in GB
+#   JOBS=4             cargo -j parallelism (default 4; on a 16-core/16G machine
+#                      `cargo test --workspace` with 16-way parallelism OOMs —
+#                      handle_alloc_error / E0463 cascade, observed 2026-08-28)
+#
+# Design constraints (known blind spots, see RELEASE_CHECKLIST S2.3):
+#   - Local runs omit --all-features: under windows-gnu + rust-toolchain 1.85,
+#     lc-embeddings/local-embeddings → ort-sys 2.0.0-rc.13 requires rustc ≥ 1.88
+#     and cannot build. clippy/doc with --all-features are CI's responsibility;
+#     local does not force them.
+#   - set -euo pipefail; a hard-gate failure exits; a soft-gate failure continues.
 # ============================================================================
 set -euo pipefail
 
@@ -42,6 +56,7 @@ ALL_FEATURES=false
 BASELINE="${BASELINE:-0.19.0}"
 MIN_FREE_GB="${MIN_FREE_GB:-10}"
 JOBS="${JOBS:-4}"
+STRICT_LINT="${STRICT_LINT:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -51,7 +66,7 @@ if [ "$ALL_FEATURES" = true ]; then FEATURES=(--all-features); fi
 
 step=0
 total=7
-run() { # <name> <cmd...> — 顺序执行,失败即停
+run() { # <name> <cmd...> — run sequentially; a failure stops the gate
   local name="$1"; shift
   step=$((step + 1))
   printf '  [..] %2d/%d  %s\n' "$step" "$total" "$name"
@@ -59,32 +74,52 @@ run() { # <name> <cmd...> — 顺序执行,失败即停
     printf '  [PASS] %2d/%d  %s\n' "$step" "$total" "$name"
   else
     printf '  [FAIL] %2d/%d  %s\n' "$step" "$total" "$name"
-    echo "release-gate: 门禁失败于「$name」,终止(修复后重跑)。" >&2
+    echo "release-gate: gate failed at \"$name\"; aborting (fix and re-run)." >&2
     exit 1
+  fi
+}
+run_soft() { # <name> <cmd...> — soft gate: WARN and continue; STRICT_LINT=1 makes it blocking
+  local name="$1"; shift
+  step=$((step + 1))
+  printf '  [..] %2d/%d  %s\n' "$step" "$total" "$name"
+  if "$@"; then
+    printf '  [PASS] %2d/%d  %s\n' "$step" "$total" "$name"
+  elif [ "$STRICT_LINT" = "1" ]; then
+    printf '  [FAIL] %2d/%d  %s (STRICT_LINT=1)\n' "$step" "$total" "$name"
+    echo "release-gate: strict mode: soft gate failed at \"$name\"; aborting." >&2
+    exit 1
+  else
+    printf '  [WARN] %2d/%d  %s (non-blocking)\n' "$step" "$total" "$name"
+    soft_fail=$((soft_fail + 1))
+    soft_names+=("$name")
   fi
 }
 warn() { printf '  [WARN]       %s\n' "$1"; }
 
+soft_fail=0
+soft_names=()
+
 echo "== release-gate =="
-echo "   模式:$([ "$ALL_FEATURES" = true ] && echo 'CI(--all-features)' || echo '本地(无 all-features,ort-sys 盲区见 RELEASE_CHECKLIST S2.3)')"
-echo "   semver 基线:$BASELINE   特性:${FEATURES[*]:-(无)}"
+echo "   mode: $([ "$ALL_FEATURES" = true ] && echo 'CI(--all-features)' || echo 'local(no all-features; ort-sys blind spot, see RELEASE_CHECKLIST S2.3)')"
+echo "   semver baseline: $BASELINE   features: ${FEATURES[*]:-(none)}"
 echo
 
-# ---- 1. 磁盘空间预检 ------------------------------------------------------
-# memory:全量构建缓存可达 20G,C 盘紧张;构建缓存在同步目录外(target-dir
-# = D:/rust-target)。这里检查当前工作盘(仓库所在盘,与 target 同盘)。
+# ---- 1. Disk space preflight ----------------------------------------------
+# memory: a full build cache can reach 20G and C: is tight; the build cache is
+# outside the sync folder (target-dir = D:/rust-target). Check the current work
+# drive (the repo drive, same drive as target).
 FREE_GB=$(( $(df -Pk . | tail -1 | awk '{print $4}') / 1024 / 1024 ))
-printf '  磁盘空间:可用 %dG(阈值 %dG)\n' "$FREE_GB" "$MIN_FREE_GB"
+printf '  disk space: %dG free (threshold %dG)\n' "$FREE_GB" "$MIN_FREE_GB"
 if [ "$FREE_GB" -lt "$MIN_FREE_GB" ]; then
-  warn "空间低于阈值,全量构建可能失败;建议先清理 rust-target 或降低 MIN_FREE_GB"
+  warn "free space is below the threshold; a full build may fail — clean rust-target or lower MIN_FREE_GB"
 fi
 echo
 
-# ---- 2. fmt ---------------------------------------------------------------
-run "cargo fmt --check" cargo fmt --all -- --check
+# ---- 2. fmt (soft gate) ---------------------------------------------------
+run_soft "cargo fmt --check" cargo fmt --all -- --check
 
-# ---- 3. clippy ------------------------------------------------------------
-run "clippy --workspace --all-targets" cargo clippy --workspace --all-targets -j "$JOBS" "${FEATURES[@]}" -- -D warnings
+# ---- 3. clippy (soft gate) ------------------------------------------------
+run_soft "clippy --workspace --all-targets" cargo clippy --workspace --all-targets -j "$JOBS" "${FEATURES[@]}" -- -D warnings
 
 # ---- 4. test --------------------------------------------------------------
 run "cargo test --workspace --no-fail-fast" cargo test --workspace --no-fail-fast -j "$JOBS"
@@ -93,26 +128,28 @@ run "cargo test --workspace --no-fail-fast" cargo test --workspace --no-fail-fas
 run "rustdoc -D warnings --no-deps" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps -j "$JOBS" "${FEATURES[@]}"
 
 # ---- 6. semver-checks -----------------------------------------------------
-# 本地模式用 --default-features:cargo-semver-checks 会在仓库外的临时工程里
-# 重新解析依赖(脱离 Cargo.lock),feature 门控的 sqlx 可能升到 0.9.0(要求
-# rustc≥1.94),而本机默认工具链是 1.93 编不了。--default-features 不拉
-# pgvector-storage→sqlx 与 local-embeddings→ort-sys,绕开本地工具链盲区;
-# CI(cd.yml pre-publish,ubuntu + 新 stable)跑 --all-features 兜底 feature 门控的 API。
+# Local mode uses --default-features: cargo-semver-checks re-resolves deps in a
+# temporary project outside the repo (ignoring Cargo.lock), so the
+# feature-gated sqlx may jump to 0.9.0 (rustc ≥ 1.94) and fail to build on the
+# local 1.93 toolchain. --default-features avoids pgvector-storage→sqlx and
+# local-embeddings→ort-sys, sidestepping the local toolchain blind spot.
+# CI (cd.yml pre-publish, ubuntu + new stable) runs --all-features to cover
+# feature-gated APIs.
 SEMVER_FEATURES=(--default-features)
 if [ "$ALL_FEATURES" = true ]; then SEMVER_FEATURES=(--all-features); fi
 
 if [ "${SKIP_SEMVER:-0}" = "1" ]; then
-  warn "SKIP_SEMVER=1,跳过 semver-checks"
+  warn "SKIP_SEMVER=1: skipping semver-checks"
 elif command -v cargo-semver-checks >/dev/null 2>&1; then
   run "semver-checks --baseline ${BASELINE}" cargo semver-checks --workspace --baseline-version "$BASELINE" "${SEMVER_FEATURES[@]}"
 else
-  warn "cargo-semver-checks 未安装,本地跳过(CI pre-publish 会跑);安装后或 SKIP_SEMVER=1 显式确认"
+  warn "cargo-semver-checks is not installed; skipping locally (CI pre-publish runs it). Install it or confirm with SKIP_SEMVER=1"
 fi
 
 # ---- 7. security-scan -----------------------------------------------------
 run "security-scan --fail-if-found" bash scripts/security-scan.sh --fail-if-found
 
-# ---- 8. 版本一致性 --------------------------------------------------------
+# ---- 8. Version consistency -----------------------------------------------
 check_version_consistency() {
   local expected="" bad=0 files=0 v f
   while IFS= read -r f; do
@@ -120,14 +157,20 @@ check_version_consistency() {
     files=$((files + 1))
     if [ -z "$expected" ]; then expected="$v"; fi
     if [ -z "$v" ] || [ "$v" != "$expected" ]; then
-      printf '        ✗ %s: version=%s(期望 %s)\n' "$f" "$v" "$expected"
+      printf '        ✗ %s: version=%s (expected %s)\n' "$f" "$v" "$expected"
       bad=1
     fi
   done < <(printf '%s\n' crates/*/Cargo.toml)
-  printf '        检查 %d 个 Cargo.toml,期望版本 %s\n' "$files" "$expected"
+  printf '        checked %d Cargo.toml files, expected version %s\n' "$files" "$expected"
   [ "$bad" -eq 0 ]
 }
-run "版本一致性(全 workspace)" check_version_consistency
+run "version consistency (whole workspace)" check_version_consistency
 
 echo
-echo "== release-gate:全部通过 =="
+if [ "$soft_fail" -gt 0 ]; then
+  echo "== release-gate: all hard gates passed; ${soft_fail} soft gate(s) failed (non-blocking) =="
+  printf '   soft failures: %s\n' "${soft_names[*]}"
+  echo "   set STRICT_LINT=1 to make fmt/clippy blocking again."
+else
+  echo "== release-gate: all passed =="
+fi

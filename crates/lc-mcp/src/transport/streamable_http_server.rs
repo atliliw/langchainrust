@@ -287,7 +287,7 @@ async fn handle_connection(
         Err(status) => return write_plain(sock, status.0, status.1, &[], b"").await,
     };
     let initialized = {
-        let sessions = state.sessions.lock().expect("session lock");
+        let sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
         sessions
             .get(&session_id)
             .map(|s| s.initialized)
@@ -396,7 +396,7 @@ fn require_session(
     given: Option<String>,
 ) -> Result<String, (u16, &'static str)> {
     let session_id = given.ok_or((400u16, "Bad Request"))?;
-    let mut sessions = state.sessions.lock().expect("session lock");
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     if !sessions.contains_key(&session_id) {
         return Err((404, "Not Found"));
     }
@@ -408,7 +408,7 @@ fn require_session(
 }
 
 fn insert_session(state: &Arc<StreamableState>) -> Result<String, ()> {
-    let mut sessions = state.sessions.lock().expect("session lock");
+    let mut sessions = state.sessions.lock().unwrap_or_else(|e| e.into_inner());
     // Opportunistic TTL sweep (age bound).
     let now = Instant::now();
     // F-18: a session retired by the TTL must ALSO drop its resource-subscription

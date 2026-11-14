@@ -11,6 +11,8 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 **What it solves**: Build Agents, RAG, BM25 keyword search, Hybrid retrieval, LangGraph workflows, MCP tools, A2A agent-to-agent protocols, Guardrails, multi-agent Handoffs — all in pure Rust.
 
+**5-minute quickstart:** [Rust agent](QUICKSTART.md#rust-an-agent-with-a-tool) · [Python client over HTTP](QUICKSTART.md#python-call-the-runtime-over-http)
+
 ---
 
 ## Documentation

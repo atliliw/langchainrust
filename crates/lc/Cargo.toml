@@ -67,6 +67,8 @@ tokio-test = "0.4"
 tempfile = "3.0"
 wiremock = "0.6"
 criterion = "0.5"
+# v0.31.0: `examples/openai_server.rs` serves the OpenAI-compatible router.
+axum = "0.8"
 # 只为测试/示例启用 lc-a2a 的 axum 服务器(serve/serve_on),不拖累下游 lib 用户
 lc-a2a = { path = "../lc-a2a", version = "0.30.0", features = ["axum"] }
 # B8 (0.22.4): 只为 agent_sse_server 示例启用 lc-agents 的 axum SSE 端点
@@ -96,17 +98,28 @@ observability-mongodb = ["observability", "lc-observability/mongodb"]
 # B6 (0.22.4): CDP browser tool. Forwards to lc-tools/browser-cdp
 # (tokio-tungstenite, plain `ws://`, no TLS stack pulled in).
 browser-cdp = ["lc-tools/browser-cdp"]
+# v0.31.0: OpenAI-compatible HTTP surface (tool role / tool_calls / SSE deltas).
+openai-server = ["lc-agents/openai-server"]
 
 # docs.rs 构建用显式 feature 清单而非 all-features:
 # pgvector-storage 转发 lc-vector-stores/pgvector-storage → 拉入 sqlx 0.8.0,在 docs.rs 较新 rustc 上
 # 编译失败;sqlx 无法升级(原因见本文件顶部 59-64 行注释)。因此 docs 构建排除该 feature。
 [package.metadata.docs.rs]
-features = ["qdrant-integration", "mongodb-persistence", "redis-storage", "sqlite-storage", "checkpoint-sqlite", "checkpoint-postgres", "checkpoint-redis", "opentelemetry", "local-embeddings", "fastembed", "vectorstore-memory", "observability", "observability-mongodb", "browser-cdp"]
+features = ["qdrant-integration", "mongodb-persistence", "redis-storage", "sqlite-storage", "checkpoint-sqlite", "checkpoint-postgres", "checkpoint-redis", "opentelemetry", "local-embeddings", "fastembed", "vectorstore-memory", "observability", "observability-mongodb", "browser-cdp", "openai-server"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 # ============================================================================
 # 示例 - examples
 # ============================================================================
+[[example]]
+name = "quickstart_agent"
+path = "examples/quickstart_agent.rs"
+
+[[example]]
+name = "openai_server"
+path = "examples/openai_server.rs"
+required-features = ["openai-server"]
+
 [[example]]
 name = "basic_chat"
 path = "examples/basic/chat.rs"

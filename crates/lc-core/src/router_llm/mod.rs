@@ -116,6 +116,10 @@ pub enum RouterError {
         /// Snapshot of the exceeded dimension, used amount and limit.
         BudgetExceeded,
     ),
+    /// Framework invariant violated (for example an internally-owned
+    /// semaphore closed unexpectedly). Surfaced as an error instead of a
+    /// panic so a caller can fail the run cleanly.
+    Internal(String),
 }
 
 impl Display for RouterError {
@@ -134,6 +138,7 @@ impl Display for RouterError {
             RouterError::BudgetExceeded(exceeded) => {
                 write!(f, "router budget skip — {exceeded}")
             }
+            RouterError::Internal(msg) => write!(f, "router internal error: {msg}"),
         }
     }
 }
@@ -144,7 +149,9 @@ impl std::error::Error for RouterError {
             RouterError::AllFailed { last, .. } => Some(last.as_ref()),
             RouterError::Model { source, .. } => Some(source.as_ref()),
             RouterError::BudgetExceeded(exceeded) => Some(exceeded),
-            RouterError::Empty | RouterError::RateLimited { .. } => None,
+            RouterError::Empty
+            | RouterError::RateLimited { .. }
+            | RouterError::Internal(_) => None,
         }
     }
 }

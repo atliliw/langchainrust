@@ -1,5 +1,5 @@
-# CD 工作流
-# 当创建新的 tag (v*) 时自动发布到 crates.io
+# CD workflow
+# Publish to crates.io when a new tag (v*) is created
 
 name: CD - Publish to crates.io
 
@@ -12,14 +12,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # ==================== 预发布检查 ====================
+  # ==================== Pre-publish checks ====================
   pre-publish:
     name: Pre-publish Checks
     runs-on: ubuntu-latest
     env:
-      # 覆盖仓库 rust-toolchain.toml 的 1.85 钉版(其优先级高于 dtolnay action
-      # 装的 stable)。cargo-semver-checks 0.50 MSRV 已到 1.93,在 1.85 下从源码
-      # `cargo install` 必然编译失败——与 ci.yml semver job 的处理保持一致。
+      # Overrides the repo's rust-toolchain.toml 1.85 pin (which takes precedence
+      # over the stable toolchain installed by the dtolnay action).
+      # cargo-semver-checks 0.50 has MSRV 1.93, so `cargo install` from source
+      # fails on 1.85 — keep this consistent with ci.yml's semver job.
       RUSTUP_TOOLCHAIN: stable
     outputs:
       version: ${{ steps.get_version.outputs.version }}
@@ -36,18 +37,25 @@ jobs:
         id: get_version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      # 0.20.0 S2.2:发布门禁脚本化。原本的 fmt/clippy/test/doc 手工步骤固化为
-      # `scripts/release-gate.sh --all-features`(含磁盘预检、semver-checks 基线、
-      # security-scan、全 workspace 版本一致性)。这里保留三件脚本不做的事:
-      #   1) tag 版本 vs facade crate 版本一致性——release-gate 第 8 步只查各
-      #      crate 相互一致,不对比 tag。
-      #   2) 安装 cargo-semver-checks——release-gate 第 6 步在 CI 模式要真实
-      #      运行(本地未装时脚本才 warn+跳过)。
-      #   3) 从 crates.io 动态解析 semver 基线(见下方 Resolve 步骤)——
-      #      0.22.5 前 BASELINE 硬编码 0.19.0,停更多个版本无人更新。
-      # 注意:根 Cargo.toml 是虚拟 workspace,无 version 字段;发布版本以
-      # facade crate(crates/lc/Cargo.toml,package = "langchainrust")为准。
-      # (旧写法 grep 根 Cargo.toml 得到空值,tag 检查必然失败——0.20.0 修正。)
+      # 0.20.0 S2.2: scripted release gate. The former manual fmt/clippy/test/doc
+      # steps are now `scripts/release-gate.sh --all-features` (disk preflight,
+      # semver-checks baseline, security-scan, whole-workspace version consistency).
+      # Things this workflow still does outside the script:
+      # 2026-11-14: layered gate — fmt/clippy are soft (WARN only, non-blocking);
+      # test/rustdoc/semver/security/version consistency remain hard gates.
+      # Set STRICT_LINT=1 to restore strict mode.
+      #   1) tag version vs facade crate version — release-gate step 8 only checks
+      #      crates against each other, not against the tag.
+      #   2) installing cargo-semver-checks — release-gate step 6 really runs it in
+      #      CI mode (the script only warns/skips when it is missing locally).
+      #   3) resolving the semver baseline from crates.io dynamically (see the
+      #      Resolve step below) — before 0.22.5, BASELINE was hardcoded to 0.19.0
+      #      and went stale across releases.
+      # Note: the root Cargo.toml is a virtual workspace with no version field;
+      # the release version is the facade crate's version
+      # (crates/lc/Cargo.toml, package = "langchainrust").
+      # (The old approach grepped the root Cargo.toml, got an empty value, and the
+      # tag check always failed — fixed in 0.20.0.)
       - name: Verify tag vs facade version
         run: |
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
@@ -63,37 +71,39 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
 
-      # semver 基线动态取 crates.io 上 facade crate(langchainrust)的最新稳定版,
-      # 即「上一发布版本」。不再硬编码(0.19.0 停更多次发版无人更新,基线失真)。
-      # 发布动作本身在 publish job 完成,此刻新版本尚未上传,查到的必然是上一版。
+      # Resolve the semver baseline dynamically from the latest stable release of
+      # the facade crate (langchainrust) on crates.io. No hardcoding (0.19.0 went
+      # stale across several releases). The publish job has not run yet, so the
+      # new version is not uploaded and the latest entry is necessarily the
+      # previous release.
       - name: Resolve semver baseline from crates.io
         id: baseline
         run: |
           BASELINE=$(curl -fsS https://index.crates.io/la/ng/langchainrust | python3 -c 'import json,sys; rows=[json.loads(l) for l in sys.stdin if l.strip()]; v=[r["vers"] for r in rows if not r.get("yanked") and "-" not in r["vers"]]; print(v[-1] if v else "")')
           if [ -z "$BASELINE" ]; then
-            echo "ERROR: 无法从 crates.io 解析 semver 基线版本" >&2
+            echo "ERROR: could not resolve the semver baseline from crates.io" >&2
             exit 1
           fi
-          echo "semver baseline(上一发布版本)= $BASELINE"
+          echo "semver baseline (previous release) = $BASELINE"
           echo "BASELINE=$BASELINE" >> "$GITHUB_OUTPUT"
 
       - name: Run release gate
         run: bash scripts/release-gate.sh --all-features
         env:
           OPENAI_API_KEY: test-key
-          # semver 基线 = crates.io 最新稳定版(上一步动态解析,无需发版手改)
+          # semver baseline = latest stable on crates.io (resolved above; no manual edit per release)
           BASELINE: ${{ steps.baseline.outputs.BASELINE }}
-          # CI runner 磁盘有限,降低告警阈值(该步只 warn 不 fail)
+          # CI runner disk is limited; lower the warning threshold (this step only warns)
           MIN_FREE_GB: "2"
 
-  # ==================== 发布到 crates.io ====================
+  # ==================== Publish to crates.io ====================
   publish:
     name: Publish to crates.io
     needs: pre-publish
     runs-on: ubuntu-latest
     env:
-      # 同 pre-publish:覆盖 rust-toolchain.toml 的 1.85 钉版,确保 cargo publish
-      # 的 verify 构建在 stable 上(部分门控依赖 MSRV 高于 1.85)。
+      # Same as pre-publish: override the 1.85 pin so cargo publish's verify build
+      # runs on stable (some gated deps require MSRV above 1.85).
       RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
@@ -113,15 +123,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # 虚拟 workspace 根目录不能直接 cargo publish;由脚本按 cargo metadata
-      # 拓扑序交错发布全部 23 crate(已发布版本自动跳过,可断点续跑)。
-      # token 经环境变量注入(cargo publish 默认读取),不出现在命令行参数里。
+      # A virtual-workspace root cannot be published directly with cargo publish;
+      # the script publishes all 23 crates in cargo-metadata topological order
+      # (already-published versions are skipped, so it is resumable).
+      # The token is injected via an environment variable (cargo publish reads it
+      # by default), never as a command-line argument.
       - name: Publish workspace crates in dependency order
         run: bash scripts/publish-crates.sh
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # ==================== 创建 GitHub Release ====================
+  # ==================== Create GitHub Release ====================
   create-release:
     name: Create GitHub Release
     needs: publish
@@ -139,9 +151,9 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          # 获取上一个 tag
+          # Get the previous tag
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
-          
+
           if [ -n "$PREV_TAG" ]; then
             echo "Generating changelog from $PREV_TAG to ${{ steps.get_version.outputs.version }}"
             CHANGELOG=$(git log $PREV_TAG..HEAD --pretty=format:"- %s (%h)" --no-merges)
@@ -149,27 +161,27 @@ jobs:
             echo "Generating changelog for initial release"
             CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges -20)
           fi
-          
-          # 保存到文件（多行内容）
+
+          # Save to a file (multi-line content)
           echo "$CHANGELOG" > CHANGELOG.txt
-          
-          # 创建 release body
+
+          # Build the release body
           cat << EOF > release_body.md
           ## What's Changed
-          
+
           $CHANGELOG
-          
+
           ## Installation
-          
+
           Add this to your \`Cargo.toml\`:
-          
+
           \`\`\`toml
           [dependencies]
           langchainrust = "${{ steps.get_version.outputs.version }}"
           \`\`\`
-          
+
           ## Documentation
-          
+
           - [API Documentation](https://docs.rs/langchainrust/${{ steps.get_version.outputs.version }})
           - [Examples](https://github.com/atliliw/langchainrust/tree/main/examples)
           - [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md)
@@ -185,12 +197,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ==================== docs.rs 发布后回查(T1,v0.23)====================
-  # 0.20 起 docs.rs 一直构建失败但无人知晓。发布完成后轮询 builds 页,直到
-  # 出现 succeeded / failed 标记;failed 让本 job 红。docs.rs 队列可能排队
-  # 数分钟~十几分钟,30 分钟超时、20s 一轮。仅 HTML 页面可用(builds.json
-  # 已 404),状态行形如 `(succeeded|failed)"><div ...><span class="fa ...
-  # fa-check|fa-xmark`。
+  # ==================== Post-publish docs.rs check (T1, v0.23) ====================
+  # docs.rs had been failing since 0.20 without anyone noticing. After publishing,
+  # poll the builds page until a succeeded/failed marker appears; a failure makes
+  # this job red. The docs.rs queue can take minutes to ~15 minutes: 30-minute
+  # timeout, one poll every 20s. Only the HTML page is available (builds.json is
+  # 404); the status row looks like `(succeeded|failed)"><div ...><span class="fa ...
+  # fa-check|fa-xmark`.
   verify-docs-rs:
     name: Verify docs.rs Build
     needs: publish
@@ -201,7 +214,7 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          # tag 带 v 前缀(v0.23.0),docs.rs 路径用裸版本号(0.23.0)
+          # The tag has a v prefix (v0.23.0); docs.rs paths use the bare version (0.23.0)
           VERSION="${TAG#v}"
           NAME=langchainrust
           URL="https://docs.rs/crate/$NAME/$VERSION/builds"
@@ -209,9 +222,11 @@ jobs:
           for i in $(seq 1 90); do
             HTML=$(curl -fsSL "$URL" 2>/dev/null || true)
             if [ -n "$HTML" ]; then
-              # builds 页每个构建一行,class 即终态:`succeeded"><div class=...`
-              # 或 `failed"><div class=...`(图标 fa-check / fa-xmark,不依赖图标
-              # 判断;builds.json API 已下线只有 HTML)。首行 = 最近一次构建。
+              # The builds page has one row per build; the class is the terminal
+              # state: `succeeded"><div class=...` or `failed"><div class=...`
+              # (icons fa-check / fa-xmark, but we do not rely on the icon; the
+              # builds.json API is retired and only HTML is available). The first
+              # row is the most recent build.
               ROW=$(printf '%s' "$HTML" | grep -oE '(succeeded|failed)"><div class="pure-g"' | head -1 | sed 's/">.*//')
               case "$ROW" in
                 succeeded)
@@ -234,10 +249,10 @@ jobs:
           echo "::error::docs.rs build for $NAME $VERSION did not finish within 30 minutes"
           exit 1
 
-  # ==================== 发布通知 ====================
+  # ==================== Release notification ====================
   notify:
     name: Notify on Success
-    # docs.rs 回查通过后才宣告发布成功(可能排队十几分钟,值得等)
+    # Only announce success after the docs.rs check passes (it may queue for ~15 min; worth waiting)
     needs: [publish, create-release, verify-docs-rs]
     runs-on: ubuntu-latest
     if: success()

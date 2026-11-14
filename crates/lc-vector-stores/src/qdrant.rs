@@ -344,7 +344,11 @@ fn field_to_condition(
                 FilterOp::Gte => range.gte = Some(num),
                 FilterOp::Lt => range.lt = Some(num),
                 FilterOp::Lte => range.lte = Some(num),
-                _ => unreachable!(),
+                other => {
+                    return Err(VectorStoreError::UnsupportedFilter(format!(
+                        "Qdrant range condition received non-range op {other:?}"
+                    )));
+                }
             }
             Ok(Condition::range(key, range))
         }
@@ -366,7 +370,9 @@ fn field_to_condition(
             match op {
                 FilterOp::In => Ok(Condition::from(Filter::should(conds?))),
                 FilterOp::Nin => Ok(Condition::from(Filter::must_not(conds?))),
-                _ => unreachable!(),
+                other => Err(VectorStoreError::UnsupportedFilter(format!(
+                    "Qdrant set condition received non-set op {other:?}"
+                ))),
             }
         }
     }

@@ -112,7 +112,7 @@ impl ResourceSubscriptions {
             ));
         }
         let subscriber = subscriber.into();
-        let mut map = self.subscribers.lock().expect("subscription lock");
+        let mut map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         // Bounded eviction policy (#H-6): cap the total number of
         // registrations so the registry cannot grow without bound across many
         // sessions. A re-subscribe of an already-registered pair adds no new
@@ -141,7 +141,7 @@ impl ResourceSubscriptions {
     /// unsubscribe is idempotent on the wire.
     pub fn unsubscribe(&self, uri: &str, subscriber: impl Into<String>) -> Result<(), MCPError> {
         let subscriber = subscriber.into();
-        let mut map = self.subscribers.lock().expect("subscription lock");
+        let mut map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(set) = map.get_mut(uri.trim()) {
             set.remove(&subscriber);
             if set.is_empty() {
@@ -157,7 +157,7 @@ impl ResourceSubscriptions {
     /// subscriber's interest would leak in the registry and eventually fill it,
     /// crowding out live subscribers with `-32011` (F-18).
     pub fn unsubscribe_all(&self, subscriber: &str) {
-        let mut map = self.subscribers.lock().expect("subscription lock");
+        let mut map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         map.retain(|_uri, set| {
             set.remove(subscriber);
             !set.is_empty()
@@ -166,7 +166,7 @@ impl ResourceSubscriptions {
 
     /// Whether `subscriber` is currently subscribed to `uri`.
     pub fn is_subscribed(&self, uri: &str, subscriber: &str) -> bool {
-        let map = self.subscribers.lock().expect("subscription lock");
+        let map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         map.get(uri)
             .map(|set| set.contains(subscriber))
             .unwrap_or(false)
@@ -175,7 +175,7 @@ impl ResourceSubscriptions {
     /// The ids currently subscribed to `uri` (order is unspecified). Returns an
     /// empty vector when nothing is subscribed.
     pub fn subscribers_of(&self, uri: &str) -> Vec<String> {
-        let map = self.subscribers.lock().expect("subscription lock");
+        let map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         map.get(uri)
             .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
@@ -183,7 +183,7 @@ impl ResourceSubscriptions {
 
     /// Whether *anyone* is subscribed to `uri`.
     pub fn is_watched(&self, uri: &str) -> bool {
-        let map = self.subscribers.lock().expect("subscription lock");
+        let map = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         map.get(uri).map(|set| !set.is_empty()).unwrap_or(false)
     }
 

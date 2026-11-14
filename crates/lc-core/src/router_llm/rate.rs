@@ -183,7 +183,11 @@ impl ModelGate {
             tokio::time::timeout(self.wait_timeout, self.concurrency.clone().acquire_owned()).await;
         let concurrency = match acquired {
             Ok(Ok(permit)) => permit,
-            Ok(Err(_closed)) => panic!("router concurrency semaphore is never closed"),
+            Ok(Err(_closed)) => {
+                return Err(RouterError::Internal(
+                    "router concurrency semaphore closed unexpectedly".to_string(),
+                ));
+            }
             Err(_elapsed) => {
                 return Err(RouterError::RateLimited {
                     model: model.to_string(),
@@ -252,7 +256,11 @@ impl RateGate {
 
         let permit = match acquired {
             Ok(Ok(permit)) => permit,
-            Ok(Err(_closed)) => panic!("router rate semaphore is never closed"),
+            Ok(Err(_closed)) => {
+                return Err(RouterError::Internal(
+                    "router rate semaphore closed unexpectedly".to_string(),
+                ));
+            }
             Err(_elapsed) => {
                 return Err(RouterError::RateLimited {
                     model: model.to_string(),

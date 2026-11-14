@@ -1,68 +1,95 @@
 # Quick Start
 
-Get started with LangChainRust in 5 minutes.
+From zero to a working agent in 5 minutes.
 
 ## Prerequisites
 
-- Rust 1.85+ (edition 2021)
-- An OpenAI API key (or any supported LLM provider)
+- Rust 1.85+
+- An API key for OpenAI or any OpenAI-compatible endpoint
 
-## Installation
+## 1. Rust: an agent with a tool
 
-Add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-langchainrust = "0.27.0"
-tokio = { version = "1", features = ["full"] }
+```bash
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-4o-mini   # optional
+cargo run -p langchainrust --example quickstart_agent
 ```
 
-## Your First Chat
+The example (`crates/lc/examples/quickstart_agent.rs`) builds a
+`FunctionCallingAgent` with `Calculator`, runs one tool-calling loop, and
+prints the answer:
 
 ```rust
-use langchainrust::openai::OpenAIChat;
-use langchainrust::language_models::{BaseChatModel, LLMResult};
-use langchainrust::schema::Message;
+use std::sync::Arc;
+
+use langchainrust::agents::{AgentExecutor, FunctionCallingAgent};
+use langchainrust::core::tools::BaseTool;
+use langchainrust::tools::Calculator;
+use langchainrust::{OpenAIChat, OpenAIConfig};
 
 #[tokio::main]
-async fn main() {
-    let llm = OpenAIChat::from_env_result().expect("Set OPENAI_API_KEY");
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let llm = OpenAIChat::new(OpenAIConfig::from_env_result()?);
+    let tools: Vec<Arc<dyn BaseTool>> = vec![Arc::new(Calculator::new())];
 
-    let messages = vec![
-        Message::system("You are a helpful assistant."),
-        Message::human("What is Rust?"),
-    ];
+    let agent = FunctionCallingAgent::new(
+        llm,
+        tools.clone(),
+        Some("You are a concise assistant. Use tools when needed.".to_string()),
+    );
 
-    let result = llm.chat(messages, None).await.expect("Chat failed");
-    println!("{}", result.content);
+    let executor = AgentExecutor::new(Arc::new(agent), tools).with_max_iterations(5);
+    println!("{}", executor.invoke("What is 25 * 37?".to_string()).await?);
+    Ok(())
 }
 ```
 
-## Agent with Tools
+## 2. Python: call the runtime over HTTP
 
-```rust
-use langchainrust::agents::{AgentExecutor, BaseAgent};
-use langchainrust::tools::CalculatorTool;
+**Terminal 1 — start the OpenAI-compatible server:**
 
-let agent = ReActAgent::new(llm, tools);
-let executor = AgentExecutor::new(Arc::new(agent), tools)
-    .with_max_iterations(10);
-
-let result = executor.invoke("What is 25 * 37?".to_string()).await?;
+```bash
+cargo run -p langchainrust --example openai_server --features openai-server
+# OpenAI-compatible server on http://127.0.0.1:8080
 ```
 
-## RAG Pipeline
+**Terminal 2 — install the thin client and call it:**
 
-```rust
-use langchainrust::rag::RAGPipeline;
+```bash
+pip install -e sdks/python
 
-let pipeline = RAGPipeline::new(llm, retriever);
-let answer = pipeline.run("What is LangChain?").await?;
+python - <<'PY'
+from langchainrust import Client
+
+c = Client("http://127.0.0.1:8080", model="gpt-4o-mini")
+print(c.chat("What is Rust?").content)
+PY
 ```
 
-## Next Steps
+Any OpenAI SDK works against the same endpoint:
 
-- [LLM Providers](./llm-providers.md) — Configure different LLM backends
-- [Agents](./agents.md) — Build autonomous agents
-- [LCEL Pipelines](./lcel.md) — Compose pipelines with `pipe()`
-- [Vector Stores](./vector-stores.md) — Store and retrieve embeddings
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
+print(client.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "hi"}],
+))
+```
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `OPENAI_API_KEY` error | Export the key; the config fails fast when it is missing |
+| Port already in use | `LC_ADDR=127.0.0.1:9090` before starting the server |
+| `unknown feature openai-server` | Add `--features openai-server` |
+| Python `ModuleNotFoundError` | Run `pip install -e sdks/python` from the repo root |
+
+## Next
+
+- [Agents](agents.md) — hooks, budgets, approvals, subagents
+- [MCP](mcp.md) — expose and consume tools
+- [A2A](a2a.md) — agent-to-agent
+- [Evaluation](evaluation.md) — verifiers and regression gates
