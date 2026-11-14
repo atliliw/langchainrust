@@ -19,6 +19,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 
 | Docs | Content |
 |------|---------|
+| [Docs site](https://atliliw.github.io/langchainrust/) | Searchable mdBook: Quick Start, Agents, MCP, A2A, Evaluation |
 | [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | 所有组件的详细用法（中文） |
 | [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
 | [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
