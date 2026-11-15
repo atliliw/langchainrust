@@ -13,6 +13,8 @@
 //! - N2 (v0.25.0): `compare_reports` / `ReportComparison` — baseline-vs-candidate regression gates;
 //!   `compare_reports_with` / `CompareOptions` — drop-aware gating (`gate_on_dropped`) plus a
 //!   paired sign-test (`paired_significance` / `PairedSignificance`) so CI can tell noise from change
+//! - `HallucinationSpanEvaluator` (feature `hallucination-spans`): flags low-confidence spans in a
+//!   generated answer from its own token logprobs, with no second scoring call
 //!
 //! # Example
 //! ```ignore
@@ -27,6 +29,8 @@ mod compare;
 mod criteria;
 mod export;
 mod faithfulness;
+#[cfg(feature = "hallucination-spans")]
+pub mod hallucination;
 mod pairwise;
 pub mod judge_reliability;
 pub mod price;
@@ -57,6 +61,8 @@ pub use criteria::{
     Dataset, EvalError, Evaluator, Example, PairwiseEvaluator, Predictor, RagEvaluator, Score,
 };
 pub use faithfulness::Faithfulness;
+#[cfg(feature = "hallucination-spans")]
+pub use hallucination::HallucinationSpanEvaluator;
 pub use pairwise::{PairwiseJudge, Verdict};
 pub use ragas::{AnswerRelevancy, ContextPrecision, ContextRecall};
 pub use results::{EmbeddingSimilarity, ExactMatch, LLMAsJudge, StringDistance};

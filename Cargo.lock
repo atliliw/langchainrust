@@ -3170,6 +3170,7 @@ dependencies = [
  "lc-embeddings",
  "lc-providers",
  "lc-schema",
+ "llm-token-visualizer",
  "log",
  "regex",
  "serde",
@@ -3577,6 +3578,18 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "llm-token-visualizer"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "862de6f45997ecc1e98096504742d0cab8d0e6c747dd4ada49b0da2aba2ed28d"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "lock_api"
