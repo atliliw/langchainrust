@@ -1,5 +1,8 @@
 # MCP Protocol
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with
+> `langchainrust = { version = "0.31", features = ["mcp"] }`.
+
 The Model Context Protocol (MCP) is Anthropic's open standard for connecting LLM applications to external tools and data sources. LangChainRust provides both a client and server implementation. As of 0.22.0 the crate is **stateless single-track**: every request is a self-contained JSON-RPC HTTP POST tagged with `Mcp-Method` / `Mcp-Name` routing headers and a `_meta` block; there is no handshake and no session. The legacy handshake-based `MCPClient` (SSE/stdio transports) was removed in 0.22.0.
 
 ## Feature Overview

@@ -1,5 +1,5 @@
-# CI 工作流
-# 在每次 push 和 pull request 时自动运行测试、格式检查和 clippy
+# CI workflow
+# Runs tests, formatting, and clippy on every push and pull request
 
 name: CI
 
@@ -14,15 +14,16 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # ==================== 格式检查 ====================
+  # ==================== Format check ====================
   fmt:
     name: Format Check
     runs-on: ubuntu-latest
     env:
-      # rust-toolchain.toml 锁的是 MSRV 1.85,会覆盖 dtolnay 装的工具链,导致
-      # 所有 job 实际都在 1.85 上跑(stable/beta 矩阵行失真、cargo install 工具
-      # 时工具自身 MSRV 更高而失败)。RUSTUP_TOOLCHAIN 是最高优先级,确保每个
-      # job 用声明自己的工具链。
+      # rust-toolchain.toml pins MSRV 1.85 and would override the toolchain that
+      # dtolnay installs, dragging every job onto 1.85 (distorting the stable/beta
+      # matrix rows and failing `cargo install` when a tool itself needs a higher
+      # MSRV). RUSTUP_TOOLCHAIN has the highest precedence, so each job uses the
+      # toolchain it declares.
       RUSTUP_TOOLCHAIN: stable
     steps:
       - name: Checkout code
@@ -36,12 +37,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  # ==================== Clippy 检查 ====================
+  # ==================== Clippy check ====================
   clippy:
     name: Clippy Lints
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: "1.85"  # clippy 跟随 MSRV 门禁,理由见下方 Run clippy 注释
+      RUSTUP_TOOLCHAIN: "1.85"  # clippy follows the MSRV gate; see the comment on the clippy step below
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -63,22 +64,25 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # clippy 跑 MSRV 工具链(1.85),与 test 矩阵 MSRV 行、仓库 MSRV 承诺一致。
-      # stable clippy(1.86+)会暴露 1.85 开发者看不见的新 lint(如
-      # collapsible-match),造成「push→CI 红→改→再 push」打地鼠;且本机 stable
-      # 工具链为 windows-gnu、仓库构建目标是 msvc,无法在本地预演 stable clippy。
-      # 1.85 clippy 已本地验证全 workspace --all-targets -D warnings 零 lint
-      # (2026-08-29)。
-      # 不跑 --all-features:feature 门控依赖(ort-sys/tonic 等,rust-version ≥ 1.88)
-      # 属 MSRV 承诺之外盲区,由下方 clippy-all-features job 在 stable 上覆盖。
+      # clippy runs on the MSRV toolchain (1.85), consistent with the test
+      # matrix's MSRV row and the repo's MSRV commitment.
+      # Stable clippy (1.86+) exposes lints that 1.85 developers cannot see
+      # (e.g. collapsible-match), causing a push -> CI red -> fix -> push
+      # whack-a-mole; and the local stable toolchain is windows-gnu while the
+      # repo builds msvc, so stable clippy cannot be previewed locally.
+      # Clippy 1.85 was verified locally: the whole workspace is zero-lint under
+      # --all-targets -D warnings (2026-08-29).
+      # `--all-features` is not run here: feature-gated deps (ort-sys/tonic etc.,
+      # rust-version >= 1.88) are outside the MSRV promise and covered by the
+      # clippy-all-features job below on stable.
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # ==================== 全特性 Clippy(stable)====================
-  # 与 cd.yml 的 release-gate.sh --all-features 对齐:feature 门控代码
-  # (ort-sys/tonic/fastembed 等,rustc ≥ 1.88,MSRV 1.85 编不了)的 lint 与
-  # 编译回归在「每次 push」暴露,而不是等到发 tag 当天才炸。
-  # 0.22.4 事故:fastembed 的 all-features 编译错只在发布后才被发现。
+  # ==================== Clippy (all features, stable) ====================
+  # Aligned with cd.yml's release-gate.sh --all-features: lint and compile
+  # regressions in feature-gated code (ort-sys/tonic/fastembed etc., rustc >= 1.88,
+  # unbuildable on MSRV 1.85) surface on every push instead of blowing up on tag day.
+  # 0.22.4 incident: fastembed's all-features compile error was only found after release.
   clippy-all-features:
     name: Clippy Lints (all features)
     runs-on: ubuntu-latest
@@ -107,25 +111,32 @@ jobs:
       - name: Run clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  # ==================== 特性组合矩阵(cargo-hack)====================
-  # T1 (v0.23):feature 幂矩阵。单个 feature 的编译错(all-features 之外、clippy
-  # 默认特性之外)在「单 feature 组合坏掉」时逐个暴露,而不是躲进 all-features
-  # 一起炸。0.22.4 的 fastembed E0308 / local-embeddings E0195 正是这一档(单
-  # feature 编译错,但被合并到 all-features 里)。
-  #   - `--each-feature` 覆盖所有真有 feature 门控的 crate:lc-embeddings
-  #     (fastembed/local-candle/local-embeddings)、lc-vector-stores(qdrant/
-  #     mongodb/redis/sqlite/pgvector)、lc-langgraph(4 个 checkpoint 后端)、
-  #     lc-memory、lc-observability、lc-callbacks、lc-tools、lc-a2a(axum)、
-  #     lc-agents(sse-server)。实测 lc-providers 无任何 feature(provider 不靠
-  #     feature 门控),不纳入。任一个 feature 单独 `cargo check` 失败 → 本 job 红。
-  #   - facade(langchainrust)跑 `--feature-powerset --depth 2`:两两组合的编译
-  #     回归。排掉重 ML feature(fastembed/local-candle/local-embeddings)——它们
-  #     的单 feature 已由上面 lc-embeddings 的 each-feature 覆盖,且拉入 ort/candle
-  #     拖慢 powerset;其余组合(存储/checkpoint/observability 等)逐一 check。
-  #   - `--no-dev-deps`:仅验证 feature 门控代码本身能否编译,不重复编 dev-deps。
-  #   - cargo-hack 与 feature 门控依赖都在 stable;本机 windows-gnu 对 ort-sys
-  #     是盲区(lc-embeddings 一组本地无法预演),此验证责任在 Linux CI(与 docs.rs
-  #     对齐);其余 8 crate 共 43 个组合已在 windows-gnu 本地全绿。
+  # ==================== Feature matrix (cargo-hack) ====================
+  # T1 (v0.23): per-feature idempotency matrix. A compile error in a single
+  # feature (outside --all-features and outside default clippy features) is
+  # exposed as soon as that one combination breaks, instead of hiding inside
+  # --all-features. 0.22.4's fastembed E0308 / local-embeddings E0195 were exactly
+  # this tier (single-feature compile errors merged into --all-features).
+  #   - `--each-feature` covers every crate that actually gates features:
+  #     lc-embeddings (fastembed/local-candle/local-embeddings),
+  #     lc-vector-stores (qdrant/mongodb/redis/sqlite/pgvector),
+  #     lc-langgraph (4 checkpoint backends), lc-memory, lc-observability,
+  #     lc-callbacks, lc-tools, lc-a2a (axum), lc-agents (sse-server). Measured:
+  #     lc-providers has no features (providers are not feature-gated) and is
+  #     excluded. Any single feature failing `cargo check` turns this job red.
+  #   - the facade (langchainrust) runs `--feature-powerset --depth 2`: compile
+  #     regressions of feature pairs. Heavy ML features (fastembed/local-candle/
+  #     local-embeddings) are excluded — their single features are already covered
+  #     by lc-embeddings' each-feature, and pulling in ort/candle would slow the
+  #     powerset; the remaining combinations (storage/checkpoint/observability
+  #     etc.) are checked one at a time.
+  #   - `--no-dev-deps`: only verifies that feature-gated code itself compiles,
+  #     without re-building dev-deps.
+  #   - cargo-hack and the feature-gated deps all run on stable; the local
+  #     windows-gnu toolchain is a blind spot for ort-sys (lc-embeddings cannot be
+  #     previewed locally), so this verification lives in Linux CI (aligned with
+  #     docs.rs); the other 8 crates' 43 combinations have all passed locally on
+  #     windows-gnu.
   feature-matrix:
     name: Feature Matrix (cargo-hack)
     runs-on: ubuntu-latest
@@ -154,7 +165,7 @@ jobs:
 
       - name: Check every feature of feature-gated crates
         run: |
-          # lc-embeddings 仅在 Linux 可验(ort-sys 无 windows-gnu 预编译)。
+          # lc-embeddings is only verifiable on Linux (ort-sys has no windows-gnu prebuilt binary).
           cargo hack check --package lc-embeddings --each-feature --no-dev-deps
           cargo hack check --package lc-vector-stores --each-feature --no-dev-deps
           cargo hack check --package lc-langgraph --each-feature --no-dev-deps
@@ -170,7 +181,7 @@ jobs:
           cargo hack check --package langchainrust --feature-powerset --depth 2 \
             --exclude-features fastembed,local-candle,local-embeddings --no-dev-deps
 
-  # ==================== 测试 ====================
+  # ==================== Tests ====================
   test:
     name: Test
     runs-on: ${{ matrix.os }}
@@ -212,31 +223,37 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
         env:
-          # 使用模拟数据运行测试，不需要真实 API Key
+          # Run tests against mocked data; no real API key required
           OPENAI_API_KEY: test-key
 
-      # --all-features 会启用 feature 门控的依赖(ort-sys 等,要求 rustc ≥ 1.88),
-      # 不属于 MSRV 承诺,MSRV 门禁行只验证默认特性编译 + 测试。
-      # 只留 ubuntu + stable 一行做全特性冒烟(其余平台/工具链受 ort-sys 下载与
-      # MSRV 限制,不做全特性门禁)。
+      # --all-features enables feature-gated deps (ort-sys etc., requiring
+      # rustc >= 1.88), outside the MSRV promise; the MSRV gate row only verifies
+      # default-feature compilation + tests.
+      # Only the ubuntu + stable row does the all-features smoke test (other
+      # platforms/toolchains are limited by ort-sys downloads and MSRV, so there
+      # is no all-features gate for them).
       - name: Test all features (ubuntu+stable only)
         if: matrix.rust == 'stable' && matrix.os == 'ubuntu-latest'
         run: cargo test --all-features --verbose
         env:
           OPENAI_API_KEY: test-key
 
-  # ==================== MSRV 检查 ====================
-  # MSRV = 1.85(见 rust-toolchain.toml 与各 crate 的 rust-version 字段)。
-  # 已由上面 test 矩阵的 `rust: "1.85"` 行(ubuntu-latest)覆盖:该行即 MSRV 门禁,
-  # 保证 1.85 下默认特性编译 + 测试通过。不另起 job,避免 1.85 重复编译。
-  # 注意:test job 的 RUSTUP_TOOLCHAIN=${{ matrix.rust }} 让每行用自己声明的
-  # 工具链(否则 rust-toolchain.toml 会把所有行拽到 1.85);MSRV 行跳过
-  # 「Test all features」步骤(feature 门控依赖需更高 rustc)。
+  # ==================== MSRV check ====================
+  # MSRV = 1.85 (see rust-toolchain.toml and each crate's rust-version field).
+  # This is covered by the test matrix's `rust: "1.85"` row (ubuntu-latest):
+  # that row IS the MSRV gate, guaranteeing default-feature compilation + tests
+  # pass on 1.85. No separate job, to avoid compiling 1.85 twice.
+  # Note: the test job's RUSTUP_TOOLCHAIN=${{ matrix.rust }} makes each row use
+  # its declared toolchain (otherwise rust-toolchain.toml drags every row onto
+  # 1.85); the MSRV row skips the "Test all features" step (feature-gated deps
+  # need a newer rustc).
 
-  # ==================== semver 检查 ====================
-  # 对比每个 crate 与 crates.io 最新稳定版(动态解析,即上一发布版本)的公开
-  # API 差异。0.x 序列里 minor 允许破坏性变更;本门禁确保破坏都在计划内、
-  # 非预期的破坏(baseline 分析结果)会以编译错误的形式暴露出来。
+  # ==================== SemVer checks ====================
+  # Compares each crate's public API against the latest stable version on
+  # crates.io (resolved dynamically = the previous release). In the 0.x series,
+  # minor bumps allow breaking changes; this gate ensures breakage happens as
+  # planned, and unexpected breakage (baseline analysis results) surfaces as
+  # compile errors.
   semver:
     name: SemVer Checks
     runs-on: ubuntu-latest
@@ -252,26 +269,32 @@ jobs:
       - name: Install cargo-semver-checks
         run: cargo install cargo-semver-checks --locked
 
-      # 基线动态取 crates.io 上 facade crate(langchainrust)最新稳定版 = 上一发布
-      # 版本(0.22.5 前硬编码 0.19.0,停更多个版本导致基线失真、job 长期红)。
-      # 发版后同版本基线无 diff 自动通过;发版前的 push 比对的正是上一版 API。
+      # The baseline is resolved dynamically from crates.io's latest stable facade
+      # crate (langchainrust) = the previous release (hardcoded to 0.19.0 before
+      # 0.22.5, which drifted across releases and kept this job red).
+      # After a release, the same-version baseline diff passes automatically; on
+      # pre-release pushes, this compares against the previous release's API.
       - name: Resolve semver baseline from crates.io
         id: baseline
         run: |
           BASELINE=$(curl -fsS https://index.crates.io/la/ng/langchainrust | python3 -c 'import json,sys; rows=[json.loads(l) for l in sys.stdin if l.strip()]; v=[r["vers"] for r in rows if not r.get("yanked") and "-" not in r["vers"]]; print(v[-1] if v else "")')
           if [ -z "$BASELINE" ]; then
-            echo "ERROR: 无法从 crates.io 解析 semver 基线版本" >&2
+            echo "ERROR: could not resolve the semver baseline from crates.io" >&2
             exit 1
           fi
-          echo "semver baseline(上一发布版本)= $BASELINE"
+          echo "semver baseline (previous release) = $BASELINE"
           echo "BASELINE=$BASELINE" >> "$GITHUB_OUTPUT"
 
-      # facade(langchainrust)不能随工作区一起 --all-features 做基线 rustdoc:
-      # 已发布的 0.23.0 manifest 里 lc-vector-stores 声明 pgvector ^0.4,无锁解析
-      # 会拿到 0.4.2(其 sqlx 要求已放宽到 <0.10)+ sqlx 0.9,与 0.8 分裂成两套
-      # sqlx-core,基线 rustdoc 六连 E0277——已发布制品永远修不了(修复在 32b3c0a)。
-      # 成员 crate 走工作区图(受 Cargo.lock 统一)不受影响;facade 单独按 docs.rs
-      # 的显式 feature 清单检查(本就排除 pgvector-storage,与 docs.rs 构建面一致)。
+      # The facade (langchainrust) cannot run baseline rustdoc together with the
+      # workspace under --all-features: the published 0.23.0 manifest declares
+      # lc-vector-stores' pgvector ^0.4, lockless resolution picks up 0.4.2 (whose
+      # sqlx requirement was relaxed to <0.10) + sqlx 0.9, splitting into two
+      # sqlx-core versions and failing the baseline rustdoc six times with E0277 —
+      # a published artifact can never be fixed (fixed in 32b3c0a).
+      # Member crates follow the workspace graph (unified by Cargo.lock) and are
+      # unaffected; the facade is checked separately against the docs.rs explicit
+      # feature list (which already excludes pgvector-storage, matching the docs.rs
+      # build surface).
       - name: Run semver checks (workspace members)
         run: cargo semver-checks --workspace --exclude langchainrust --baseline-version ${{ steps.baseline.outputs.BASELINE }}
 
@@ -282,16 +305,17 @@ jobs:
             --only-explicit-features \
             --features experimental,qdrant-integration,mongodb-persistence,redis-storage,sqlite-storage,checkpoint-sqlite,checkpoint-postgres,checkpoint-redis,opentelemetry,local-embeddings,fastembed,vectorstore-memory,observability,observability-mongodb,browser-cdp
 
-  # ==================== WASM 兼容检查 ====================
-  # 目前只有数据模型层(lc-shared / lc-schema)对 wasm32-unknown-unknown 干净
-  # (依赖仅 serde/serde_json/thiserror/async-trait)。lc-core 等含无条件原生依赖
-  # (tokio full / reqwest / tiktoken-rs / uuid-v4→getrandom),wasm 适配未落地,
-  # 详见 docs/internal/v0.16.0/EXECUTION_PLAN.md 验证清单的 wasm 项说明。
+  # ==================== WASM compatibility ====================
+  # Only the data-model layer (lc-shared / lc-schema) is clean for
+  # wasm32-unknown-unknown today (deps are only serde/serde_json/thiserror/
+  # async-trait). lc-core et al. carry unconditional native deps (tokio full /
+  # reqwest / tiktoken-rs / uuid-v4->getrandom), so wasm support is not landed yet;
+  # see the wasm checklist in docs/internal/v0.16.0/EXECUTION_PLAN.md.
   wasm:
     name: WASM Check
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: stable  # wasm32 target 装在 stable 上,切到 1.85 会 E0463
+      RUSTUP_TOOLCHAIN: stable  # wasm32 target is installed on stable; switching to 1.85 gives E0463
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -304,7 +328,7 @@ jobs:
       - name: Check wasm compatibility
         run: cargo check --target wasm32-unknown-unknown -p lc-schema -p lc-shared
 
-  # ==================== 文档检查 ====================
+  # ==================== Documentation checks ====================
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -328,25 +352,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # 默认特性 rustdoc(MSRV 盲区之外的门控依赖不在内)。
+      # Default-feature rustdoc (feature-gated deps outside the MSRV blind spot
+      # are not included).
       - name: Build documentation
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # 全特性 rustdoc:与 cd.yml release-gate --all-features 对齐,每次 push
-      # 兜底 feature 门控 API 的文档(0.22.5 修过 fastembed all-features rustdoc E0308)。
+      # All-features rustdoc: aligned with cd.yml's release-gate.sh --all-features,
+      # so every push catches docs for feature-gated APIs (0.22.5 fixed fastembed's
+      # all-features rustdoc E0308).
       - name: Build documentation (all features)
         run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # ==================== 安全审计 ====================
+  # ==================== Security audit ====================
   audit:
     name: Security Audit
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: stable  # cargo-audit 自身要求 rustc ≥ 1.88
+      RUSTUP_TOOLCHAIN: stable  # cargo-audit itself requires rustc >= 1.88
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -360,12 +386,14 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
-  # ==================== 危险模式静态扫描 ====================
-  # 0.18.1 ⏳ 待办落地:门禁补「安全/质量静态分析 job」。
-  # scripts/security-scan.sh 用正则基线扫危险模式(SQL 拼接/路径穿越/子进程
-  # 参数拼接/硬编码 key/URL 内嵌 secret)。BLOCK 命中即 fail(基线已清零,
-  # 新命中即回归);A1/A4 为 ADVISORY 只打印。纯 grep 无 cargo 依赖,不受
-  # windows-gnu/ort-sys 等本地环境盲区影响。
+  # ==================== Dangerous-pattern static scan ====================
+  # 0.18.1 (implemented): a security/quality static-analysis job in the gate.
+  # scripts/security-scan.sh scans for dangerous patterns with a regex baseline
+  # (SQL concatenation / path traversal / subprocess argument concatenation /
+  # hardcoded keys / secrets embedded in URLs). A BLOCK hit fails the job
+  # (the baseline is zero, so any new hit is a regression); A1/A4 hits are
+  # ADVISORY and only printed. Pure grep with no cargo dependency — immune to
+  # local blind spots such as windows-gnu / ort-sys.
   security-scan:
     name: Security Pattern Scan
     runs-on: ubuntu-latest
@@ -376,18 +404,20 @@ jobs:
       - name: Run dangerous-pattern scan
         run: bash scripts/security-scan.sh --fail-if-found
 
-  # ==================== 覆盖率报告 ====================
-  # 使用 cargo-llvm-cov 测量行覆盖率。门禁先压到 50% 求绿:CI 日志在
-  # --lcov 模式下不打印真实百分比,GitHub API/codecov 本地均无法取数,
-  # 80% 是未经验证的虚高目标(一直红)。50% 作为保守基线守住,后续拿到
-  # 真实覆盖率再按 baseline+margin 提回。
-  # 注意:本机 windows-gnu 工具链缺 profiler_builtins(`rustc -C instrument-coverage`
-  # 报 E0463),无法本地测量覆盖率;此门禁依赖 Linux CI 的完整工具链执行。
+  # ==================== Code coverage report ====================
+  # Measures line coverage with cargo-llvm-cov. The gate is held at 50% to stay
+  # green: in --lcov mode the CI log does not print the real percentage, and
+  # neither the GitHub API nor codecov locally can read it, so 80% is an
+  # unverified aspiration (it kept us red). 50% is the conservative baseline;
+  # once real coverage is measurable again, raise it back with baseline+margin.
+  # Note: the local windows-gnu toolchain lacks profiler_builtins (`rustc
+  # -C instrument-coverage` gives E0463), so coverage cannot be measured locally;
+  # this gate relies on the full Linux CI toolchain.
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
     env:
-      RUSTUP_TOOLCHAIN: stable  # cargo-llvm-cov 自身要求 rustc ≥ 1.87
+      RUSTUP_TOOLCHAIN: stable  # cargo-llvm-cov itself requires rustc >= 1.87
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -412,9 +442,9 @@ jobs:
         run: cargo install cargo-llvm-cov --locked
 
       - name: Pre-build stdio interop fixtures
-        # cargo-llvm-cov 以 `--tests` 跑用例且使用独立 target 目录,不会构建
-        # examples;lc-mcp/tests/stdio_interop.rs 在 target/debug/examples 下
-        # 预置二进制,缺失时 10 个用例全部 panic。
+        # cargo-llvm-cov runs tests with `--tests` using its own target dir, which
+        # does not build examples; lc-mcp/tests/stdio_interop.rs expects binaries
+        # under target/debug/examples, and all 10 cases panic when they are missing.
         run: cargo build -p lc-mcp --examples
 
       - name: Generate coverage
@@ -429,3 +459,32 @@ jobs:
           fail_ci_if_error: false
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-examples-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-examples-cargo-
+
+      - name: Check examples (default features)
+        run: cargo check -p langchainrust --examples
+
+      - name: Check examples (openai-server)
+        run: cargo check -p langchainrust --examples --features openai-server

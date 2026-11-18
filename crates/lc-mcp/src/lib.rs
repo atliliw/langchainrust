@@ -54,6 +54,7 @@ pub mod roots;
 pub mod sampling;
 pub mod sandbox;
 pub mod server;
+pub mod skills;
 pub mod subscriptions;
 pub mod tasks;
 pub mod tenant;
@@ -143,6 +144,8 @@ pub use tasks::{
     CancelTaskParams, GetTaskParams, ShippingLabel, TaskProvider, TaskResponse, TaskState,
     TaskStatus,
 };
+pub use skills::McpSkill;
+pub use skills::{SkillBody, SkillDescriptor};
 pub use tenant::TenantGateway;
 pub use tool_adapter::MCPToolAdapter;
 pub use tool_client::McpToolClient;

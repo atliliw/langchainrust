@@ -98,9 +98,8 @@ pub fn reliability_report(original: &[Verdict], swapped: &[Verdict]) -> Reliabil
     let mut a_swapped = Vec::with_capacity(original.len());
 
     for (o, s) in original.iter().zip(swapped) {
-        match order_swap_consistent(*o, *s) {
-            Verdict::Tie => ties += 1,
-            _ => {}
+        if order_swap_consistent(*o, *s) == Verdict::Tie {
+            ties += 1;
         }
         a_original.push(matches!(o, Verdict::AWins));
         // Position-corrected: in the swapped round, B winning means A won.

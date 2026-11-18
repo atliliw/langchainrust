@@ -26,6 +26,7 @@ use super::protocol::{
 use super::resources::{ReadResourceResult, ResourceProvider};
 use super::tasks::TaskProvider;
 use super::sampling::{SamplingHandler, SamplingRequest, SamplingResult};
+use super::skills::{McpSkill, SkillsDirectory};
 use super::logging::{message_envelope, LogLevel, LogSink, LOGGING_SETLEVEL};
 use super::subscriptions::{
     ResourcePushSink, ResourceSubscriptions, RESOURCES_SUBSCRIBE, RESOURCES_UNSUBSCRIBE,
@@ -91,6 +92,9 @@ pub struct MCPServer {
     /// Optional task provider (T3 Tasks extension): once registered, enables
     /// `tasks/get` / `tasks/cancel` for durable long-running operations.
     tasks: Option<Arc<dyn TaskProvider>>,
+    /// SEP-2640 Skills extension (v0.31): a directory of skill documents shipped
+    /// alongside the server. When non-empty, enables `skills/list` / `skills/get`.
+    skills: SkillsDirectory,
     /// 0.27.0 T1: optional resource-subscription registry. Once attached via
     /// [`Self::with_subscription_registry`], it enables `resources/subscribe` /
     /// `resources/unsubscribe` and lets the server push
@@ -209,6 +213,7 @@ impl MCPServer {
             resources: None,
             prompts: None,
             tasks: None,
+            skills: SkillsDirectory::default(),
             completion: None,
             sampling_handler: None,
             elicitation_handler: None,
@@ -228,6 +233,23 @@ impl MCPServer {
     /// bound (not recommended — a hung tool then holds a concurrency permit
     /// indefinitely and can strand the whole server). The hardened default is
     /// 60s; raise it for deployments whose tools legitimately run longer.
+    /// Register one skill for the SEP-2640 Skills extension. Skills are
+    /// shipped via `skills/list` / `skills/get` when the directory is non-empty.
+    pub fn with_skill(mut self, skill: McpSkill) -> Self {
+        self.skills.add(skill);
+        self
+    }
+
+    /// Register many skills at once.
+    pub fn with_skills<I: IntoIterator<Item = McpSkill>>(mut self, skills: I) -> Self {
+        for skill in skills {
+            self.skills.add(skill);
+        }
+        self
+    }
+
+    /// Bounds how long a single `tools/call` may run. `Some(d)` enforces a
+    /// timeout; `None` disables it. Defaults to 60 seconds.
     pub fn with_tool_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
         self.tool_timeout = timeout.into();
         self
@@ -465,6 +487,9 @@ impl MCPServer {
                 if self.log_sink.is_some() {
                     capabilities["logging"] = json!({});
                 }
+                if !self.skills.is_empty() {
+                    capabilities["skills"] = json!({});
+                }
                 MCPResponse {
                     jsonrpc: "2.0".to_string(),
                     id: Some(req.id),
@@ -511,10 +536,7 @@ impl MCPServer {
                 // debug, silent wrap + out-of-range slice in release) or slice
                 // `tools[start..end]` with `start > end` (see #H-4).
                 let start = offset.min(tools.len());
-                let end = start
-                    .checked_add(TOOL_PAGE_SIZE)
-                    .unwrap_or(usize::MAX)
-                    .min(tools.len());
+                let end = start.saturating_add(TOOL_PAGE_SIZE).min(tools.len());
                 let page: Vec<_> = tools[start..end].to_vec();
                 let mut result = json!({ "tools": page });
                 if end < tools.len() {
@@ -558,6 +580,9 @@ impl MCPServer {
                 if self.log_sink.is_some() {
                     capabilities["logging"] = json!({});
                 }
+                if !self.skills.is_empty() {
+                    capabilities["skills"] = json!({});
+                }
                 let mut tools: Vec<MCPToolDefinition> = self
                     .tools
                     .iter()
@@ -592,6 +617,9 @@ impl MCPServer {
             "prompts/list" => self.handle_prompts_list(req).await,
             "prompts/get" => self.handle_prompts_get(req).await,
             "completion/complete" => self.handle_completion_complete(req).await,
+            // SEP-2640 Skills extension: enabled when skills are registered.
+            "skills/list" => self.handle_skills_list(req),
+            "skills/get" => self.handle_skills_get(req),
             "tasks/get" => self.handle_tasks_get(req).await,
             "tasks/cancel" => self.handle_tasks_cancel(req).await,
             _ => Self::method_not_found_response(req.id),
@@ -642,6 +670,43 @@ impl MCPServer {
                 Self::ok_response(req.id, cacheable_result(result))
             }
             Err(e) => Self::error_response(req.id, e),
+        }
+    }
+
+    /// SEP-2640 Skills: `skills/list` -> manifest of available skills. When no
+    /// skill is registered the method is unavailable (`method_not_found`).
+    fn handle_skills_list(&self, req: MCPRequest) -> MCPResponse {
+        if self.skills.is_empty() {
+            return Self::method_not_found_response(req.id);
+        }
+        let result = self.skills.list();
+        Self::ok_response(req.id, cacheable_result(result))
+    }
+
+    /// SEP-2640 Skills: `skills/get` -> full body of one skill by `name`.
+    fn handle_skills_get(&self, req: MCPRequest) -> MCPResponse {
+        if self.skills.is_empty() {
+            return Self::method_not_found_response(req.id);
+        }
+        let name = req
+            .params
+            .as_ref()
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_default();
+        if name.is_empty() {
+            return Self::error_response(
+                req.id,
+                MCPError::new(-32602, "skills/get requires a `name` parameter"),
+            );
+        }
+        match self.skills.get(&name) {
+            Some(content) => Self::ok_response(req.id, complete_result(content)),
+            None => Self::error_response(
+                req.id,
+                MCPError::new(-32602, format!("unknown skill: {name}")),
+            ),
         }
     }
 
@@ -1561,6 +1626,50 @@ mod tests {
     /// 2026-07-28 SEP-2322 / SEP-2549: list results carry `resultType`,
     /// `ttlMs`, and `cacheScope`.
     #[tokio::test]
+    async fn test_skills_list_and_get() {
+        let server = MCPServer::new().with_skill(McpSkill::new(
+            "write",
+            "write prose",
+            "# Write\nProduce concise, correct text.",
+        ));
+
+        // manifest: name/description/version, no body
+        let resp = server
+            .handle_request(MCPRequest::new(1, "skills/list", None))
+            .await;
+        assert!(!resp.is_error());
+        let result = resp.result.unwrap();
+        let skills = result["skills"].as_array().unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0]["name"], json!("write"));
+        assert!(skills[0].get("content").is_none(), "manifest must not leak body");
+
+        // get: full markdown body
+        let resp2 = server
+            .handle_request(MCPRequest::new(2, "skills/get", Some(json!({"name": "write"}))))
+            .await;
+        assert!(!resp2.is_error());
+        assert_eq!(
+            resp2.result.unwrap()["content"],
+            json!("# Write\nProduce concise, correct text.")
+        );
+
+        // unregistered skill -> error (-32602), not a bogus 200
+        let resp3 = server
+            .handle_request(MCPRequest::new(3, "skills/get", Some(json!({"name": "nope"}))))
+            .await;
+        assert!(resp3.is_error());
+    }
+
+    #[tokio::test]
+    async fn test_skills_absent_when_none_registered() {
+        let server = MCPServer::new();
+        let resp = server
+            .handle_request(MCPRequest::new(1, "skills/list", None))
+            .await;
+        assert!(resp.is_error(), "skills/list must be method_not_found with no skills");
+    }
+
     async fn test_tools_list_carries_result_type_and_cache_fields() {
         let server = server_with_echo();
         let resp = server

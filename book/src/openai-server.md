@@ -6,7 +6,7 @@ feature adds the entry point most existing applications speak: OpenAI's
 
 ```toml
 # `lc-agents` exposes the feature today:
-lc-agents = { version = "0.30.0", features = ["openai-server"] }
+lc-agents = { version = "0.31", features = ["openai-server"] }
 ```
 
 > The `langchainrust` facade forwards it as `openai-server`. If you build from

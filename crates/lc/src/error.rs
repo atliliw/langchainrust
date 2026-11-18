@@ -36,6 +36,7 @@ pub use lc_agents::PlanExecuteError;
 pub use lc_agents::ResearchError;
 
 // ---- Chain Errors ----
+#[cfg(feature = "chains")]
 pub use lc_chains::ChainError;
 
 // ---- Core Errors ----
@@ -77,6 +78,7 @@ pub use lc_langgraph::errors::GraphError;
 pub use lc_langgraph::PersistenceError;
 
 // ---- Guardrail Errors ----
+#[cfg(feature = "guardrails")]
 pub use lc_guardrails::GuardrailError;
 
 // ---- Evaluation Errors ----
@@ -86,9 +88,11 @@ pub use lc_evaluation::EvalError;
 pub use lc_sessions::store::SessionError;
 
 // ---- A2A Errors ----
+#[cfg(feature = "a2a")]
 pub use lc_a2a::client::A2AError;
 
 // ---- MCP Errors ----
+#[cfg(feature = "mcp")]
 pub use lc_mcp::MCPError;
 
 // ---- Prompt Errors ----
@@ -159,6 +163,7 @@ pub enum Error {
 
     // ---- Chains ----
     /// Chain execution error.
+    #[cfg(feature = "chains")]
     #[error("Chain error: {0}")]
     Chain(#[from] ChainError),
 
@@ -243,6 +248,7 @@ pub enum Error {
 
     // ---- Guardrails ----
     /// Guardrail validation error.
+    #[cfg(feature = "guardrails")]
     #[error("Guardrail error: {0}")]
     Guardrail(#[from] GuardrailError),
 
@@ -258,11 +264,13 @@ pub enum Error {
 
     // ---- MCP ----
     /// MCP (Model Context Protocol) error.
+    #[cfg(feature = "mcp")]
     #[error("MCP error: {0}")]
     Mcp(#[from] MCPError),
 
     // ---- A2A ----
     /// Agent-to-Agent protocol error.
+    #[cfg(feature = "a2a")]
     #[error("A2A error: {0}")]
     A2A(#[from] A2AError),
 
@@ -306,6 +314,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "chains")]
     #[test]
     fn test_from_chain_error() {
         let err = Error::from(ChainError::ExecutionError("bad request".to_string()));
@@ -339,6 +348,7 @@ mod tests {
         assert!(StdError::source(&err).is_some());
     }
 
+    #[cfg(feature = "mcp")]
     #[test]
     fn test_from_mcp_error() {
         let err = Error::from(MCPError::new(-32602, "bad params"));

@@ -2,6 +2,9 @@
 
 LangChainRust supports streaming at multiple levels: LLM token streaming, agent event streaming, chain streaming, and LCEL pipeline streaming.
 
+> **Cargo feature (v0.31+):** the chain-level APIs (`LLMChain`, `BaseChain::stream`,
+> `StreamToken`) are opt-in: `langchainrust = { version = "0.31", features = ["chains"] }`.
+
 ## Streaming Levels
 
 | Level | Method | Output |

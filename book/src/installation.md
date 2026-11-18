@@ -4,7 +4,13 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
+langchainrust = "0.31"
+```
+
+The default build is the five main paths. For a one-import start:
+
+```rust
+use langchainrust::prelude::*;
 ```
 
 ## Feature Flags
@@ -13,7 +19,7 @@ LangChainRust uses feature flags to keep the default build lean:
 
 ```toml
 [dependencies.langchainrust]
-version = "0.30.0"
+version = "0.31"
 features = ["qdrant-integration"]  # Optional features
 ```
 
@@ -21,6 +27,11 @@ features = ["qdrant-integration"]  # Optional features
 
 | Feature | Description |
 |---------|-------------|
+| `mcp` | MCP client/server (opt-in since v0.31) |
+| `a2a` | A2A protocol (implies `chains`) |
+| `guardrails` | Input/output guardrails |
+| `chains` | `LLMChain` / `SequentialChain` / `RetrievalQA` |
+| `full` | All extended surfaces above + `observability` |
 | `qdrant-integration` | Qdrant vector store |
 | `mongodb-persistence` | MongoDB document store |
 | `redis-storage` | Redis document store |
@@ -36,9 +47,9 @@ You can also use individual crates directly:
 
 ```toml
 [dependencies]
-lc-core = "0.30.0"
-lc-providers = "0.30.0"
-lc-agents = "0.30.0"
+lc-core = "0.31"
+lc-providers = "0.31"
+lc-agents = "0.31"
 ```
 
 ## Environment Variables

@@ -48,7 +48,7 @@ fn normalize_minmax(scores: &[f32]) -> Vec<f32> {
     }
     // Non-finite (e.g. BM25 edge-case NaN/Inf) or all-equal input: no range to
     // span; map everything to 0.0 so a NaN never leaks into the combined score.
-    if !(max > min) {
+    if max.partial_cmp(&min) != Some(std::cmp::Ordering::Greater) {
         return vec![0.0; scores.len()];
     }
     let span = max - min;

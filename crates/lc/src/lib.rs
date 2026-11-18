@@ -38,6 +38,7 @@ pub mod agents;
 pub mod memory;
 
 /// Chain compositions: LLMChain, SequentialChain, RetrievalQA.
+#[cfg(feature = "chains")]
 pub mod chains;
 
 /// Embedding models: OpenAI, DeepSeek, Qwen, Mock.
@@ -59,7 +60,9 @@ pub mod callbacks;
 pub mod langgraph;
 
 /// MCP: Model Context Protocol client.
+#[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "mcp")]
 pub use mcp::MCPServer;
 
 /// Sessions: conversation lifecycle management.
@@ -68,6 +71,7 @@ pub use sessions::SessionManagerRunnable;
 
 pub mod evaluation;
 /// Guardrails: input/output safety validation.
+#[cfg(feature = "guardrails")]
 pub mod guardrails;
 
 /// Unified error type aggregating all sub-module errors.
@@ -77,7 +81,11 @@ pub use error::Error;
 // error types re-exported at root, so also expose the unambiguous alias `LcError`.
 pub use error::LcError;
 
+/// The main path: five modules, one import (`use langchainrust::prelude::*;`).
+pub mod prelude;
+
 /// A2A: Agent-to-Agent protocol for inter-agent communication.
+#[cfg(feature = "a2a")]
 pub mod a2a;
 
 // T2-3 (0.27.0): feature-matrix export inventory. The facade gates 18 root/module exports
@@ -192,6 +200,7 @@ pub use evaluation::{
     Price, PriceBook, RagEvaluator, RegexMatch, Regression, Report, ReportComparison, Score,
     StringDistance, Verdict,
 };
+#[cfg(feature = "guardrails")]
 pub use guardrails::{
     ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
     GuardrailRunner, GuardrailsConfig, InputGuardrail, MaxLengthGuardrail, OutputGuardrail,
@@ -232,6 +241,7 @@ pub use tools::browser::{
     BrowserInput, BrowserOutput, CdpBrowser, CdpBrowserTool, NavigationInfo, PageLink, PageMetadata,
 };
 
+#[cfg(feature = "chains")]
 pub use chains::{
     BaseChain, ChainError, ChainResult, ChainRunnable, ChainStream, ConversationChain,
     ConversationChainBuilder, ConversationRetrievalChain, LLMChain, LLMChainBuilder,
@@ -351,6 +361,7 @@ pub use core::structured_output::{
 };
 
 // A2A
+#[cfg(feature = "a2a")]
 pub use a2a::{
     A2AClient, A2AError, A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2AServer, A2ATask,
     A2ATaskResult, AgentCard, TaskStatus,
@@ -358,6 +369,7 @@ pub use a2a::{
 // B7 (0.25.0): security/identity surface lifted to the umbrella. ServeConfig is
 // not lifted because it is gated behind lc-a2a's `axum` feature (not enabled in
 // this crate's prod dependency); reach it as `a2a::ServeConfig`.
+#[cfg(feature = "a2a")]
 pub use a2a::{Authenticator, Principal, StaticBearer};
 
 // LangGraph
@@ -489,5 +501,131 @@ mod reexport_guard {
             TypeId::of::<crate::core::RunnableConfig>(),
             "root `RunnableConfig` 必须与 `core::RunnableConfig` 是同一项"
         );
+    }
+
+    // =======================================================================
+    // v0.31.0 facade main-path guards
+    // =======================================================================
+
+    // The `prelude` is the advertised main path. Every name it promises must
+    // resolve, and `build_executor()` must be a one-call route to something
+    // invocable — no tool list rebuilt by hand.
+    #[test]
+    fn prelude_main_path_resolves_and_builds_executor() {
+        use crate::prelude::*;
+
+        let _: Option<AgentBuilder> = None;
+        let _: Option<AgentExecutor> = None;
+        let _: Option<FunctionCallingAgent> = None;
+        let _: Option<Arc<dyn BaseAgent>> = None;
+
+        let _: Option<OpenAIChat> = None;
+        let _: Option<OpenAIConfig> = None;
+        let _: Option<Message> = None;
+
+        let _: Option<RAGPipeline> = None;
+        let _: Option<RAGPipelineBuilder> = None;
+        let _: Option<InMemoryVectorStore> = None;
+
+        let _: Option<EvalRunner> = None;
+        let _: Option<ExactMatch> = None;
+        let _: Option<StringDistance> = None;
+
+        let _: Option<EventSessionManager> = None;
+        let _: Option<FileCheckpoint> = None;
+        let _: Option<MemoryEventStore> = None;
+
+        fn _assert_chat_model<M: BaseChatModel>() {}
+        let _ = _assert_chat_model::<OpenAIChat>;
+
+        // Offline: the model is constructed but never called.
+        let executor = AgentBuilder::new()
+            .llm(OpenAIChat::new(OpenAIConfig::new("test_key")))
+            .system("test")
+            .tool(Calculator::new())
+            .max_iterations(7)
+            .build_executor()
+            .expect("build_executor should succeed with a configured LLM");
+        assert_eq!(executor.max_iterations(), 7);
+    }
+
+    #[test]
+    fn prelude_build_executor_requires_llm() {
+        use crate::prelude::*;
+
+        let err = AgentBuilder::new()
+            .tool(Calculator::new())
+            .build_executor()
+            .err()
+            .expect("missing LLM must be an error");
+        assert!(err.to_string().contains("LLM is required"));
+    }
+
+    // v0.31.0: the four extended surfaces are opt-in. When the feature is on,
+    // the root re-exports must still resolve — a dropped or mis-gated `pub use`
+    // is a silent API regression, so pin the lists here (tracked in git, unlike
+    // the gitignored `crates/lc/tests/` functional suite).
+    #[cfg(feature = "chains")]
+    #[test]
+    fn chains_root_exports_resolve() {
+        #[allow(unused_imports)]
+        use crate::{
+            BaseChain, ChainError, ChainResult, ChainRunnable, ChainStream, ConversationChain,
+            ConversationChainBuilder, ConversationRetrievalChain, LLMChain, LLMChainBuilder,
+            LLMRouterChain, MapReduceDocumentsChain, MapRerankDocumentsChain, RefineDocumentsChain,
+            RetrievalQA, RouteDestination, RouterChain, SequentialChain, StreamToken,
+            StuffDocumentsChain,
+        };
+    }
+
+    #[cfg(feature = "guardrails")]
+    #[test]
+    fn guardrails_root_exports_resolve() {
+        #[allow(unused_imports)]
+        use crate::{
+            ChunkContext, FlushOutput, ForbiddenWordsGuardrail, GuardedAgent, GuardrailError,
+            GuardrailRunner, GuardrailsConfig, InputGuardrail, MaxLengthGuardrail, OutputGuardrail,
+            PiiKind, PiiRedactionGuardrail, SchemaOutputGuardrail, SensitiveInfoGuardrail,
+        };
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn mcp_module_surface_resolves() {
+        #[allow(unused_imports)]
+        use crate::mcp::{MCPError, MCPRequest, MCPResponse, MCPToolAdapter, StatelessMcpClient};
+
+        let _ = crate::MCPServer::new;
+    }
+
+    #[cfg(feature = "a2a")]
+    #[test]
+    fn a2a_module_surface_resolves() {
+        #[allow(unused_imports)]
+        use crate::a2a::{
+            A2AClient, A2AError, A2AErrorData, A2AMessage, A2ARequest, A2AResponse, A2AServer,
+            A2ATask, A2ATaskResult, AgentCard, TaskStatus,
+        };
+        #[allow(unused_imports)]
+        use crate::{Authenticator, Principal, StaticBearer};
+    }
+
+    // v0.31.0: `LcError` folds the extended-surface errors in only when the
+    // matching feature is on; both the re-export and the variant must exist.
+    #[cfg(feature = "chains")]
+    #[test]
+    fn lc_error_folds_chain_error() {
+        let err: crate::Error =
+            crate::error::ChainError::ExecutionError("boom".into()).into();
+        assert!(matches!(err, crate::Error::Chain(_)));
+        assert!(err.to_string().contains("Chain error"));
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn lc_error_folds_mcp_error() {
+        let err: crate::Error = crate::error::MCPError::new(-32602, "bad params").into();
+        assert!(matches!(err, crate::Error::Mcp(_)));
+        assert!(err.to_string().contains("MCP error"));
     }
 }

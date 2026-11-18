@@ -51,6 +51,8 @@ const AGENT_JSON_PATH: &str = "/.well-known/agent.json";
 /// SSE route for streaming task notifications (P2-1).
 const SSE_PATH: &str = "/events";
 /// WebSocket route for streaming task notifications (V0.27, #186).
+/// Only compiled when the `ws` feature is on — the route is gated by it too.
+#[cfg(feature = "ws")]
 const WS_PATH: &str = "/ws";
 /// Default bind address for [`A2AServer::serve`]: the loopback interface, so an
 /// unauthenticated server is not silently exposed to the network (B7 security

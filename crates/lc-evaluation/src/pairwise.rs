@@ -227,7 +227,7 @@ fn has_tie_marker(lower: &str) -> bool {
         while let Some(rel) = lower[from..].find(kw) {
             let idx = from + rel;
             // an immediately-preceding 不 negates the marker
-            if lower[..idx].chars().next_back() != Some('不') {
+            if !lower[..idx].ends_with('不') {
                 return true;
             }
             from = idx + kw.len();

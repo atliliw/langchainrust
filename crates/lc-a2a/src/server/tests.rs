@@ -2063,3 +2063,22 @@ async fn task_reaches_terminal_despite_transient_store_read_failure() {
         .to_string();
     assert_eq!(output, "hello");
 }
+
+/// SEP/P0 (official SDK interop): the official A2A method names must route as
+/// aliases so a spec-compliant client (a2a-rs uses `message/send`) can reach us —
+/// the server must never answer those with `-32601` "method not found".
+#[tokio::test]
+async fn official_method_aliases_route() {
+    let server = A2AServer::new(Arc::new(EchoChain));
+    let msg = A2AMessage::user("hello");
+    let params = serde_json::json!({ "message": serde_json::to_value(&msg).unwrap() });
+
+    for method in ["message/send", "task/get", "task/cancel"] {
+        let resp = server
+            .handle_a2a_request(A2ARequest::new(99, method, Some(params.clone())))
+            .await;
+        if let Some(err) = &resp.error {
+            assert_ne!(err.code, -32601, "{method} must not be method_not_found");
+        }
+    }
+}

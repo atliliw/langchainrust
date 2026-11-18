@@ -23,6 +23,7 @@ members = [
     "crates/lc-guardrails",
     "crates/lc-a2a",
     "crates/lc-testkit",
+    "crates/lc-cli",
 ]
 resolver = "3"
 

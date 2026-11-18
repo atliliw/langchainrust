@@ -1,5 +1,8 @@
 # Chains
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with
+> `langchainrust = { version = "0.31", features = ["chains"] }`.
+
 Chains compose operations into pipelines. LangChainRust provides LLMChain, SequentialChain, ConversationChain, RouterChain, RetrievalQA, and document chains.
 
 ## Chain Types

@@ -1,5 +1,9 @@
 # A2A Protocol
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with
+> `langchainrust = { version = "0.31", features = ["a2a"] }`
+> (the `a2a` feature implies `chains`).
+
 The [A2A](https://github.com/google/A2A) (Agent-to-Agent) protocol is Google's open standard for agent interoperability — letting agents built by different teams and vendors discover and call each other. LangChainRust provides both a server and client implementation over JSON-RPC 2.0.
 
 Layering: **A2A handles "Agent ↔ Agent" communication; MCP handles "Agent ↔ tools / data sources."** They compose: MCP supplies tools, agents collaborate over A2A.

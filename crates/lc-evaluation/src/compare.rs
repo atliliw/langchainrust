@@ -78,6 +78,10 @@ pub struct PairedSignificance {
 /// over/underflows. All arguments this crate passes (`n+1`, `k+1`, `n−k+1`) satisfy `x >= 1`, and the
 /// binomial masses `P_k = C(n,k)·0.5ⁿ` are derived from it via [`ln_binomial_mass`], sidestepping the
 /// `0.5ⁿ`→`0.0` underflow that the old probability-recurrence hit at `n ≈ 1073`.
+// Clippy flags excess-digit float literals, but these are the standard 9-term Lanczos
+// coefficients — the trailing digits are load-bearing for accuracy at extreme x, so keep
+// them verbatim: trimming looks like a cleanup but silently degrades the result.
+#[allow(clippy::excessive_precision)]
 fn log_gamma(x: f64) -> f64 {
     debug_assert!(x >= 1.0, "Lanczos needs x >= 1, got {x}");
     // g = 7, the standard 9-term Lanczos table.
@@ -95,8 +99,8 @@ fn log_gamma(x: f64) -> f64 {
     ];
     let z = x - 1.0;
     let mut s = COEF[0];
-    for i in 1..COEF.len() {
-        s += COEF[i] / (z + i as f64);
+    for (i, &c) in COEF.iter().enumerate().skip(1) {
+        s += c / (z + i as f64);
     }
     let t = z + G + 0.5;
     // ln Γ(x) = ½·ln(2π) + (z + ½)·ln t − t + ln(s). Kept in logs so Γ itself never materializes

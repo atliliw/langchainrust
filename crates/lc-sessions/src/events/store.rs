@@ -103,6 +103,7 @@ pub struct MemoryEventStore {
     /// `(session_id, branch)`. Because the table lives here (not in each
     /// manager), two independently-constructed `EventSessionManager`s over the
     /// same store serialize their `chat()` sequences — see the trait doc.
+    #[allow(clippy::type_complexity)] // `(String,String)` key → lock handle; read-only by clippy
     session_locks: std::sync::Mutex<HashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>,
 }
 

@@ -1,5 +1,8 @@
 # Guardrails
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with
+> `langchainrust = { version = "0.31", features = ["guardrails"] }`.
+
 Guardrails provide input/output validation to protect production agents from malicious input and sensitive information leakage.
 
 ## Core Concepts

@@ -1,6 +1,6 @@
 [package]
 name = "lc-a2a"
-version = "0.30.0"
+version = "0.31.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A2A (Agent-to-Agent) protocol support for langchainrust — client, server, and protocol types."
@@ -8,8 +8,8 @@ repository = "https://github.com/atliliw/langchainrust"
 rust-version.workspace = true
 
 [dependencies]
-lc-chains = { path = "../lc-chains", version = "0.30.0" }
-lc-agents = { path = "../lc-agents", version = "0.30.0" }
+lc-chains = { path = "../lc-chains", version = "0.31.0" }
+lc-agents = { path = "../lc-agents", version = "0.31.0" }
 async-trait = "0.1"
 log = "0.4"
 tracing = { version = "0.1", features = ["attributes"] }
@@ -23,7 +23,7 @@ sha2 = "0.10"
 hmac = "0.12"
 # T7 (v0.23): axum bump 0.7 → 0.8 removes the 0.7/0.8 dual-stack from the
 # all-features graph (the SSE/handler APIs used here are stable across both).
-lc-core = { path = "../lc-core", version = "0.30.0" }
+lc-core = { path = "../lc-core", version = "0.31.0" }
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 tokio-stream = { version = "0.1", features = ["sync"], optional = true }
@@ -34,8 +34,9 @@ tokio-tungstenite = { version = "0.26", optional = true, default-features = fals
 # Driving the client WebSocket stream (`A2AWebSocketStream::next`) needs the
 # `Stream` impl that lives in futures-util; gated alongside tungstenite.
 futures-util = { version = "0.3", optional = true }
-
-[dev-dependencies]
+# Official A2A SDK — used only by the gated official-sdk interop test; requires
+# rustc >= 1.96, so it is NOT part of any default build (MSRV 1.85).
+a2a-rs = { version = "0.10", optional = true, default-features = false, features = ["jsonrpc-client"] }
 
 [features]
 default = []
@@ -44,4 +45,16 @@ axum = ["dep:axum", "dep:tower-http", "dep:tokio-stream"]
 # V0.27 (#186): WebSocket transport (server `/ws` via axum + client `connect_ws`
 # via tokio-tungstenite). Enables axum's ws capability for the upgrade handshake.
 ws = ["dep:tokio-tungstenite", "dep:futures-util", "axum?/ws"]
+# Official SDK interop (a2a-rs): off by default — a2a-rs needs rustc >= 1.96,
+# above the workspace MSRV. Builds the `official_sdk_interop` test only, and
+# enables axum so the test can host the server over HTTP.
+official-sdk = ["dep:a2a-rs", "axum"]
+
+# Official SDK interop test (a2a-rs, rustc >= 1.96): only built when the
+# `official-sdk` feature is on, so the default (MSRV 1.85 / local stable 1.93)
+# build never compiles a2a-rs.
+[[test]]
+name = "official_sdk_interop"
+path = "tests/official_sdk_interop.rs"
+required-features = ["official-sdk"]
 

@@ -3,6 +3,7 @@
 - [Introduction](./README.md)
 - [Quick Start](./quick-start.md)
 - [Installation](./installation.md)
+- [Examples](./examples.md)
 - [LLM Providers](./llm-providers.md)
 - [Agents](./agents.md)
 - [RAG & Retrieval](./rag.md)

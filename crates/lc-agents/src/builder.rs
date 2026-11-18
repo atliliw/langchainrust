@@ -28,7 +28,7 @@
 //!     .build()?;
 //! ```
 
-use crate::{AgentError, BaseAgent, FunctionCallingAgent};
+use crate::{AgentError, AgentExecutor, BaseAgent, FunctionCallingAgent};
 use lc_core::language_models::BaseChatModel;
 use lc_core::tools::BaseTool;
 use lc_providers::ProviderError;
@@ -154,6 +154,27 @@ impl AgentBuilder {
         Ok(Arc::new(agent) as Arc<dyn BaseAgent>)
     }
 
+    /// Builds an [`AgentExecutor`] with the same tools, system prompt and
+    /// iteration cap configured on this builder.
+    ///
+    /// This is the blessed main path: one builder call returns something that
+    /// can be invoked directly, without re-creating the tool list.
+    ///
+    /// Tool handles are cloned as `Arc`s, so the executor and the agent share
+    /// the same tool instances (any internal tool state is not duplicated).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AgentError::Other` if no LLM was set.
+    pub fn build_executor(self) -> Result<AgentExecutor, AgentError> {
+        // Clone the Arc list before `self` is consumed by `build_as_agent`.
+        // `Vec<Arc<dyn BaseTool>>` clone is only refcount bumps.
+        let tools = self.tools.clone();
+        let max_iterations = self.max_iterations;
+        let agent = self.build_as_agent()?;
+        Ok(AgentExecutor::new(agent, tools).with_max_iterations(max_iterations))
+    }
+
     /// Returns the max iterations
     pub fn get_max_iterations(&self) -> usize {
         self.max_iterations
@@ -169,7 +190,6 @@ impl Default for AgentBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AgentExecutor;
     use lc_providers::{OpenAIChat, OpenAIConfig};
     use lc_tools::Calculator;
 
@@ -291,5 +311,32 @@ mod tests {
             .unwrap();
         let executor = AgentExecutor::new(Arc::new(agent), Vec::new()).with_max_iterations(20);
         assert_eq!(executor.max_iterations(), 20);
+    }
+
+    /// v0.31.0: the builder must hand back an executor whose cap is the one
+    /// configured on the builder — no second `AgentExecutor::new` call by the user.
+    #[test]
+    fn test_build_executor_preserves_max_iterations() {
+        let config = OpenAIConfig::new("test_key").with_base_url("http://localhost:8080/v1");
+        let executor = AgentBuilder::new()
+            .llm(OpenAIChat::new(config))
+            .system("test")
+            .tool(Calculator::new())
+            .max_iterations(5)
+            .build_executor()
+            .expect("build_executor should succeed");
+
+        assert_eq!(executor.max_iterations(), 5);
+    }
+
+    /// v0.31.0: same precondition as `build()` — no LLM is an error, not a panic.
+    #[test]
+    fn test_build_executor_without_llm_errors() {
+        let err = AgentBuilder::new()
+            .build_executor()
+            .err()
+            .expect("missing LLM must fail");
+
+        assert!(err.to_string().contains("LLM is required"));
     }
 }

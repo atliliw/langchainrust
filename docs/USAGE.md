@@ -238,7 +238,7 @@
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
+langchainrust = "0.31"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2285,6 +2285,8 @@ let answer = rag_chain.invoke("Rust 有哪些核心特性?".to_string(), None).a
 
 ### 4.2 Chains
 
+> **Cargo feature（v0.31+）：** 默认关闭，需显式开启 `features = ["chains"]`。
+
 Chain 将 LLM 与提示词、记忆、检索等组件组合成可复用的流水线。每个 Chain 接收输入、执行一系列步骤、返回输出。
 
 #### 4.2.1 LLMChain
@@ -3613,7 +3615,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 它是 opt-in feature（拉入 tokio-tungstenite）：
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.31", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -4069,7 +4071,7 @@ let top = matcher.query("memory safety in Rust", 2).await?; // 语义最相近�
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.30.0", features = ["local-candle"] }
+langchainrust = { version = "0.31", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4284,7 +4286,7 @@ let docs = retriever.retrieve("systems programming", 3).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["chromadb"] }
+langchainrust = { version = "0.31", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4672,7 +4674,7 @@ let parent_id = index.add_late_chunked_document(document, &chunks).await?;
 `UnifiedHybridIndex` 的 RRF 融合发生在客户端,需要先把两路候选拉回内存。`QdrantVectorStore`(≥ 1.10)支持把**多路向量召回 + 融合**下推到服务端 Query API,一次网络往返完成。能力通过 `NativeHybridSearch` trait 探测——不支持的 store 显式报错并指向客户端 RRF,绝不静默降级。
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.31", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5140,6 +5142,8 @@ store.clear().await?;
 
 ### 7.1 MCP
 
+> **Cargo feature（v0.31+）：** 默认关闭，需显式开启 `features = ["mcp"]`。
+
 [MCP](https://modelcontextprotocol.io)（Model Context Protocol）是 Anthropic 推出的工具协议标准。0.22.4 的 lc-mcp 同时提供**三条客户端轨道**，按对端形态选用：
 
 - **无状态轨道 `StatelessMcpClient`（v0.22.0 起）**：框架自研的 2026-07-28 单请求协议，每个请求都是自包含的 JSON-RPC HTTP POST（带 `Mcp-Method` / `Mcp-Name` 路由头与 `_meta`），**无握手、无会话**，直连 `MCPServer::serve_http` 起的服务；
@@ -5445,6 +5449,8 @@ server→host 方向的 `sampling::create_message` / `elicitation::create` 由 S
 
 ### 7.2 A2A 智能体协议 ✨ v0.4.1
 
+> **Cargo feature（v0.31+）：** 默认关闭，需显式开启 `features = ["a2a"]`（会同时开启 `chains`）。
+
 #### 7.2.1 概念引入：A2A 是什么
 
 [A2A](https://github.com/google/A2A)（Agent-to-Agent）是 Google 推出的智能体间互操作协议，解决"不同团队、不同厂商开发的智能体如何互相调用"的问题。LangChainRust 提供完整的 A2A 支持：Server 用于暴露智能体，Client 用于调用远程智能体，使用 JSON-RPC 2.0 风格的消息传递。
@@ -5531,8 +5537,8 @@ let server = A2AServer::new(chain)
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
-lc-a2a = { version = "0.30.0", features = ["axum"] }
+langchainrust = "0.31"
+lc-a2a = { version = "0.31", features = ["axum"] }
 ```
 
 ```rust
@@ -5596,7 +5602,7 @@ while let Some(event) = stream.next().await {
 **WebSocket 传输（`ws` feature，0.27.0 #186）**：SSE 之外新增一条等价传输。服务端开 `ws` feature 后暴露 `GET /ws`，与 `/events` **共用同一套鉴权与逐连接过滤**——bearer 认证、B7 跨租户 `notification_visible`、`?taskId=` 限定全部一致，每条过滤后的 `TaskPushNotification` 序列化成**一个文本帧**发给该连接。客户端 `connect_ws` / `send_task_streaming_ws` 与 `connect_sse` / `send_task_streaming` 一一对应，`A2AWebSocketStream::next()` 自动回协议 ping 保活、跳过 pong/二进制帧。两条传输语义相同，按部署挑（不想被 HTTP/SSE 缓冲的场景选 WS）：
 
 ```toml
-lc-a2a = { version = "0.30.0", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
+lc-a2a = { version = "0.31", features = ["ws"] }   # 服务端还需 axum feature 才能 serve
 ```
 
 ```rust
@@ -5768,7 +5774,7 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 MCP 和 A2A 解决的是 **agent ↔ agent / agent ↔ tool**；但大量现有应用只会说 OpenAI 的 `/v1/chat/completions`。`openai-server` feature 把这层入口补上：一个 axum `Router`，后面可以挂任何 `ChatBackend`（agent、chain 或裸 chat model）。
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["openai-server"] }
+langchainrust = { version = "0.31", features = ["openai-server"] }
 ```
 
 ```rust
@@ -5804,6 +5810,8 @@ impl ChatBackend for MyAgentBackend {
 ## 第八章 · 安全、可观测与质量
 
 ### 8.1 Guardrails
+
+> **Cargo feature（v0.31+）：** 默认关闭，需显式开启 `features = ["guardrails"]`。
 
 输入/输出验证，用于阻止恶意输入和敏感信息泄露。实现 `InputGuardrail` / `OutputGuardrail`，或使用内置验证器，然后用 `GuardedAgent` 包装 Agent。
 
@@ -6146,7 +6154,7 @@ let handler = LangSmithHandler::new(config);
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.31", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -6164,7 +6172,7 @@ let manager = CallbackManager::new()
 **OTLP 一键导出管道 ✨ v0.22.4**：`opentelemetry` feature 只带 API 依赖（进程内记录，不实际导出）；要把 span 发到 OpenTelemetry Collector,开 `otlp` feature 用电池齐全的管道——OTLP over **HTTP/JSON**(reqwest,不需要原生 TLS 工具链)、Tokio 运行时上的批量处理器、全局安装 W3C trace context 传播、`service.name` 资源:
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["otlp"] }
+langchainrust = { version = "0.31", features = ["otlp"] }
 ```
 
 ```rust
@@ -6691,7 +6699,7 @@ MongoDB 存储解决两类问题：一是把**文档库**落到 MongoDB，让长
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.31", features = ["mongodb-persistence"] }
 ```
 
 #### 9.1.3 用法
@@ -6766,14 +6774,14 @@ let chunks = store.get_chunks_for_parent(&parent_id).await?;
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["redis-storage"] }
+langchainrust = { version = "0.31", features = ["redis-storage"] }
 ```
 
 或
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.31", features = ["sqlite-storage"] }
 ```
 
 #### 9.2.3 RedisDocumentStore
@@ -7104,7 +7112,7 @@ let tool = SandboxTool::new(LocalSandbox::new(), Language::Python)
 执行预算用 **wasm fuel 计量**（`timeout_ms × 1000` 条指令，至少 1000）而不是墙上时钟线程，超限**确定性**地映射成 `SandboxError::Timeout`；`Language::Wasm` 之外的语言一律 `SandboxError::UnsupportedLanguage`。
 
 ```toml
-lc-tools = { version = "0.30.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.31", features = ["sandbox-wasm"] }
 # 门面 langchainrust 目前未转发该 feature,所以要在 lc-tools 上开;
 # cargo 特性合并后,类型照旧从门面取:langchainrust::tools::sandbox::WasmSandbox
 ```

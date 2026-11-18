@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.31.0 facade main-path convergence
+
+### Changed (breaking)
+
+- **Extended surfaces are now opt-in on the `langchainrust` facade.** `mcp`,
+  `a2a`, `guardrails` and `chains` are no longer compiled by default. Enable
+  them explicitly, or use `features = ["full"]`:
+
+  ```toml
+  langchainrust = { version = "0.31", features = ["mcp"] }
+  # or
+  langchainrust = { version = "0.31", features = ["full"] }
+  ```
+
+  `a2a` implies `chains` (lc-a2a depends on lc-chains, and the A2A server
+  examples use `LLMChain`). Migration notes: `docs/internal/v0.31.0/MIGRATION.md`.
+
+### Added
+
+- **`langchainrust::prelude`**: one import for the five main paths —
+  `AgentBuilder` / `AgentExecutor` / `FunctionCallingAgent`, `RAGPipeline`,
+  `EventSessionManager`, `EvalRunner`, `Calculator`, plus the provider and
+  message types needed to start.
+- **`AgentBuilder::build_executor()`**: returns a ready-to-invoke
+  `AgentExecutor` with the builder's tools, system prompt and iteration cap.
+  The tool handles are `Arc`-shared, so the agent and the executor no longer
+  need two separate tool constructions.
+
+- **`lc` CLI (new crate `lc-cli`)**: one entry point for the main path —
+  `lc init` (chat/agent/rag templates), `lc run` (cargo passthrough),
+  `lc serve` (OpenAI-compatible endpoint), `lc eval` (JSONL datasets).
+- **`lc serve` backends & sidecars**: `--backend model | agent | chain`;
+  `--auth <token>` (Bearer gate, 401 without it); `--mcp-port` (sidecar MCP
+  stateless HTTP server); `--a2a-port` (sidecar A2A agent server).
+- **Facade `a2a-server` feature**: forwards `lc-a2a/axum` so `A2AServer::serve_on`
+  is reachable through `langchainrust` (opt-in; keeps axum out of the default
+  `a2a` surface).
+- **MCP Skills (SEP-2640, `lc-mcp`)**: server-side `McpSkill` with
+  `skills/list` / `skills/get` (gated on registration; declared in
+  `capabilities.skills` on `initialize` / `server/discover`), plus a client
+  side (`list_skills` / `get_skill`).
+- **A2A official method names accepted by the server (`lc-a2a`)**: the server
+  now also routes the official `message/send`, `message/stream`, `task/get`,
+  `task/cancel` alongside the legacy `tasks/*`, so a spec-compliant client
+  (the official `a2a-rs` SDK) can drive it. An interop test
+  (`official_sdk_interop`, `--features official-sdk`) runs on toolchains
+  with rustc >= 1.96 (a2a-rs requirement) — gated because the workspace MSRV
+  is 1.85.
+
 ## [0.30.0] - 2026-11-14
 
 "Harness × verification × interop" release: closes the MCP 2026-07-28

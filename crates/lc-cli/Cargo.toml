@@ -1,0 +1,21 @@
+[package]
+name = "lc-cli"
+version = "0.31.0"
+edition = "2021"
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Command-line interface for langchainrust: init, run, serve, eval."
+
+[[bin]]
+name = "lc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+async-trait = "0.1"
+axum = "0.8"
+langchainrust = { path = "../lc", version = "0.31.0", features = ["openai-server", "chains", "a2a-server", "mcp"] }

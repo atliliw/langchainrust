@@ -19,6 +19,7 @@ use crate::protocol::{
     InputRequired, MCPError, MCPRequest, MrtrAnswer, MrtrQuestion, MrtrRoundTrip, RequestMeta,
 };
 use crate::transport::stateless::{default_meta, StatelessTransport};
+use crate::skills::{SkillBody, SkillDescriptor};
 use crate::types::{ListToolsParams, ListToolsResult, MCPToolDefinition, MCPToolResult};
 
 /// MRTR configuration.
@@ -294,6 +295,24 @@ impl StatelessMcpClient {
     /// `server/discover`: on-demand capability discovery (2026-07-28).
     pub async fn discover(&self) -> Result<Value, MCPError> {
         self.send("server/discover", None).await
+    }
+
+    /// `skills/list` (SEP-2640): the manifest of skills the server ships.
+    pub async fn list_skills(&self) -> Result<Vec<SkillDescriptor>, MCPError> {
+        let result = self.send("skills/list", None).await?;
+        let list = result.get("skills").ok_or_else(|| {
+            MCPError::new(-1, "skills/list response missing 'skills' field")
+        })?;
+        serde_json::from_value(list.clone())
+            .map_err(|e| MCPError::new(-1, format!("failed to parse skill list: {e}")))
+    }
+
+    /// `skills/get` (SEP-2640): the full markdown body of one skill by name.
+    pub async fn get_skill(&self, name: &str) -> Result<SkillBody, MCPError> {
+        let params = json!({ "name": name });
+        let result = self.send("skills/get", Some(params)).await?;
+        serde_json::from_value(result)
+            .map_err(|e| MCPError::new(-1, format!("failed to parse skill body: {e}")))
     }
 
     /// `tools/list` (uncached).

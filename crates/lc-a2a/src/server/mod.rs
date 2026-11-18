@@ -97,6 +97,7 @@ use super::router::{SkillMapRouter, SkillRouter};
 use super::store::{InMemoryTaskStore, StoredTask, TaskStore, DEFAULT_MAX_TASKS};
 use crate::security::SandboxConfig;
 
+#[allow(unused_imports)] // `read_with_retry` is used by `#[cfg(test)]` (server/tests.rs)
 use execution::{
     read_with_retry, run_task, run_workflow, sweep_expired_tasks, InflightResume, MAX_WORKFLOW_STEPS,
 };
@@ -827,12 +828,12 @@ impl A2AServer {
             );
         }
         match req.method.as_str() {
-            "tasks/send" => self.handle_tasks_send(req, owner).await,
+            "tasks/send" | "message/send" => self.handle_tasks_send(req, owner).await,
             // P2-9: streaming subscribe — acknowledged like `tasks/send`, then
             // increments are pushed over the SSE/broadcast bus.
-            "tasks/sendSubscribe" => self.handle_tasks_send_subscribe(req, owner).await,
-            "tasks/get" => self.handle_tasks_get(req, owner).await,
-            "tasks/cancel" => self.handle_tasks_cancel(req, owner).await,
+            "tasks/sendSubscribe" | "message/stream" => self.handle_tasks_send_subscribe(req, owner).await,
+            "tasks/get" | "task/get" => self.handle_tasks_get(req, owner).await,
+            "tasks/cancel" | "task/cancel" => self.handle_tasks_cancel(req, owner).await,
             "tasks/list" => self.handle_tasks_list(req, owner).await,
             "tasks/runWorkflow" => self.handle_workflow_run(req, owner).await,
             _ => A2AResponse::from_error_data(req.id, A2AErrorData::method_not_found()),

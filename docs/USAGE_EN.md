@@ -238,7 +238,7 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
+langchainrust = "0.31"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -2249,6 +2249,8 @@ Errors along the whole chain converge into `LcelError`: parser errors implement 
 
 ### 4.2 Chains
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with `features = ["chains"]`.
+
 Chains combine LLMs with prompts, memory, retrieval, and other components into reusable pipelines. Each Chain receives input, executes a series of steps, and returns output.
 
 #### 4.2.1 LLMChain
@@ -3570,7 +3572,7 @@ let tool = std::sync::Arc::new(search) as std::sync::Arc<dyn langchainrust::Base
 It is an opt-in feature (pulls in tokio-tungstenite):
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["browser-cdp"] }
+langchainrust = { version = "0.31", features = ["browser-cdp"] }
 ```
 
 ```rust
@@ -4023,7 +4025,7 @@ A CPU-only local embedding backend built on [Candle](https://github.com/huggingf
 
 ```toml
 # Cargo.toml
-langchainrust = { version = "0.30.0", features = ["local-candle"] }
+langchainrust = { version = "0.31", features = ["local-candle"] }
 ```
 
 ```rust
@@ -4238,7 +4240,7 @@ Persistent vector store using Chroma. Requires a running Chroma service (default
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["chromadb"] }
+langchainrust = { version = "0.31", features = ["chromadb"] }
 ```
 
 ```rust
@@ -4629,7 +4631,7 @@ If you only need the vector leg, the free function (available since v0.23.0) `la
 `UnifiedHybridIndex` fuses with RRF on the client, which requires pulling both candidate lists back into memory. `QdrantVectorStore` (≥ 1.10) can push **multi-branch recall + fusion** down to the server-side Query API — a single network round trip. The capability is detected via the `NativeHybridSearch` trait — stores without it fail explicitly and point you to client-side RRF, never silently degrade.
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }
+langchainrust = { version = "0.31", features = ["qdrant-integration"] }
 ```
 
 ```rust
@@ -5094,6 +5096,8 @@ store.clear().await?;
 
 ### 7.1 MCP
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with `features = ["mcp"]`.
+
 [MCP](https://modelcontextprotocol.io) (Model Context Protocol) is the tool protocol standard introduced by Anthropic. As of 0.22.4, lc-mcp ships **three client tracks** — pick by the shape of the peer:
 
 - **Stateless track `StatelessMcpClient` (since v0.22.0)**: the framework's own 2026-07-28 single-request protocol — every request is a self-contained JSON-RPC HTTP POST (with `Mcp-Method` / `Mcp-Name` routing headers and `_meta`), **no handshake, no session**; talks directly to a server started via `MCPServer::serve_http`.
@@ -5399,6 +5403,9 @@ The latest revision makes three result-envelope fields mandatory; v0.30.0 implem
 
 ### 7.2 A2A Agent Protocol ✨ v0.4.1
 
+> **Cargo feature (v0.31+):** opt-in. Enable it with `features = ["a2a"]`
+> (implies `chains`).
+
 #### 7.2.1 Concept: What Is A2A
 
 [A2A](https://github.com/google/A2A) (Agent-to-Agent) is Google's inter-agent interoperability protocol, solving "how agents developed by different teams and vendors call each other." LangChainRust provides full A2A support: Server to expose agents, Client to call remote agents, using JSON-RPC 2.0 style messaging.
@@ -5486,8 +5493,8 @@ If you don't want to wire an HTTP framework yourself, enable the `axum` feature 
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
-lc-a2a = { version = "0.30.0", features = ["axum"] }
+langchainrust = "0.31"
+lc-a2a = { version = "0.31", features = ["axum"] }
 ```
 
 ```rust
@@ -5552,7 +5559,7 @@ while let Some(event) = stream.next().await {
 **WebSocket transport (`ws` feature, 0.27.0 #186)**: a second transport alongside SSE. With the `ws` feature on, the server exposes `GET /ws`, sharing the **exact same auth and per-connection filtering** as `/events` — bearer auth, the B7 cross-tenant `notification_visible` guard, and the `?taskId=` restriction all apply identically, and each filtered `TaskPushNotification` is serialized into **one text frame** for that connection. On the client, `connect_ws` / `send_task_streaming_ws` mirror `connect_sse` / `send_task_streaming`, and `A2AWebSocketStream::next()` answers protocol pings to keep an idle subscription alive while skipping pongs and binary frames. The two transports carry identical semantics; pick per deployment (WS suits a long-lived connection that does not want HTTP/SSE buffering):
 
 ```toml
-lc-a2a = { version = "0.30.0", features = ["ws"] }   # the server also needs the axum feature to serve
+lc-a2a = { version = "0.31", features = ["ws"] }   # the server also needs the axum feature to serve
 ```
 
 ```rust
@@ -5727,7 +5734,7 @@ let task = resilient.send_task(A2AMessage::user("hello")).await?;
 MCP and A2A solve **agent ↔ agent / agent ↔ tool**; many existing applications only speak OpenAI's `/v1/chat/completions`. The `openai-server` feature fills that gap with an axum `Router` backed by any `ChatBackend` (an agent, a chain, or a bare chat model).
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["openai-server"] }
+langchainrust = { version = "0.31", features = ["openai-server"] }
 ```
 
 ```rust
@@ -5763,6 +5770,8 @@ Current limits: the `tool` role and `tool_calls` response fields are not mapped 
 ## Chapter 8 · Safety, Observability & Quality
 
 ### 8.1 Guardrails
+
+> **Cargo feature (v0.31+):** opt-in. Enable it with `features = ["guardrails"]`.
 
 Input/output validation to block malicious input and sensitive-information leakage. Implement `InputGuardrail` / `OutputGuardrail`, or use built-in validators, then wrap an agent with `GuardedAgent`.
 
@@ -6106,7 +6115,7 @@ Converts LLM / Chain / Tool / Retriever start / end / error events into OpenTele
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["opentelemetry"] }
+langchainrust = { version = "0.31", features = ["opentelemetry"] }
 ```
 
 ```rust
@@ -6124,7 +6133,7 @@ Nested spans; export to Jaeger / Tempo / Grafana.
 **One-shot OTLP export pipeline ✨ v0.22.4**: the `opentelemetry` feature carries API-only dependencies (spans are recorded in-process but never actually exported). To ship spans to an OpenTelemetry Collector, enable the `otlp` feature and use the batteries-included pipeline — OTLP over **HTTP/JSON** (reqwest, no native-TLS toolchain needed), a batch processor on the Tokio runtime, globally installed W3C trace-context propagation, and a `service.name` resource:
 
 ```toml
-langchainrust = { version = "0.30.0", features = ["otlp"] }
+langchainrust = { version = "0.31", features = ["otlp"] }
 ```
 
 ```rust
@@ -6651,7 +6660,7 @@ Workflow (using the document store as an example): first `create_indexes()` buil
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }
+langchainrust = { version = "0.31", features = ["mongodb-persistence"] }
 ```
 
 #### 9.1.3 Usage
@@ -6726,14 +6735,14 @@ A one-line memory aid: Redis is "a shared warehouse used by many people", SQLite
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["redis-storage"] }
+langchainrust = { version = "0.31", features = ["redis-storage"] }
 ```
 
 or
 
 ```toml
 [dependencies]
-langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }
+langchainrust = { version = "0.31", features = ["sqlite-storage"] }
 ```
 
 #### 9.2.3 RedisDocumentStore
@@ -7066,7 +7075,7 @@ Backend capability boundaries (v0.22.4):
 The execution budget is enforced with **wasm fuel** (`timeout_ms × 1000` instructions, at least 1000) instead of a racy wall-clock thread, and exhaustion maps **deterministically** to `SandboxError::Timeout`. Any language other than `Language::Wasm` yields `SandboxError::UnsupportedLanguage`.
 
 ```toml
-lc-tools = { version = "0.30.0", features = ["sandbox-wasm"] }
+lc-tools = { version = "0.31", features = ["sandbox-wasm"] }
 # The `langchainrust` facade does not forward this feature yet, so enable it on lc-tools;
 # cargo feature unification still lets you import the type from the facade:
 # langchainrust::tools::sandbox::WasmSandbox

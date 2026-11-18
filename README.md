@@ -20,6 +20,7 @@ A LangChain-inspired Rust framework for building LLM applications.
 | Docs | Content |
 |------|---------|
 | [Docs site](https://atliliw.github.io/langchainrust/) | Searchable mdBook: Quick Start, Agents, MCP, A2A, Evaluation |
+| [Examples](https://atliliw.github.io/langchainrust/examples.html) | 49 runnable examples by capability |
 | [中文使用指南](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE.md) | 所有组件的详细用法（中文） |
 | [Usage Guide](https://github.com/atliliw/langchainrust/blob/main/docs/USAGE_EN.md) | Detailed usage for all components |
 | [API Docs](https://docs.rs/langchainrust) | Rust API documentation |
@@ -285,39 +286,48 @@ langchainrust is a **23-crate workspace** with a single facade crate `langchainr
 
 ```toml
 [dependencies]
-langchainrust = "0.30.0"
+langchainrust = "0.31"
 tokio = { version = "1.0", features = ["full"] }
 
+# Main path (default): agents, rag, sessions, evaluation, tools.
+# One import: use langchainrust::prelude::*;
+# Extended surfaces are opt-in since v0.31:
+langchainrust = { version = "0.31", features = ["mcp"] }                     # MCP client/server
+langchainrust = { version = "0.31", features = ["a2a"] }                     # A2A protocol (implies chains)
+langchainrust = { version = "0.31", features = ["guardrails"] }              # input/output guardrails
+langchainrust = { version = "0.31", features = ["chains"] }                  # LLMChain / SequentialChain
+langchainrust = { version = "0.31", features = ["full"] }                    # all of the above + observability
+
 # Optional features — vector stores & storage
-langchainrust = { version = "0.30.0", features = ["qdrant-integration"] }    # Qdrant vector DB
-langchainrust = { version = "0.30.0", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
-langchainrust = { version = "0.30.0", features = ["redis-storage"] }         # Redis vector store
-langchainrust = { version = "0.30.0", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
-langchainrust = { version = "0.30.0", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
+langchainrust = { version = "0.31", features = ["qdrant-integration"] }    # Qdrant vector DB
+langchainrust = { version = "0.31", features = ["mongodb-persistence"] }   # MongoDB storage (memory + vector store + checkpoints)
+langchainrust = { version = "0.31", features = ["redis-storage"] }         # Redis vector store
+langchainrust = { version = "0.31", features = ["sqlite-storage"] }        # SQLite vector store (+ SQLTool)
+langchainrust = { version = "0.31", features = ["pgvector-storage"] }      # PGVector (requires user-configured sqlx/pgvector deps)
 
 # Durable LangGraph checkpointers (v0.22.4)
-langchainrust = { version = "0.30.0", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
-langchainrust = { version = "0.30.0", features = ["checkpoint-postgres"] }   # tokio-postgres
-langchainrust = { version = "0.30.0", features = ["checkpoint-redis"] }      # Redis with Lua CAS
+langchainrust = { version = "0.31", features = ["checkpoint-sqlite"] }     # rusqlite bundled, WAL — zero extra infra
+langchainrust = { version = "0.31", features = ["checkpoint-postgres"] }   # tokio-postgres
+langchainrust = { version = "0.31", features = ["checkpoint-redis"] }      # Redis with Lua CAS
 
 # Local embeddings (vision/Cohere/Qwen multimodal embeddings need no feature)
-langchainrust = { version = "0.30.0", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
-langchainrust = { version = "0.30.0", features = ["fastembed"] }             # FastEmbed ONNX models
-langchainrust = { version = "0.30.0", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
+langchainrust = { version = "0.31", features = ["local-embeddings"] }      # Local ONNX embeddings (ort)
+langchainrust = { version = "0.31", features = ["fastembed"] }             # FastEmbed ONNX models
+langchainrust = { version = "0.31", features = ["local-candle"] }          # Pure-Rust Candle BERT embeddings
 
 # Observability
-langchainrust = { version = "0.30.0", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
-langchainrust = { version = "0.30.0", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
-langchainrust = { version = "0.30.0", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
-langchainrust = { version = "0.30.0", features = ["observability-mongodb"] } # MongoDB observation sink
+langchainrust = { version = "0.31", features = ["opentelemetry"] }         # OpenTelemetry tracing spans
+langchainrust = { version = "0.31", features = ["otlp"] }                  # OTLP HTTP/JSON exporter (v0.22.4)
+langchainrust = { version = "0.31", features = ["observability"] }         # MetricsSink + JsonLinesSink (v0.22.4)
+langchainrust = { version = "0.31", features = ["observability-mongodb"] } # MongoDB observation sink
 
 # OpenAI-compatible server (v0.30.0) — /v1/models + /v1/chat/completions
-langchainrust = { version = "0.30.0", features = ["openai-server"] }         # axum router, JSON + SSE streaming
+langchainrust = { version = "0.31", features = ["openai-server"] }         # axum router, JSON + SSE streaming
 
 # Tools & memory
-langchainrust = { version = "0.30.0", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
-langchainrust = { version = "0.30.0", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
-langchainrust = { version = "0.30.0", features = ["experimental"] }          # Experimental features
+langchainrust = { version = "0.31", features = ["browser-cdp"] }           # CDP browser tool (v0.22.4)
+langchainrust = { version = "0.31", features = ["vectorstore-memory"] }    # VectorStoreRetrieverMemory (semantic memory)
+langchainrust = { version = "0.31", features = ["experimental"] }          # Experimental features
 # PineconeStore / FileVectorStore / hosted search (Tavily, Serper, Exa) require no feature flag.
 # The axum SSE agent endpoint is gated by lc-agents' own `sse-server` feature (see examples/agent_sse_server.rs).
 ```

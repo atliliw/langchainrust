@@ -580,7 +580,7 @@ impl ToolGate {
                     // consumes a budget slot; a `Deny`/`ToolNotFound`/`Skip`/block
                     // does not. Re-gate after the completion (not just at launch) so
                     // an overloaded batch can never sneak past the cap.
-                    if !is_non_execution_observation(&r.as_ref().unwrap()) {
+                    if !is_non_execution_observation(r.as_ref().unwrap()) {
                         batch_executed += 1;
                     }
                     results.push((idx, r));
