@@ -154,11 +154,20 @@ run "rustdoc -D warnings --no-deps" rustdoc_gate
 # feature-gated APIs.
 SEMVER_FEATURES=(--default-features)
 if [ "$ALL_FEATURES" = true ]; then SEMVER_FEATURES=(--all-features); fi
+# Under all-features, semver-checks docs every crate and trips on features that
+# cannot build on the runner / break rustdoc, none of which is semver-relevant:
+#   - pgvector-storage / checkpoint-postgres → sqlx-postgres 0.8.0 rustdoc E0277
+#     (sqlx cannot be pinned higher; same exclusion policy as the rustdoc step);
+#   - computer-native → libdbus-sys build fails (needs system dbus dev libs).
+SEMVER_EXCLUDE=()
+if [ "$ALL_FEATURES" = true ]; then
+  SEMVER_EXCLUDE=(--exclude-features pgvector-storage,checkpoint-postgres,computer-native)
+fi
 
 if [ "${SKIP_SEMVER:-0}" = "1" ]; then
   warn "SKIP_SEMVER=1: skipping semver-checks"
 elif command -v cargo-semver-checks >/dev/null 2>&1; then
-  run "semver-checks --baseline ${BASELINE}" cargo semver-checks --workspace --baseline-version "$BASELINE" "${SEMVER_FEATURES[@]}"
+  run "semver-checks --baseline ${BASELINE}" cargo semver-checks --workspace --exclude lc-cli --baseline-version "$BASELINE" "${SEMVER_FEATURES[@]}" "${SEMVER_EXCLUDE[@]}"
 else
   warn "cargo-semver-checks is not installed; skipping locally (CI pre-publish runs it). Install it or confirm with SKIP_SEMVER=1"
 fi
