@@ -34,7 +34,7 @@
 //! 2. Only the child's final answer is returned, wrapped in a small JSON
 //!    envelope — no intermediate steps.
 //! 3. `depth` is capped by [`SubagentConfig::max_depth`]; exceeding it returns
-//!    a deterministic [`ToolError::ExecutionFailed`], never a panic.
+//!    a deterministic `ToolError::ExecutionFailed`, never a panic.
 //! 4. Tool subset / budget / approval belong to the factory: it constructs the
 //!    child executor, so the parent cannot silently grant more than it passes.
 

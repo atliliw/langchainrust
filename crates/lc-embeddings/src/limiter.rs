@@ -89,7 +89,7 @@ impl TokenBucket {
     /// Refill is computed lazily from elapsed time on entry. If a token is ready the
     /// call returns immediately; otherwise it sleeps for exactly the time the next
     /// token needs to refill. F-01: a burst-only bucket (`refill_per_sec == 0.0`)
-    /// that has exhausted its one-time grant returns [`TokenBucketError::Exhausted`]
+    /// that has exhausted its one-time grant returns `TokenBucketError::Exhausted`
     /// immediately instead of spinning forever — a deficit it can never close.
     pub async fn acquire(&self) -> Result<(), TokenBucketError> {
         loop {
@@ -145,7 +145,7 @@ mod tests {
         b.acquire().await.expect("3rd consumes the last token");
     }
 
-    /// Beyond `capacity` the acquire fails fast with [`TokenBucketError::Exhausted`]
+    /// Beyond `capacity` the acquire fails fast with `TokenBucketError::Exhausted`
     /// — exactly the configured number slip through (the "并发" cap), the rest error
     /// rather than hang forever.
     #[tokio::test]

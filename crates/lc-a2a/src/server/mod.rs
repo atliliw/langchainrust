@@ -396,7 +396,7 @@ impl A2AServer {
 
     /// Bound how many task/workflow executions may be in flight at once (F-06).
     ///
-    /// A cap is installed by default ([`DEFAULT_MAX_IN_FLIGHT`]); use this to
+    /// A cap is installed by default (`DEFAULT_MAX_IN_FLIGHT`); use this to
     /// tune it. A `max` of `0` disables the bound (unbounded spawned workers).
     /// When the budget is exhausted a new `tasks/send` is rejected with a busy
     /// error (HTTP 429) rather than spawning yet another worker — a remote

@@ -35,7 +35,7 @@ const SEARCH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Executes search queries in parallel across all configured search tools.
 ///
-/// F-22: every individual request is bounded by [`SEARCH_REQUEST_TIMEOUT`], so a
+/// F-22: every individual request is bounded by `SEARCH_REQUEST_TIMEOUT`, so a
 /// hung search tool degrades to a soft failure (its result is skipped, with a
 /// warning) rather than stalling the whole `join_all` — and the research run
 /// with it — forever.

@@ -20,7 +20,7 @@
 //!
 //! ## WASM backend (`sandbox-wasm` feature)
 //!
-//! - **[`WasmSandbox`]**: a long-foreshadowed backend that is now *actually implemented*
+//! - **`WasmSandbox`**: a long-foreshadowed backend that is now *actually implemented*
 //!   (Track 3 #201). It runs a WASI-preview1 module under the **wasmi interpreter** with a
 //!   self-contained host covering stdio / exit / args / environ / random / clock. OS isolation
 //!   is by construction — nothing but buffered stdout/stderr crosses the host boundary — and
@@ -54,7 +54,7 @@ pub enum Language {
     JavaScript,
     /// Rust.
     Rust,
-    /// WebAssembly (WASI preview1): a `wat`/`wasm` module, executed by [`WasmSandbox`].
+    /// WebAssembly (WASI preview1): a `wat`/`wasm` module, executed by `WasmSandbox`.
     ///
     /// Other backends ([`LocalSandbox`]) do not execute wasm and report it
     /// [`SandboxError::UnsupportedLanguage`].

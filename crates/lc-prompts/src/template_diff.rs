@@ -56,7 +56,7 @@ impl TemplateDiff {
 /// Diffs the variable structure of two prompt-template strings.
 ///
 /// `old` is the version currently in use; `new` is the proposed edit. Parsing
-/// follows the same rules as [`parse_template`]: `{{`/`}}` escapes, malformed
+/// follows the same rules as `parse_template`: `{{`/`}}` escapes, malformed
 /// placeholders stay literal. It does **not** require either template to be
 /// strictly well-formed.
 ///

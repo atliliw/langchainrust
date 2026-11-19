@@ -80,7 +80,7 @@ pub struct MapReduceDocumentsChain {
     map_prompt_template: String,
     reduce_prompt_template: String,
     /// Prompt for the intermediate combine rounds. Defaults to
-    /// [`DEFAULT_COMBINE_PROMPT`]; `None` (only reachable if a future setter
+    /// `DEFAULT_COMBINE_PROMPT`; `None` (only reachable if a future setter
     /// clears it) falls back to the reduce prompt template.
     combine_prompt_template: Option<String>,
     document_variable_name: String,
@@ -138,7 +138,7 @@ impl MapReduceDocumentsChain {
     /// Only used when [`Self::with_reduce_batch_size`] is set and more than one
     /// combine round is needed; the round that produces the final answer always
     /// uses the reduce prompt ([`Self::with_reduce_prompt`]). Defaults to
-    /// [`DEFAULT_COMBINE_PROMPT`].
+    /// `DEFAULT_COMBINE_PROMPT`.
     ///
     /// The template receives the same variables as the reduce prompt:
     /// `{summaries}` (the batch's partial answers) and `{input}`.
@@ -260,7 +260,7 @@ impl MapReduceDocumentsChain {
     /// answers and the original input.
     ///
     /// Uses the template set by [`Self::with_combine_prompt`]
-    /// ([`DEFAULT_COMBINE_PROMPT`] unless overridden).
+    /// (`DEFAULT_COMBINE_PROMPT` unless overridden).
     pub fn build_combine_prompt(&self, summaries: &[String], input: &str) -> String {
         self.build_merge_prompt(self.combine_template(), summaries, input)
     }

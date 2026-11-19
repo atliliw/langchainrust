@@ -125,7 +125,24 @@ run_soft "clippy --workspace --all-targets" cargo clippy --workspace --all-targe
 run "cargo test --workspace --no-fail-fast" cargo test --workspace --no-fail-fast -j "$JOBS"
 
 # ---- 5. rustdoc -----------------------------------------------------------
-run "rustdoc -D warnings --no-deps" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps -j "$JOBS" "${FEATURES[@]}"
+# sqlx-postgres 0.8.0's rustdoc fails on recent rustc (E0277 `!: Decode`), and
+# sqlx cannot be pinned higher without a libsqlite3-sys links conflict with
+# rusqlite (see crates/lc/Cargo.toml). Only pgvector-storage /
+# checkpoint-postgres pull it in, forwarded through the facade's --all-features.
+# So in CI mode the facade and the two sqlx-pg owners are excluded from the
+# all-features workspace doc and documented separately with default features —
+# matching the docs.rs feature surface, which also excludes pgvector-storage.
+rustdoc_gate() {
+  if [ "$ALL_FEATURES" = true ]; then
+    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps -j "$JOBS" --all-features \
+      --exclude langchainrust --exclude lc-vector-stores --exclude lc-langgraph
+    env RUSTDOCFLAGS="-D warnings" cargo doc -p langchainrust -p lc-vector-stores -p lc-langgraph \
+      --no-deps -j "$JOBS"
+  else
+    env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps -j "$JOBS"
+  fi
+}
+run "rustdoc -D warnings --no-deps" rustdoc_gate
 
 # ---- 6. semver-checks -----------------------------------------------------
 # Local mode uses --default-features: cargo-semver-checks re-resolves deps in a

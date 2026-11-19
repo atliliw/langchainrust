@@ -38,7 +38,7 @@ pub fn parse_template(template: &str) -> Vec<TemplateSegment> {
 /// error on the first malformed one (`{` without a matching `}`, or a name
 /// inside `{...}` that is not a valid variable name).
 ///
-/// This is the strict counterpart to [`parse_template`], which deliberately
+/// This is the strict counterpart to `parse_template`, which deliberately
 /// falls back to literal text. Call it at construction time to catch template
 /// typos early rather than emitting stray `{` into prompts.
 pub fn validate_template(template: &str) -> Result<(), PromptsError> {
@@ -46,7 +46,7 @@ pub fn validate_template(template: &str) -> Result<(), PromptsError> {
 }
 
 /// Result of a single scan of a template: the lenient segment list plus any
-/// malformed places encountered. One scanner serves both [`parse_template`]
+/// malformed places encountered. One scanner serves both `parse_template`
 /// (which ignores the issues) and [`validate_template`] (which surfaces them),
 /// so the lenient and strict behaviors can never drift apart.
 struct TemplateScan {

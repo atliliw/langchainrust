@@ -13,7 +13,7 @@
 /// extracted from `lc-a2a` and `lc-mcp`, which each carried an identical
 /// byte-by-byte copy (`framework-code-review, Class 1 #1[direction:跨 crate 抽共享]`);
 /// a security comparison must not live in two places that can drift.
-/// Mirrors [`subtle::ConstantTimeEq`]'s contract without adding a dependency.
+/// Mirrors `subtle::ConstantTimeEq`'s contract without adding a dependency.
 pub fn constant_time_eq(a: &str, b: &str) -> bool {
     let a = a.as_bytes();
     let b = b.as_bytes();

@@ -36,7 +36,7 @@
 //!   -> AgentFleet::record_success/_failure   feed the breaker back
 //! ```
 //!
-//! [`crate::SkillAffinityRouter`] covers the server-side counterpart: choosing
+//! [`crate::router::SkillAffinityRouter`] covers the server-side counterpart: choosing
 //! the chain that serves a task by skill affinity.
 //!
 //! Task TTL already exists (P1-2), so the scale story is: TTL + hop limit + ring
@@ -192,7 +192,7 @@ fn cosine(a: &[String], b: &[String]) -> f64 {
 }
 
 /// Affinity between a task's required skill and a declared [`AgentSkill`]
-/// (T3 skill-affinity routing, used by [`crate::SkillAffinityRouter`]).
+/// (T3 skill-affinity routing, used by [`crate::router::SkillAffinityRouter`]).
 ///
 /// The score is ordered so an exact match always dominates a fuzzy one:
 ///
