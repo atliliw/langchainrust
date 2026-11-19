@@ -781,6 +781,20 @@ mod tests {
     // and records in the backend — not silently dropped.
     #[test]
     fn active_spans_evicts_oldest_unclosed_span_at_cap() {
+        // The test nests MAX_ACTIVE_TRACE_SPANS + 20 spans without ending any,
+        // so eviction drops a ~4100-deep span chain — recursive Drop overflows
+        // the test harness's default 2 MiB stack. Run the body on a large-stack
+        // thread; test semantics are unchanged.
+        std::thread::Builder::new()
+            .name("span-eviction-cap".to_string())
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| active_spans_evicts_oldest_unclosed_span_at_cap_body())
+            .expect("spawn eviction-test thread")
+            .join()
+            .expect("eviction-test body");
+    }
+
+    fn active_spans_evicts_oldest_unclosed_span_at_cap_body() {
         use crate::tracing::tracer::clear_span_stack;
         clear_span_stack();
         let backend = Arc::new(InMemoryTracingBackend::new());
@@ -790,9 +804,11 @@ mod tests {
         // Insert far past the cap, never ending any guard — simulating runs
         // whose `dispatch_*_end` never fires.
         let total = MAX_ACTIVE_TRACE_SPANS + 20;
+        let mut newest_id = String::new();
         for i in 0..total {
             let key = format!("run-{i}");
             let guard = tracer.start_child(&key, SpanKind::Tool);
+            newest_id = guard.id().to_string();
             active.insert(key, guard);
         }
 
@@ -800,10 +816,14 @@ mod tests {
         assert_eq!(active.map.len(), MAX_ACTIVE_TRACE_SPANS);
         assert_eq!(active.order.len(), MAX_ACTIVE_TRACE_SPANS);
 
-        // The 20 oldest spans were force-closed: ended, popped off the tracer's
-        // span stack, and recorded by the backend in FIFO order.
+        // The backend records every span on `start_span`, so all 4116 are
+        // present; eviction's `end()` sets end times. Only the 20 oldest are
+        // force-closed, strictly FIFO; the newest 4096 stay open.
         let spans = backend.spans();
-        assert_eq!(spans.len(), 20);
+        assert_eq!(spans.len(), MAX_ACTIVE_TRACE_SPANS + 20);
+        assert!(spans[0].end_time.is_some(), "oldest span must be force-closed");
+        assert!(spans[19].end_time.is_some(), "20th span must be force-closed");
+        assert!(spans[20].end_time.is_none(), "newest span must still be open");
         assert_eq!(spans[0].name, "run-0", "oldest span must be evicted first");
         assert_eq!(spans[19].name, "run-19", "eviction is strictly FIFO");
 
@@ -815,7 +835,8 @@ mod tests {
         // current span is the newest (in the map), never a force-closed id.
         assert_eq!(
             tracer.current_span_id().as_deref(),
-            Some(format!("run-{}", total - 1).as_str())
+            Some(newest_id.as_str()),
+            "current span must be the newest inserted, not a force-closed id"
         );
     }
 

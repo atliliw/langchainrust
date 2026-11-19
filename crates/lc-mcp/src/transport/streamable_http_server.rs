@@ -766,17 +766,19 @@ mod tests {
 
     /// Loopback TCP pair so a unit test can capture the bytes `write_envelope`
     /// produces (rather than needing a live framework server). Returns
-    /// `(server_side, client_side)`.
-    fn socket_pair() -> (TcpStream, TcpStream) {
-        use std::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    /// `(server_side, client_side)`. Uses `tokio::net` end to end: wrapping a
+    /// std blocking socket via `TcpStream::from_std` panics on modern tokio
+    /// ("Registering a blocking socket with the tokio runtime is unsupported").
+    async fn socket_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
         let addr = listener.local_addr().unwrap();
-        let client = std::net::TcpStream::connect(addr).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        (
-            TcpStream::from_std(server).expect("wrap std server socket"),
-            TcpStream::from_std(client).expect("wrap std client socket"),
-        )
+        let client = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect loopback");
+        let (server, _) = listener.accept().await.expect("accept loopback");
+        (server, client)
     }
 
     /// Writes one envelope into a fresh socket pair and returns the captured
@@ -784,7 +786,7 @@ mod tests {
     /// the `MCP-Protocol-Version` header.
     async fn buffer_response(protocol_version: Option<&'static str>) -> String {
         use tokio::io::AsyncReadExt;
-        let (mut server, mut client) = socket_pair();
+        let (mut server, mut client) = socket_pair().await;
         let envelope = json!({"jsonrpc": "2.0", "id": 1, "result": {}});
         let session = protocol_version.map(|pv| SessionHeaders {
             session_id: "s",
