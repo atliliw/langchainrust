@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The tool handles are `Arc`-shared, so the agent and the executor no longer
   need two separate tool constructions.
 
-- **`lc` CLI (new crate `lc-cli`)**: one entry point for the main path —
+- **`lc` CLI (new crate `langchainrust-cli`)**: one entry point for the main path —
   `lc init` (chat/agent/rag templates), `lc run` (cargo passthrough),
   `lc serve` (OpenAI-compatible endpoint), `lc eval` (JSONL datasets).
 - **`lc serve` backends & sidecars**: `--backend model | agent | chain`;
